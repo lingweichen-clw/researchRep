@@ -29,6 +29,12 @@ def load_pickle(path: str | Path):
         except UnicodeDecodeError:
             f.seek(0)
             return pickle.load(f, encoding="latin1")
+        except pickle.UnpicklingError:
+            f.seek(0)
+            data = f.read()
+            if data.startswith(b"(l") and b"\r\n" in data:
+                return pickle.loads(data.replace(b"\r\n", b"\n"), encoding="latin1")
+            raise
 
 
 def extract_adj_matrix(pickle_obj) -> np.ndarray:
