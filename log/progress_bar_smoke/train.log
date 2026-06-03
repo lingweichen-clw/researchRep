@@ -1,0 +1,7 @@
+Experiment directory: D:\projects\researchProjects\TrafficRobustST\log\progress_bar_smoke
+Using device: cpu
+Data kind: patchstg_npz num_nodes=2352 patch_num=2048 patch_size=2 padded_nodes=4096
+Trainable parameters: 3306220
+epoch=1/1 batches=1 lr=0.002 train_loss=159.7709 train_mae=155.6268 contrastive=0.4310 deviation=4.1398 val_mae=334.7177 val_rmse=362.7691 val_mape=1425.76% val_15min_mae=589.6605 val_15min_rmse=591.6869 val_15min_mape=1850.39% val_30min_mae=263.3297 val_30min_rmse=267.1216 val_30min_mape=1089.25% val_60min_mae=411.2988 val_60min_rmse=412.8356 val_60min_mape=2189.28% best_val_mae=334.7177 improved=True train_time=0.87s val_time=0.12s
+Loaded best checkpoint from epoch=1 val_mae=334.7177
+test_mae=342.0081 test_rmse=372.7665 test_mape=935.85% test_15min_mae=601.0869 test_15min_rmse=604.5509 test_15min_mape=1072.97% test_30min_mae=275.4053 test_30min_rmse=281.7855 test_30min_mape=692.22% test_60min_mae=416.8186 test_60min_rmse=418.5601 test_60min_mape=1926.92%

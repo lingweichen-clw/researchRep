@@ -1,0 +1,6 @@
+Experiment directory: D:\projects\researchProjects\TrafficRobustST\log\smoke_full_exp
+Using device: cpu
+Trainable parameters: 24775
+epoch=1/1 batches=1 lr=0.001 train_loss=11.7483 train_mae=10.4127 contrastive=0.5054 deviation=1.0804 region=5.0032 graph_reg=0.0020 val_mae=15.7490 val_rmse=19.9553 val_mape=61.16% val_15min_mae=15.4132 val_15min_rmse=19.2796 val_15min_mape=56.73% val_30min_mae=15.7577 val_30min_rmse=20.0830 val_30min_mape=61.75% val_60min_mae=16.0859 val_60min_rmse=20.6734 val_60min_mape=65.98% best_val_mae=15.7490 improved=True train_time=0.45s val_time=0.47s
+Loaded best checkpoint from epoch=1 with val_mae=15.7490
+test_mae=9.8215 test_rmse=12.1232 test_mape=22.64% test_15min_mae=10.6786 test_15min_rmse=13.3007 test_15min_mape=27.23% test_30min_mae=9.6802 test_30min_rmse=12.1333 test_30min_mape=22.65% test_60min_mae=8.7449 test_60min_rmse=10.3853 test_60min_mape=16.89% test_time=0.79s
