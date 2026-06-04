@@ -148,7 +148,7 @@ def generate_metrla_splits(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate METR-LA ST-SSDL style splits.")
-    parser.add_argument("--traffic-h5", default="data/METR-LA.h5")
+    parser.add_argument("--traffic-h5", default="data/METRLA_data/METR-LA.h5")
     parser.add_argument("--output-dir", default="data/METRLA")
     parser.add_argument("--seq-len", type=int, default=12)
     parser.add_argument("--horizon", type=int, default=12)
