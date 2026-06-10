@@ -36,7 +36,7 @@ python -c "import torch; print(torch.__version__); print(torch.cuda.is_available
 
 ```powershell
 conda activate research
-python src\preprocessing.py --traffic-h5 data\METR-LA.h5 --output-dir data\METRLA
+python src\preprocessing.py --traffic-h5 data\METRLA_data\METR-LA.h5 --output-dir data\METRLA
 ```
 
 输出：
@@ -53,7 +53,7 @@ data/METRLA/testhis.npz
 
 ```powershell
 conda activate research
-python -m src.train --model baseline --processed-dir data\METRLA --epochs 200 --patience 30 --batch-size 128 --device cuda:0 --rnn-units 128 --prototype-dim 64 --prototype-num 20 --input-embedding-dim 3 --tod-embed-dim 20 --node-embedding-dim 25 --adaptive-embedding-dim 0 --lamb-c 0.01 --lamb-d 1 --lr-scheduler multistep --lr-milestones 50,70 --lr-decay-ratio 0.1 --output-dir log --run-name metrla_stssdl_baseline
+python -m src.train --model baseline --processed-dir data\METRLA --adj-path data\METRLA_data\adj_mx.pkl --epochs 200 --patience 30 --batch-size 128 --device cuda:0 --rnn-units 128 --prototype-dim 64 --prototype-num 20 --input-embedding-dim 3 --tod-embed-dim 20 --node-embedding-dim 25 --adaptive-embedding-dim 0 --lamb-c 0.01 --lamb-d 1 --lr-scheduler multistep --lr-milestones 50,70 --lr-decay-ratio 0.1 --output-dir log --run-name metrla_stssdl_baseline
 ```
 
 训练输出会写入：
@@ -115,9 +115,9 @@ val_time=...s
 | `--smoke-test` | False | 用随机小图跑一次前向、损失和反传 | 调试代码时使用，不训练真实数据 |
 | `--model` | `baseline` | 选择模型架构，`baseline` 为原版 ST-SSDL，`region` 为第一版区域增强模型 | 做原版对照和论文消融时保持 `baseline` |
 | `--generate-data` | False | 在训练前生成 METR-LA 切分 | 首次运行可用；完整实验建议单独先跑 `preprocessing.py` |
-| `--traffic-h5` | `data/METR-LA.h5` | 原始 METR-LA h5 文件路径 | 换数据集时修改 |
+| `--traffic-h5` | `data/METRLA_data/METR-LA.h5` | 原始 METR-LA h5 文件路径 | 换数据集时修改 |
 | `--processed-dir` | `data/METRLA` | 预处理后 `trainhis/valhis/testhis.npz` 路径 | 训练时最常改 |
-| `--adj-path` | `data/adj_mx.pkl` | 邻接矩阵文件路径 | 换数据集时修改 |
+| `--adj-path` | `data/METRLA_data/adj_mx.pkl` | 邻接矩阵文件路径 | 换数据集时修改 |
 | `--dataset-name` | `METR-LA` | 数据集名称，用于 BCC 默认阈值选择 | PEMS04/PEMS07 等要改成对应名字 |
 | `--adj-type` | `symadj` | 图归一化方式 | `symadj` 稳；有向扩散可试 `doubletransition` |
 | `--seq-len` | 12 | 输入历史步数 | 5 分钟粒度下 12 表示过去 1 小时 |
@@ -208,26 +208,26 @@ L = L_mae
 
 ```powershell
 conda activate research
-python -m src.train --model region --processed-dir data\METRLA --epochs 100 --patience 20 --batch-size 64 --device cuda:0 --rnn-units 64 --prototype-dim 64 --prototype-num 20 --tod-embed-dim 20 --node-embedding-dim 25 --lr-scheduler multistep --lr-milestones 40,70 --lr-decay-ratio 0.1 --output-dir log --run-name metrla_region_full_v2
+python -m src.train --model region --processed-dir data\METRLA --adj-path data\METRLA_data\adj_mx.pkl --epochs 100 --patience 20 --batch-size 64 --device cuda:0 --rnn-units 64 --prototype-dim 64 --prototype-num 20 --tod-embed-dim 20 --node-embedding-dim 25 --lr-scheduler multistep --lr-milestones 40,70 --lr-decay-ratio 0.1 --output-dir log --run-name metrla_region_full_v2
 ```
 
 关闭 BCC 区域对比损失：
 
 ```powershell
 conda activate research
-python -m src.train --model region --processed-dir data\METRLA --epochs 100 --patience 20 --batch-size 64 --device cuda:0 --rnn-units 64 --prototype-dim 64 --prototype-num 20 --tod-embed-dim 20 --node-embedding-dim 25 --lr-scheduler multistep --lr-milestones 40,70 --lr-decay-ratio 0.1 --no-region-loss --lamb-region 0 --output-dir log --run-name metrla_no_region_loss
+python -m src.train --model region --processed-dir data\METRLA --adj-path data\METRLA_data\adj_mx.pkl --epochs 100 --patience 20 --batch-size 64 --device cuda:0 --rnn-units 64 --prototype-dim 64 --prototype-num 20 --tod-embed-dim 20 --node-embedding-dim 25 --lr-scheduler multistep --lr-milestones 40,70 --lr-decay-ratio 0.1 --no-region-loss --lamb-region 0 --output-dir log --run-name metrla_no_region_loss
 ```
 
 关闭 BCC 图去噪：
 
 ```powershell
 conda activate research
-python -m src.train --model region --processed-dir data\METRLA --epochs 100 --patience 20 --batch-size 64 --device cuda:0 --rnn-units 64 --prototype-dim 64 --prototype-num 20 --tod-embed-dim 20 --node-embedding-dim 25 --lr-scheduler multistep --lr-milestones 40,70 --lr-decay-ratio 0.1 --no-graph-denoise --lamb-graph 0 --output-dir log --run-name metrla_no_graph_denoise
+python -m src.train --model region --processed-dir data\METRLA --adj-path data\METRLA_data\adj_mx.pkl --epochs 100 --patience 20 --batch-size 64 --device cuda:0 --rnn-units 64 --prototype-dim 64 --prototype-num 20 --tod-embed-dim 20 --node-embedding-dim 25 --lr-scheduler multistep --lr-milestones 40,70 --lr-decay-ratio 0.1 --no-graph-denoise --lamb-graph 0 --output-dir log --run-name metrla_no_graph_denoise
 ```
 
 同时关闭 BCC 区域损失和图去噪：
 
 ```powershell
 conda activate research
-python -m src.train --model region --processed-dir data\METRLA --epochs 100 --patience 20 --batch-size 64 --device cuda:0 --rnn-units 64 --prototype-dim 64 --prototype-num 20 --tod-embed-dim 20 --node-embedding-dim 25 --lr-scheduler multistep --lr-milestones 40,70 --lr-decay-ratio 0.1 --no-region-loss --no-graph-denoise --lamb-region 0 --lamb-graph 0 --output-dir log --run-name metrla_no_darkfarseer
+python -m src.train --model region --processed-dir data\METRLA --adj-path data\METRLA_data\adj_mx.pkl --epochs 100 --patience 20 --batch-size 64 --device cuda:0 --rnn-units 64 --prototype-dim 64 --prototype-num 20 --tod-embed-dim 20 --node-embedding-dim 25 --lr-scheduler multistep --lr-milestones 40,70 --lr-decay-ratio 0.1 --no-region-loss --no-graph-denoise --lamb-region 0 --lamb-graph 0 --output-dir log --run-name metrla_no_darkfarseer
 ```
