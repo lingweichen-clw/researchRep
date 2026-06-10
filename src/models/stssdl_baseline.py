@@ -144,7 +144,7 @@ class STSSDLBaseline(nn.Module):
         pos = self.prototypes["prototypes"][indices[:, :, 0]]
         neg = self.prototypes["prototypes"][indices[:, :, 1]]
         mask = torch.stack([indices[:, :, 0], indices[:, :, 1]], dim=-1)
-        return value, query, pos, neg, mask
+        return value, query, pos, neg, mask, att_score
 
     @staticmethod
     def calculate_distance(left: torch.Tensor, right: torch.Tensor) -> torch.Tensor:
@@ -164,11 +164,12 @@ class STSSDLBaseline(nn.Module):
         y_cov: torch.Tensor,
         labels: torch.Tensor | None = None,
         batches_seen: int | None = None,
+        return_intermediates: bool = False,
     ) -> Dict[str, torch.Tensor]:
         h_t, h_a = self._encode_pair(x, x_cov, x_his)
         if self.use_ssdl:
-            v_t, q_t, p_t, n_t, mask_t = self.query_prototypes(h_t)
-            v_a, q_a, p_a, n_a, mask_a = self.query_prototypes(h_a)
+            v_t, q_t, p_t, n_t, mask_t, att_c = self.query_prototypes(h_t)
+            v_a, q_a, p_a, n_a, mask_a, att_a = self.query_prototypes(h_a)
             latent_dis = self.calculate_distance(q_t, q_a)
             prototype_dis = self.calculate_distance(p_t, p_a)
             query = torch.stack([q_t, q_a], dim=0)
@@ -184,6 +185,8 @@ class STSSDLBaseline(nn.Module):
             pos = h_t.new_zeros((2, *h_t.shape[:-1], 0))
             neg = h_t.new_zeros((2, *h_t.shape[:-1], 0))
             mask = torch.zeros((2, *h_t.shape[:-1], 2), device=x.device, dtype=torch.long)
+            att_c = h_t.new_zeros((*h_t.shape[:-1], 0))
+            att_a = h_t.new_zeros((*h_t.shape[:-1], 0))
 
         h_de = torch.cat([h_t, v_t], dim=-1)
         h_aug = torch.cat([h_t, v_t, h_a, v_a], dim=-1)
@@ -207,7 +210,7 @@ class STSSDLBaseline(nn.Module):
 
         zero_loss = x.new_zeros(())
         prediction = torch.stack(outputs, dim=1)
-        return {
+        output = {
             "prediction": prediction,
             "query": query,
             "pos": pos,
@@ -220,3 +223,15 @@ class STSSDLBaseline(nn.Module):
             "clean_support": support,
             "edge_reliability": torch.ones_like(support),
         }
+        if return_intermediates:
+            output.update(
+                {
+                    "attention_c": att_c,
+                    "attention_a": att_a,
+                    "h_c": h_t,
+                    "h_a": h_a,
+                    "v_c": v_t,
+                    "v_a": v_a,
+                }
+            )
+        return output
