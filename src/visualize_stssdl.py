@@ -6,7 +6,7 @@ import argparse
 import json
 import math
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -20,6 +20,10 @@ from .models import STSSDLBaseline
 from .preprocessing import _weekday_slot, build_history_anchor
 from .train import build_model
 from .utils import load_adj, project_root, set_seed
+
+DATASET_START_TIMESTAMPS = {
+    "METR-LA": "2012-03-01T00:00:00",
+}
 
 
 def parse_args():
@@ -86,6 +90,24 @@ def _compute_history_full(data_dir: Path, train_ratio: float) -> np.ndarray:
     return build_history_anchor(df, train_ratio=train_ratio, slots_per_day=288)
 
 
+def _dataset_start_timestamp(dataset_name: str) -> np.datetime64:
+    if dataset_name not in DATASET_START_TIMESTAMPS:
+        raise ValueError(
+            f"Unsupported dataset for processed-anchor fallback: {dataset_name}. "
+            "Please provide the raw traffic file or extend DATASET_START_TIMESTAMPS."
+        )
+    return np.datetime64(DATASET_START_TIMESTAMPS[dataset_name])
+
+
+def _slot_from_step_indices(step_indices: np.ndarray, dataset_name: str) -> np.ndarray:
+    start = _dataset_start_timestamp(dataset_name)
+    timestamps = start + step_indices.astype("timedelta64[m]") * 5
+    weekday = ((timestamps.astype("datetime64[D]").astype(int) + 3) % 7).astype(np.int64)
+    minutes = ((timestamps - timestamps.astype("datetime64[D]")) / np.timedelta64(1, "m")).astype(np.int64)
+    slot_in_day = minutes // 5
+    return weekday * 288 + slot_in_day
+
+
 def _split_sample_positions(data: Dict[str, np.ndarray], split: str) -> np.ndarray:
     split_sizes = {
         "train": data["x_train"].shape[0],
@@ -108,12 +130,22 @@ def _build_eval_loader(data: Dict[str, np.ndarray], split: str, batch_size: int)
     return DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0, drop_last=False)
 
 
-def _future_anchor_from_positions(history_full: np.ndarray, sample_positions: np.ndarray, seq_len: int, horizon: int) -> np.ndarray:
-    min_t = seq_len - 1
+def _future_anchor_from_positions(
+    history_full: np.ndarray,
+    sample_positions: np.ndarray,
+    seq_len: int,
+    horizon: int,
+    dataset_name: str,
+) -> np.ndarray:
     anchors = []
     for sample_pos in sample_positions:
-        current_t = min_t + int(sample_pos)
-        anchors.append(history_full[current_t + 1 : current_t + 1 + horizon])
+        future_step_indices = np.arange(
+            int(sample_pos) + seq_len,
+            int(sample_pos) + seq_len + horizon,
+            dtype=np.int64,
+        )
+        slot_ids = _slot_from_step_indices(future_step_indices, dataset_name)
+        anchors.append(history_full[slot_ids])
     return np.stack(anchors, axis=0).astype(np.float32)
 
 
@@ -138,6 +170,32 @@ def _compute_history_table(data_dir: Path, train_ratio: float) -> np.ndarray:
     sensor_mean = np.divide(train_values.sum(axis=0), np.maximum((train_values != 0).sum(axis=0), 1)).astype(np.float32)
     empty = counts == 0
     history[empty] = np.take(sensor_mean, np.where(empty)[1])
+    return history
+
+
+def _compute_history_full_from_processed(
+    raw_data: Dict[str, np.ndarray],
+    dataset_name: str,
+    seq_len: int,
+) -> np.ndarray:
+    num_nodes = raw_data["x_train"].shape[2]
+    history = np.zeros((7 * 288, num_nodes), dtype=np.float32)
+    counts = np.zeros_like(history)
+    for split in ("train", "val", "test"):
+        x_split = raw_data[f"x_{split}"]
+        sample_positions = _split_sample_positions(raw_data, split)
+        for local_idx, sample_pos in enumerate(sample_positions):
+            step_indices = np.arange(int(sample_pos), int(sample_pos) + seq_len, dtype=np.int64)
+            slot_ids = _slot_from_step_indices(step_indices, dataset_name)
+            anchor_seq = x_split[local_idx, :, :, 2]
+            for step_idx, slot_id in enumerate(slot_ids):
+                history[slot_id] += anchor_seq[step_idx]
+                counts[slot_id] += 1.0
+    valid = counts > 0
+    history[valid] = history[valid] / counts[valid]
+    node_fallback = raw_data["x_train"][..., 2].reshape(-1, num_nodes).mean(axis=0).astype(np.float32)
+    empty = counts == 0
+    history[empty] = np.take(node_fallback, np.where(empty)[1])
     return history
 
 
@@ -584,7 +642,8 @@ def main() -> None:
 
     data_dir = _resolve_path(root, config["processed_dir"])
     adj_path = _resolve_path(root, config["adj_path"])
-    data, scaler = normalize_splits(load_npz_splits(data_dir))
+    raw_data = load_npz_splits(data_dir)
+    data, scaler = normalize_splits(raw_data)
     loader = _build_eval_loader(data, args.split, int(config["batch_size"]))
     supports_np, raw_adj_np = load_adj(adj_path, config["adj_type"])
     model_args = argparse.Namespace(**config)
@@ -592,13 +651,21 @@ def main() -> None:
     _load_checkpoint(model, run_dir / "best_model.pt", device)
     model.eval()
 
-    sample_positions = _split_sample_positions(data, args.split)
-    history_full = _compute_history_full(data_dir, float(config["train_ratio"]))
+    sample_positions = _split_sample_positions(raw_data, args.split)
+    try:
+        history_full = _compute_history_full(data_dir, float(config["train_ratio"]))
+    except FileNotFoundError:
+        history_full = _compute_history_full_from_processed(
+            raw_data,
+            str(config["dataset_name"]),
+            int(config["seq_len"]),
+        )
     history_future = _future_anchor_from_positions(
         history_full,
         sample_positions[: min(sample_positions.shape[0], args.max_samples)],
         int(config["seq_len"]),
         int(config["horizon"]),
+        str(config["dataset_name"]),
     )
     dirs = _make_dirs(run_dir)
     arrays = collect_intermediates(
