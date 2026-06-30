@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -20,8 +22,45 @@ from .preprocessing import generate_metrla_splits
 from .utils import count_parameters, load_adj, project_root, set_seed, to_torch_supports
 
 
+def _load_dcdst_class():
+    model_path = project_root() / "DCD-ST" / "dcd_st.py"
+    if not model_path.exists():
+        raise FileNotFoundError(f"DCD-ST model file not found: {model_path}")
+    module_name = "_traffic_robust_dcd_st"
+    if module_name in sys.modules:
+        return sys.modules[module_name].DCDST
+    spec = importlib.util.spec_from_file_location(module_name, model_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load DCD-ST model from {model_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module.DCDST
+
+
 def build_model(args, device: torch.device, num_nodes: int, supports_np, raw_adj_np):
     supports = to_torch_supports(supports_np, device)
+    if args.model == "dcd":
+        dcd_class = _load_dcdst_class()
+        return dcd_class(
+            num_nodes=num_nodes,
+            supports=supports,
+            horizon=args.horizon,
+            rnn_units=args.rnn_units,
+            rnn_layers=args.rnn_layers,
+            cheb_k=args.cheb_k,
+            input_embedding_dim=args.input_embedding_dim,
+            tod_embed_dim=args.tod_embed_dim,
+            node_embedding_dim=args.node_embedding_dim,
+            adaptive_embedding_dim=args.adaptive_embedding_dim,
+            use_curriculum_learning=args.use_curriculum_learning,
+            decomp_kernel_size=args.decomp_kernel_size,
+            dev_embed_dim=args.dev_embed_dim,
+            gate_hidden_dim=args.gate_hidden_dim,
+            use_temporal_deviation_norm=args.use_temporal_deviation_norm,
+            use_spatial_deviation_norm=args.use_spatial_deviation_norm,
+        ).to(device)
+
     common_kwargs = dict(
         num_nodes=num_nodes,
         supports=supports,
@@ -90,7 +129,12 @@ def _make_experiment_dir(root: Path, args) -> Path:
     output_dir = Path(args.output_dir)
     if not output_dir.is_absolute():
         output_dir = root / output_dir
-    run_prefix = "metrla_stssdl" if args.model == "baseline" else "metrla_region"
+    run_prefixes = {
+        "baseline": "metrla_stssdl",
+        "region": "metrla_region",
+        "dcd": "metrla_dcd",
+    }
+    run_prefix = run_prefixes.get(args.model, f"metrla_{args.model}")
     run_name = args.run_name or datetime.now().strftime(f"{run_prefix}_%Y%m%d_%H%M%S")
     exp_dir = output_dir / run_name
     exp_dir.mkdir(parents=True, exist_ok=True)
@@ -171,6 +215,8 @@ def train(args) -> None:
         deviation=args.lamb_d,
         region=args.lamb_region,
         graph_reg=args.lamb_graph,
+        gate_sparse=args.gate_sparse_weight,
+        gate_smooth=args.gate_smooth_weight,
         use_contrastive=args.use_contrastive_loss,
         use_deviation=args.use_deviation_loss,
     )
@@ -187,6 +233,8 @@ def train(args) -> None:
             "deviation": [],
             "region": [],
             "graph_reg": [],
+            "gate_sparse": [],
+            "gate_smooth": [],
         }
         for batch_idx, (x_batch, y_batch) in enumerate(loaders["train"], start=1):
             x_batch = x_batch.to(device)
@@ -238,6 +286,8 @@ def train(args) -> None:
             f"deviation={np.mean(running['deviation']):.4f} "
             f"region={np.mean(running['region']):.4f} "
             f"graph_reg={np.mean(running['graph_reg']):.4f} "
+            f"gate_sparse={np.mean(running['gate_sparse']):.4f} "
+            f"gate_smooth={np.mean(running['gate_smooth']):.4f} "
             f"{_format_metrics('val', val_metrics)} "
             f"best_val_mae={best_val_mae:.4f} "
             f"improved={improved} "
@@ -298,12 +348,14 @@ def smoke_test(args) -> None:
         target,
         _Scaler(),
         LossWeights(
-            args.lamb_c,
-            args.lamb_d,
-            args.lamb_region,
-            args.lamb_graph,
-            args.use_contrastive_loss,
-            args.use_deviation_loss,
+            contrastive=args.lamb_c,
+            deviation=args.lamb_d,
+            region=args.lamb_region,
+            graph_reg=args.lamb_graph,
+            gate_sparse=args.gate_sparse_weight,
+            gate_smooth=args.gate_smooth_weight,
+            use_contrastive=args.use_contrastive_loss,
+            use_deviation=args.use_deviation_loss,
         ),
     )
     losses["total"].backward()
@@ -320,7 +372,7 @@ def smoke_test(args) -> None:
 def parse_args():
     parser = argparse.ArgumentParser(description="Train ST-SSDL baseline or region-aware variant.")
     parser.add_argument("--smoke-test", action="store_true")
-    parser.add_argument("--model", default="baseline", choices=["baseline", "region"])
+    parser.add_argument("--model", default="baseline", choices=["baseline", "region", "dcd"])
     parser.add_argument("--generate-data", action="store_true")
     parser.add_argument("--traffic-h5", default="data/METRLA_data/METR-LA.h5")
     parser.add_argument("--processed-dir", default="data/METRLA")
@@ -358,6 +410,11 @@ def parse_args():
     parser.add_argument("--lamb-d", type=float, default=1.0)
     parser.add_argument("--lamb-region", type=float, default=0.05)
     parser.add_argument("--lamb-graph", type=float, default=0.001)
+    parser.add_argument("--gate-sparse-weight", type=float, default=0.0)
+    parser.add_argument("--gate-smooth-weight", type=float, default=0.0)
+    parser.add_argument("--decomp-kernel-size", type=int, default=3)
+    parser.add_argument("--dev-embed-dim", type=int, default=32)
+    parser.add_argument("--gate-hidden-dim", type=int, default=128)
     parser.add_argument("--graph-static-weight", type=float, default=0.15)
     parser.add_argument("--bcc-edge-threshold", type=float, default=None)
     parser.set_defaults(use_contrastive_loss=True)
@@ -378,6 +435,12 @@ def parse_args():
     parser.set_defaults(use_curriculum_learning=True)
     parser.add_argument("--use-curriculum-learning", dest="use_curriculum_learning", action="store_true")
     parser.add_argument("--no-curriculum-learning", dest="use_curriculum_learning", action="store_false")
+    parser.set_defaults(use_temporal_deviation_norm=True)
+    parser.add_argument("--use-temporal-deviation-norm", dest="use_temporal_deviation_norm", action="store_true")
+    parser.add_argument("--no-temporal-deviation-norm", dest="use_temporal_deviation_norm", action="store_false")
+    parser.set_defaults(use_spatial_deviation_norm=True)
+    parser.add_argument("--use-spatial-deviation-norm", dest="use_spatial_deviation_norm", action="store_true")
+    parser.add_argument("--no-spatial-deviation-norm", dest="use_spatial_deviation_norm", action="store_false")
     parser.add_argument("--seed", type=int, default=999)
     parser.add_argument("--device", default="cuda:0")
     parser.set_defaults(save_best=True)

@@ -17,6 +17,8 @@ class LossWeights:
     deviation: float = 1.0
     region: float = 0.05
     graph_reg: float = 0.001
+    gate_sparse: float = 0.0
+    gate_smooth: float = 0.0
     use_contrastive: bool = True
     use_deviation: bool = True
 
@@ -50,6 +52,9 @@ def compute_training_loss(
         deviation_loss = torch.zeros((), device=prediction.device, dtype=prediction.dtype)
     region_loss = model_output["region_loss"]
     graph_reg_loss = model_output["graph_reg_loss"]
+    zero_loss = torch.zeros((), device=prediction.device, dtype=prediction.dtype)
+    gate_sparse_loss = model_output.get("gate_sparse_loss", zero_loss)
+    gate_smooth_loss = model_output.get("gate_smooth_loss", zero_loss)
 
     total = (
         mae_loss
@@ -57,6 +62,8 @@ def compute_training_loss(
         + weights.deviation * deviation_loss
         + weights.region * region_loss
         + weights.graph_reg * graph_reg_loss
+        + weights.gate_sparse * gate_sparse_loss
+        + weights.gate_smooth * gate_smooth_loss
     )
     return {
         "total": total,
@@ -65,4 +72,6 @@ def compute_training_loss(
         "deviation": deviation_loss.detach(),
         "region": region_loss.detach(),
         "graph_reg": graph_reg_loss.detach(),
+        "gate_sparse": gate_sparse_loss.detach(),
+        "gate_smooth": gate_smooth_loss.detach(),
     }
