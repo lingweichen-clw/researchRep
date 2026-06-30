@@ -1,4 +1,4 @@
-"""Loss composition for the region-aware ST-SSDL model."""
+"""Loss composition for ST-SSDL baseline and DCD-ST."""
 
 from __future__ import annotations
 
@@ -15,8 +15,6 @@ from .metrics import masked_mae
 class LossWeights:
     contrastive: float = 0.01
     deviation: float = 1.0
-    region: float = 0.05
-    graph_reg: float = 0.001
     gate_sparse: float = 0.0
     gate_smooth: float = 0.0
     use_contrastive: bool = True
@@ -29,7 +27,7 @@ def compute_training_loss(
     scaler,
     weights: LossWeights,
 ) -> Dict[str, torch.Tensor]:
-    """Compute prediction, prototype, deviation, and graph-region losses."""
+    """Compute prediction, prototype, deviation, and DCD gate losses."""
     prediction = model_output["prediction"]
     y_pred = scaler.inverse_transform(prediction)
     mae_loss = masked_mae(y_pred, target)
@@ -50,8 +48,6 @@ def compute_training_loss(
         )
     else:
         deviation_loss = torch.zeros((), device=prediction.device, dtype=prediction.dtype)
-    region_loss = model_output["region_loss"]
-    graph_reg_loss = model_output["graph_reg_loss"]
     zero_loss = torch.zeros((), device=prediction.device, dtype=prediction.dtype)
     gate_sparse_loss = model_output.get("gate_sparse_loss", zero_loss)
     gate_smooth_loss = model_output.get("gate_smooth_loss", zero_loss)
@@ -60,8 +56,6 @@ def compute_training_loss(
         mae_loss
         + weights.contrastive * contrastive_loss
         + weights.deviation * deviation_loss
-        + weights.region * region_loss
-        + weights.graph_reg * graph_reg_loss
         + weights.gate_sparse * gate_sparse_loss
         + weights.gate_smooth * gate_smooth_loss
     )
@@ -70,8 +64,6 @@ def compute_training_loss(
         "mae": mae_loss.detach(),
         "contrastive": contrastive_loss.detach(),
         "deviation": deviation_loss.detach(),
-        "region": region_loss.detach(),
-        "graph_reg": graph_reg_loss.detach(),
         "gate_sparse": gate_sparse_loss.detach(),
         "gate_smooth": gate_smooth_loss.detach(),
     }

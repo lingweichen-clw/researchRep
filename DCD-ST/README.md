@@ -242,8 +242,6 @@ train_loss=...
 train_mae=...
 contrastive=0.0000
 deviation=0.0000
-region=0.0000
-graph_reg=0.0000
 gate_sparse=...
 gate_smooth=0.0000
 val_mae=...
@@ -276,4 +274,3 @@ C:\Users\31396\.conda\envs\research\python.exe -m src.train --smoke-test --model
 ```text
 smoke ok: prediction=(2, 12, 8, 1) clean_support=(2, 8, 8) loss=2.2447 mae=0.4714
 ```
-

@@ -1,4 +1,4 @@
-"""Training and smoke-test entry point for ST-SSDL baselines and variants."""
+"""Training and smoke-test entry point for ST-SSDL baseline and DCD-ST."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import torch
 from .data import build_loaders, load_npz_splits, normalize_splits, prepare_x_y
 from .losses import LossWeights, compute_training_loss
 from .metrics import horizon_metrics, masked_mae
-from .models import RegionAwareSTSSDL, STSSDLBaseline
+from .models import STSSDLBaseline
 from .preprocessing import generate_metrla_splits
 from .utils import count_parameters, load_adj, project_root, set_seed, to_torch_supports
 
@@ -79,16 +79,6 @@ def build_model(args, device: torch.device, num_nodes: int, supports_np, raw_adj
     )
     if args.model == "baseline":
         return STSSDLBaseline(**common_kwargs).to(device)
-    if args.model == "region":
-        return RegionAwareSTSSDL(
-            raw_adj=raw_adj_np,
-            dataset_name=args.dataset_name,
-            bcc_edge_threshold=args.bcc_edge_threshold,
-            graph_static_weight=args.graph_static_weight,
-            use_region_loss=args.use_region_loss,
-            use_graph_denoise=args.use_graph_denoise,
-            **common_kwargs,
-        ).to(device)
     raise ValueError(f"Unsupported model: {args.model}")
 
 
@@ -131,7 +121,6 @@ def _make_experiment_dir(root: Path, args) -> Path:
         output_dir = root / output_dir
     run_prefixes = {
         "baseline": "metrla_stssdl",
-        "region": "metrla_region",
         "dcd": "metrla_dcd",
     }
     run_prefix = run_prefixes.get(args.model, f"metrla_{args.model}")
@@ -213,8 +202,6 @@ def train(args) -> None:
     weights = LossWeights(
         contrastive=args.lamb_c,
         deviation=args.lamb_d,
-        region=args.lamb_region,
-        graph_reg=args.lamb_graph,
         gate_sparse=args.gate_sparse_weight,
         gate_smooth=args.gate_smooth_weight,
         use_contrastive=args.use_contrastive_loss,
@@ -231,8 +218,6 @@ def train(args) -> None:
             "mae": [],
             "contrastive": [],
             "deviation": [],
-            "region": [],
-            "graph_reg": [],
             "gate_sparse": [],
             "gate_smooth": [],
         }
@@ -284,8 +269,6 @@ def train(args) -> None:
             f"train_mae={np.mean(running['mae']):.4f} "
             f"contrastive={np.mean(running['contrastive']):.4f} "
             f"deviation={np.mean(running['deviation']):.4f} "
-            f"region={np.mean(running['region']):.4f} "
-            f"graph_reg={np.mean(running['graph_reg']):.4f} "
             f"gate_sparse={np.mean(running['gate_sparse']):.4f} "
             f"gate_smooth={np.mean(running['gate_smooth']):.4f} "
             f"{_format_metrics('val', val_metrics)} "
@@ -350,8 +333,6 @@ def smoke_test(args) -> None:
         LossWeights(
             contrastive=args.lamb_c,
             deviation=args.lamb_d,
-            region=args.lamb_region,
-            graph_reg=args.lamb_graph,
             gate_sparse=args.gate_sparse_weight,
             gate_smooth=args.gate_smooth_weight,
             use_contrastive=args.use_contrastive_loss,
@@ -370,14 +351,13 @@ def smoke_test(args) -> None:
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train ST-SSDL baseline or region-aware variant.")
+    parser = argparse.ArgumentParser(description="Train ST-SSDL baseline or DCD-ST.")
     parser.add_argument("--smoke-test", action="store_true")
-    parser.add_argument("--model", default="baseline", choices=["baseline", "region", "dcd"])
+    parser.add_argument("--model", default="baseline", choices=["baseline", "dcd"])
     parser.add_argument("--generate-data", action="store_true")
     parser.add_argument("--traffic-h5", default="data/METRLA_data/METR-LA.h5")
     parser.add_argument("--processed-dir", default="data/METRLA")
     parser.add_argument("--adj-path", default="data/METRLA_data/adj_mx.pkl")
-    parser.add_argument("--dataset-name", default="METR-LA")
     parser.add_argument("--adj-type", default="symadj", choices=["symadj", "transition", "doubletransition", "identity"])
     parser.add_argument("--seq-len", type=int, default=12)
     parser.add_argument("--horizon", type=int, default=12)
@@ -408,15 +388,11 @@ def parse_args():
     parser.add_argument("--adaptive-embedding-dim", type=int, default=0)
     parser.add_argument("--lamb-c", type=float, default=0.01)
     parser.add_argument("--lamb-d", type=float, default=1.0)
-    parser.add_argument("--lamb-region", type=float, default=0.05)
-    parser.add_argument("--lamb-graph", type=float, default=0.001)
     parser.add_argument("--gate-sparse-weight", type=float, default=0.0)
     parser.add_argument("--gate-smooth-weight", type=float, default=0.0)
     parser.add_argument("--decomp-kernel-size", type=int, default=3)
     parser.add_argument("--dev-embed-dim", type=int, default=32)
     parser.add_argument("--gate-hidden-dim", type=int, default=128)
-    parser.add_argument("--graph-static-weight", type=float, default=0.15)
-    parser.add_argument("--bcc-edge-threshold", type=float, default=None)
     parser.set_defaults(use_contrastive_loss=True)
     parser.add_argument("--use-contrastive-loss", dest="use_contrastive_loss", action="store_true")
     parser.add_argument("--no-contrastive-loss", dest="use_contrastive_loss", action="store_false")
@@ -426,12 +402,6 @@ def parse_args():
     parser.set_defaults(use_ssdl=True)
     parser.add_argument("--use-ssdl", dest="use_ssdl", action="store_true")
     parser.add_argument("--no-ssdl", dest="use_ssdl", action="store_false")
-    parser.set_defaults(use_region_loss=True)
-    parser.add_argument("--use-region-loss", dest="use_region_loss", action="store_true")
-    parser.add_argument("--no-region-loss", dest="use_region_loss", action="store_false")
-    parser.set_defaults(use_graph_denoise=True)
-    parser.add_argument("--use-graph-denoise", dest="use_graph_denoise", action="store_true")
-    parser.add_argument("--no-graph-denoise", dest="use_graph_denoise", action="store_false")
     parser.set_defaults(use_curriculum_learning=True)
     parser.add_argument("--use-curriculum-learning", dest="use_curriculum_learning", action="store_true")
     parser.add_argument("--no-curriculum-learning", dest="use_curriculum_learning", action="store_false")

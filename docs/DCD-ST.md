@@ -167,7 +167,7 @@ prototype usage visualization 被 trend/residual/spatial/temporal/gate visualiza
 
 ## 4. 新增文件设计
 
-### 4.1 `src/models/deviation_decomposition.py`
+### 4.1 `DCD-ST/deviation_decomposition.py`
 
 该文件只负责偏差特征提取，不包含预测主干。
 
@@ -278,7 +278,7 @@ D_s = (R_raw - neighbor_mean) / neighbor_std
 
 第一版先用全图版本，原因是当前 `src/models/agcrn.py` 已经在 encoder/decoder 内使用 support，偏差提取层如果一开始就再引入邻域统计，会让实验归因变复杂。
 
-### 4.2 `src/models/dcd_st.py`
+### 4.2 `DCD-ST/dcd_st.py`
 
 该文件实现新模型类：
 
@@ -443,21 +443,18 @@ proj = Linear(rnn_units, output_dim)
 output = {
     "prediction": prediction,
 
-    # compatibility with old loss
+    # compatibility with baseline loss
     "query": zero_query,
     "pos": zero_query,
     "neg": zero_query,
     "mask": zero_mask,
     "latent_dis": zero_node,
     "prototype_dis": zero_node,
-    "region_loss": zero_loss,
-    "graph_reg_loss": zero_loss,
 
     # DCD-ST
     "gate_sparse_loss": g_dev.mean(),
     "gate_smooth_loss": gate_smooth_loss,
     "clean_support": support,
-    "edge_reliability": torch.ones_like(support),
 }
 ```
 
@@ -490,25 +487,23 @@ dynamic support map
 
 ## 5. 损失函数改造
 
-当前 `src/losses.py` 只知道：
+当前 `src/losses.py` 保留：
 
 ```text
 MAE
 contrastive
 deviation
-region
-graph_reg
+gate_sparse
+gate_smooth
 ```
 
-第一版建议扩展为兼容式写法：
+第一版建议写法：
 
 ```python
 @dataclass
 class LossWeights:
     contrastive: float = 0.01
     deviation: float = 1.0
-    region: float = 0.05
-    graph_reg: float = 0.001
     gate_sparse: float = 0.0
     gate_smooth: float = 0.0
     use_contrastive: bool = True
@@ -525,8 +520,6 @@ total = (
     mae_loss
     + weights.contrastive * contrastive_loss
     + weights.deviation * deviation_loss
-    + weights.region * region_loss
-    + weights.graph_reg * graph_reg_loss
     + weights.gate_sparse * gate_sparse_loss
     + weights.gate_smooth * gate_smooth_loss
 )
@@ -563,26 +556,28 @@ gate_smooth_weight = 1e-4
 
 ### 6.1 `src/models/__init__.py`
 
-新增：
+保留 baseline 注册：
 
 ```python
-from .dcd_st import DCDST
+from .stssdl_baseline import STSSDLBaseline
 
-__all__ = ["RegionAwareSTSSDL", "STSSDLBaseline", "DCDST"]
+__all__ = ["STSSDLBaseline"]
 ```
+
+DCD-ST 代码放在 `DCD-ST/` 目录下，由 `src/train.py` 动态加载。
 
 ### 6.2 `src/train.py`
 
 导入：
 
 ```python
-from .models import DCDST, RegionAwareSTSSDL, STSSDLBaseline
+from .models import STSSDLBaseline
 ```
 
 `parse_args()` 中：
 
 ```python
-parser.add_argument("--model", default="baseline", choices=["baseline", "region", "dcd"])
+parser.add_argument("--model", default="baseline", choices=["baseline", "dcd"])
 parser.add_argument("--decomp-kernel-size", type=int, default=3)
 parser.add_argument("--dev-embed-dim", type=int, default=32)
 parser.add_argument("--gate-hidden-dim", type=int, default=128)
@@ -658,7 +653,7 @@ python -m src.train --model dcd --run-name metrla_dcd_v1_sparse --epochs 100 --b
 文件：
 
 ```text
-src/models/deviation_decomposition.py
+DCD-ST/deviation_decomposition.py
 ```
 
 完成后先做 shape smoke：
@@ -677,7 +672,7 @@ d_s:      (2,12,8,1)
 文件：
 
 ```text
-src/models/dcd_st.py
+DCD-ST/dcd_st.py
 ```
 
 必须保证：
@@ -689,7 +684,7 @@ g_dev:         (B,N,R)
 h_de:          (B,N,R)
 ```
 
-兼容旧 loss 的空张量：
+兼容 baseline loss 的空张量：
 
 ```text
 query/pos/neg 最后一维为 0
@@ -717,7 +712,7 @@ src/train.py
 src/losses.py
 ```
 
-新增 gate loss 但默认权重为 0，不影响 baseline/region 模型。
+新增 gate loss 但默认权重为 0，不影响 baseline 模型。
 
 ### Step 5：最小验证
 
@@ -930,8 +925,8 @@ DCD-ST 的可视化能解释偏差来自趋势、残差、时间高频还是空�
 第一版需要改动：
 
 ```text
-新增 src/models/deviation_decomposition.py
-新增 src/models/dcd_st.py
+新增 DCD-ST/deviation_decomposition.py
+新增 DCD-ST/dcd_st.py
 修改 src/models/__init__.py
 修改 src/train.py
 修改 src/losses.py
@@ -947,5 +942,4 @@ src/metrics.py
 src/preprocessing.py
 ```
 
-这样可以保证原 ST-SSDL baseline、region variant 和 DCD-ST 三条线同时存在，便于公平消融。
-
+这样可以保证原 ST-SSDL baseline 和 DCD-ST 两条线同时存在，便于公平消融。

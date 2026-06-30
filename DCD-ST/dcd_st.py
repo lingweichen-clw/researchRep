@@ -288,12 +288,9 @@ class DCDST(nn.Module):
             "mask": zero_mask,
             "latent_dis": zero_node,
             "prototype_dis": zero_node,
-            "region_loss": zero_loss,
-            "graph_reg_loss": zero_loss,
             "gate_sparse_loss": gate.mean(),
             "gate_smooth_loss": zero_loss,
             "clean_support": support,
-            "edge_reliability": torch.ones_like(support),
         }
         if return_intermediates:
             output.update(
@@ -313,4 +310,3 @@ class DCDST(nn.Module):
                 }
             )
         return output
-

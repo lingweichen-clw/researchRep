@@ -208,7 +208,6 @@ class STSSDLBaseline(nn.Module):
                 if np.random.uniform(0, 1) < self.compute_sampling_threshold(batches_seen):
                     go = labels[:, step, :, :]
 
-        zero_loss = x.new_zeros(())
         prediction = torch.stack(outputs, dim=1)
         output = {
             "prediction": prediction,
@@ -218,10 +217,7 @@ class STSSDLBaseline(nn.Module):
             "mask": mask,
             "latent_dis": latent_dis,
             "prototype_dis": prototype_dis,
-            "region_loss": zero_loss,
-            "graph_reg_loss": zero_loss,
             "clean_support": support,
-            "edge_reliability": torch.ones_like(support),
         }
         if return_intermediates:
             output.update(
