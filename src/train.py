@@ -1,4 +1,4 @@
-"""Training and smoke-test entry point for ST-SSDL baseline and DCD-ST."""
+"""Training and smoke-test entry point for ST-SSDL baseline, DCD-ST, and DHA-DCD-ST."""
 
 from __future__ import annotations
 
@@ -38,11 +38,43 @@ def _load_dcdst_class():
     return module.DCDST
 
 
+def _load_dhadcdst_class():
+    model_path = project_root() / "DHA-DCD-ST" / "dha_dcd_st.py"
+    if not model_path.exists():
+        raise FileNotFoundError(f"DHA-DCD-ST model file not found: {model_path}")
+    module_name = "_traffic_robust_dha_dcd_st"
+    if module_name in sys.modules:
+        return sys.modules[module_name].DHADCDST
+    spec = importlib.util.spec_from_file_location(module_name, model_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load DHA-DCD-ST model from {model_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module.DHADCDST
+
+
+def _load_dha_split_generator():
+    preprocessing_path = project_root() / "DHA-DCD-ST" / "preprocessing.py"
+    if not preprocessing_path.exists():
+        raise FileNotFoundError(f"DHA-DCD-ST preprocessing file not found: {preprocessing_path}")
+    module_name = "_traffic_robust_dha_preprocessing"
+    if module_name in sys.modules:
+        return sys.modules[module_name].generate_metrla_dha_splits
+    spec = importlib.util.spec_from_file_location(module_name, preprocessing_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load DHA-DCD-ST preprocessing from {preprocessing_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module.generate_metrla_dha_splits
+
+
 def build_model(args, device: torch.device, num_nodes: int, supports_np, raw_adj_np):
     supports = to_torch_supports(supports_np, device)
-    if args.model == "dcd":
-        dcd_class = _load_dcdst_class()
-        return dcd_class(
+    if args.model in {"dcd", "dha"}:
+        model_class = _load_dcdst_class() if args.model == "dcd" else _load_dhadcdst_class()
+        return model_class(
             num_nodes=num_nodes,
             supports=supports,
             horizon=args.horizon,
@@ -59,6 +91,8 @@ def build_model(args, device: torch.device, num_nodes: int, supports_np, raw_adj
             gate_hidden_dim=args.gate_hidden_dim,
             use_temporal_deviation_norm=args.use_temporal_deviation_norm,
             use_spatial_deviation_norm=args.use_spatial_deviation_norm,
+            fusion_mode=args.dcd_fusion_mode,
+            fixed_gate_value=args.fixed_gate if args.fixed_gate is not None else args.fixed_gate_value,
         ).to(device)
 
     common_kwargs = dict(
@@ -82,7 +116,17 @@ def build_model(args, device: torch.device, num_nodes: int, supports_np, raw_adj
     raise ValueError(f"Unsupported model: {args.model}")
 
 
-def evaluate(model, loader, scaler, device: torch.device) -> Dict[str, float]:
+def _forward_model(model, args, x, x_cov, x_his, y_cov, **kwargs):
+    if (
+        args is not None
+        and getattr(args, "model", None) in {"dcd", "dha"}
+        and getattr(args, "fixed_gate", None) is not None
+    ):
+        kwargs["gate_override"] = args.fixed_gate
+    return model(x, x_cov, x_his, y_cov, **kwargs)
+
+
+def evaluate(model, loader, scaler, device: torch.device, args=None) -> Dict[str, float]:
     model.eval()
     preds, labels = [], []
     with torch.no_grad():
@@ -90,7 +134,7 @@ def evaluate(model, loader, scaler, device: torch.device) -> Dict[str, float]:
             x_batch = x_batch.to(device)
             y_batch = y_batch.to(device)
             x, x_cov, x_his, y, y_cov = prepare_x_y(x_batch, y_batch)
-            output = model(x, x_cov, x_his, y_cov)
+            output = _forward_model(model, args, x, x_cov, x_his, y_cov)
             preds.append(scaler.inverse_transform(output["prediction"]).cpu())
             labels.append(y.cpu())
     pred_tensor = torch.cat(preds, dim=0)
@@ -122,6 +166,7 @@ def _make_experiment_dir(root: Path, args) -> Path:
     run_prefixes = {
         "baseline": "metrla_stssdl",
         "dcd": "metrla_dcd",
+        "dha": "metrla_dha_dcd",
     }
     run_prefix = run_prefixes.get(args.model, f"metrla_{args.model}")
     run_name = args.run_name or datetime.now().strftime(f"{run_prefix}_%Y%m%d_%H%M%S")
@@ -176,15 +221,28 @@ def train(args) -> None:
         adj_path = root / adj_path
 
     if args.generate_data:
-        summary = generate_metrla_splits(
-            traffic_h5,
-            data_dir,
-            seq_len=args.seq_len,
-            horizon=args.horizon,
-            train_ratio=args.train_ratio,
-            val_ratio=args.val_ratio,
-            max_windows=args.max_windows,
-        )
+        if args.model == "dha":
+            split_generator = _load_dha_split_generator()
+            summary = split_generator(
+                traffic_h5,
+                data_dir,
+                anchor_mode=args.dha_anchor_mode,
+                seq_len=args.seq_len,
+                horizon=args.horizon,
+                train_ratio=args.train_ratio,
+                val_ratio=args.val_ratio,
+                max_windows=args.max_windows,
+            )
+        else:
+            summary = generate_metrla_splits(
+                traffic_h5,
+                data_dir,
+                seq_len=args.seq_len,
+                horizon=args.horizon,
+                train_ratio=args.train_ratio,
+                val_ratio=args.val_ratio,
+                max_windows=args.max_windows,
+            )
         _log(f"Generated splits: {summary}", log_file)
 
     set_seed(args.seed)
@@ -196,6 +254,10 @@ def train(args) -> None:
     supports_np, raw_adj_np = load_adj(adj_path, args.adj_type)
     model = build_model(args, device, raw_adj_np.shape[0], supports_np, raw_adj_np)
     _log(f"Trainable parameters: {count_parameters(model)}", log_file)
+    if args.model in {"dcd", "dha"}:
+        _log(f"{args.model.upper()} fusion mode: {args.dcd_fusion_mode}", log_file)
+    if args.fixed_gate is not None:
+        _log(f"Fixed DCD gate override: {args.fixed_gate:.4f}", log_file)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, eps=1e-3)
     scheduler = _build_scheduler(args, optimizer)
@@ -226,7 +288,16 @@ def train(args) -> None:
             y_batch = y_batch.to(device)
             x, x_cov, x_his, y, y_cov = prepare_x_y(x_batch, y_batch)
             labels = scaler.transform(y)
-            output = model(x, x_cov, x_his, y_cov, labels=labels, batches_seen=batches_seen)
+            output = _forward_model(
+                model,
+                args,
+                x,
+                x_cov,
+                x_his,
+                y_cov,
+                labels=labels,
+                batches_seen=batches_seen,
+            )
             losses = compute_training_loss(output, y, scaler, weights)
             optimizer.zero_grad()
             losses["total"].backward()
@@ -241,7 +312,7 @@ def train(args) -> None:
 
         train_time = time.perf_counter() - epoch_start
         val_start = time.perf_counter()
-        val_metrics = evaluate(model, loaders["val"], scaler, device)
+        val_metrics = evaluate(model, loaders["val"], scaler, device, args)
         val_time = time.perf_counter() - val_start
         lr = optimizer.param_groups[0]["lr"]
         improved = val_metrics["mae"] < best_val_mae
@@ -297,7 +368,7 @@ def train(args) -> None:
         )
 
     test_start = time.perf_counter()
-    test_metrics = evaluate(model, loaders["test"], scaler, device)
+    test_metrics = evaluate(model, loaders["test"], scaler, device, args)
     test_time = time.perf_counter() - test_start
     _log(f"{_format_metrics('test', test_metrics)} test_time={test_time:.2f}s", log_file)
 
@@ -325,7 +396,7 @@ def smoke_test(args) -> None:
 
     model = build_model(args, device, num_nodes, supports_np, adj)
     x0, x_cov, x_his, target, y_cov = prepare_x_y(x, y)
-    output = model(x0, x_cov, x_his, y_cov, labels=target, batches_seen=0)
+    output = _forward_model(model, args, x0, x_cov, x_his, y_cov, labels=target, batches_seen=0)
     losses = compute_training_loss(
         output,
         target,
@@ -351,10 +422,16 @@ def smoke_test(args) -> None:
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train ST-SSDL baseline or DCD-ST.")
+    parser = argparse.ArgumentParser(description="Train ST-SSDL baseline, DCD-ST, or DHA-DCD-ST.")
     parser.add_argument("--smoke-test", action="store_true")
-    parser.add_argument("--model", default="baseline", choices=["baseline", "dcd"])
+    parser.add_argument("--model", default="baseline", choices=["baseline", "dcd", "dha"])
     parser.add_argument("--generate-data", action="store_true")
+    parser.add_argument(
+        "--dha-anchor-mode",
+        default="mean",
+        choices=["mean", "median", "q25", "q75", "recent"],
+        help="DHA split-generation anchor mode used with --model dha --generate-data.",
+    )
     parser.add_argument("--traffic-h5", default="data/METRLA_data/METR-LA.h5")
     parser.add_argument("--processed-dir", default="data/METRLA")
     parser.add_argument("--adj-path", default="data/METRLA_data/adj_mx.pkl")
@@ -390,6 +467,24 @@ def parse_args():
     parser.add_argument("--lamb-d", type=float, default=1.0)
     parser.add_argument("--gate-sparse-weight", type=float, default=0.0)
     parser.add_argument("--gate-smooth-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--fixed-gate",
+        type=float,
+        default=None,
+        help="Override DCD-ST learned gate with a fixed value in [0, 1] during training and evaluation.",
+    )
+    parser.add_argument(
+        "--dcd-fusion-mode",
+        default="learned_gate",
+        choices=["learned_gate", "fixed_gate", "scalar_alpha", "no_gate", "no_delta"],
+        help="Fusion ablation used by DCD-ST.",
+    )
+    parser.add_argument(
+        "--fixed-gate-value",
+        type=float,
+        default=0.5,
+        help="Fixed gate value used when --dcd-fusion-mode fixed_gate is selected.",
+    )
     parser.add_argument("--decomp-kernel-size", type=int, default=3)
     parser.add_argument("--dev-embed-dim", type=int, default=32)
     parser.add_argument("--gate-hidden-dim", type=int, default=128)
@@ -416,7 +511,18 @@ def parse_args():
     parser.set_defaults(save_best=True)
     parser.add_argument("--save-best", dest="save_best", action="store_true")
     parser.add_argument("--no-save-best", dest="save_best", action="store_false")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.fixed_gate is not None:
+        if args.model not in {"dcd", "dha"}:
+            parser.error("--fixed-gate is only supported with --model dcd or --model dha.")
+        if not 0.0 <= args.fixed_gate <= 1.0:
+            parser.error("--fixed-gate must be in [0, 1].")
+        args.dcd_fusion_mode = "fixed_gate"
+    if not 0.0 <= args.fixed_gate_value <= 1.0:
+        parser.error("--fixed-gate-value must be in [0, 1].")
+    if args.dcd_fusion_mode != "learned_gate" and args.model not in {"dcd", "dha"}:
+        parser.error("--dcd-fusion-mode is only supported with --model dcd or --model dha.")
+    return args
 
 
 def main() -> None:

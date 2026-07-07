@@ -1,7 +1,8 @@
 """DCD-ST model implementation.
 
 DCD-ST keeps the ST-SSDL current/anchor encoder-decoder backbone and replaces
-learnable prototypes with continuous deviation decomposition and gated fusion.
+learnable prototypes with continuous deviation decomposition and lightweight
+fusion ablations.
 """
 
 from __future__ import annotations
@@ -126,8 +127,15 @@ class DCDST(nn.Module):
         gate_hidden_dim: int = 128,
         use_temporal_deviation_norm: bool = True,
         use_spatial_deviation_norm: bool = True,
+        fusion_mode: str = "learned_gate",
+        fixed_gate_value: float = 0.5,
     ):
         super().__init__()
+        valid_fusion_modes = {"learned_gate", "fixed_gate", "scalar_alpha", "no_gate", "no_delta"}
+        if fusion_mode not in valid_fusion_modes:
+            raise ValueError(f"Unsupported DCD fusion_mode: {fusion_mode}")
+        if not 0.0 <= fixed_gate_value <= 1.0:
+            raise ValueError("fixed_gate_value must be in [0, 1].")
         self.num_nodes = num_nodes
         self.input_dim = input_dim
         self.output_dim = output_dim
@@ -143,6 +151,8 @@ class DCDST(nn.Module):
         self.cl_decay_steps = cl_decay_steps
         self.use_curriculum_learning = use_curriculum_learning
         self.supports = list(supports)
+        self.fusion_mode = fusion_mode
+        self.fixed_gate_value = fixed_gate_value
 
         encoder_dim = input_embedding_dim + tod_embed_dim + adaptive_embedding_dim + node_embedding_dim
         decoder_input_dim = input_embedding_dim + tod_embed_dim + node_embedding_dim
@@ -188,6 +198,10 @@ class DCDST(nn.Module):
             tod_embed_dim=tod_embed_dim,
             gate_hidden_dim=gate_hidden_dim,
         )
+        if fusion_mode == "scalar_alpha":
+            self.scalar_alpha_logit = nn.Parameter(torch.zeros(()))
+        else:
+            self.scalar_alpha_logit = None
         self.hypernet = nn.Sequential(nn.Linear(rnn_units * 4, tod_embed_dim, bias=True))
         self.proj = nn.Sequential(nn.Linear(decoder_dim, output_dim, bias=True))
 
@@ -241,6 +255,38 @@ class DCDST(nn.Module):
         support = torch.einsum("bnc,bmc->bnm", node_embeddings, node_embeddings)
         return F.softmax(F.relu(support), dim=-1)
 
+    def _apply_fusion(
+        self,
+        h_cur: torch.Tensor,
+        learned_gate: torch.Tensor,
+        delta_h: torch.Tensor,
+        gate_override: float | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        fusion_mode = self.fusion_mode
+        fixed_gate_value = self.fixed_gate_value
+        if gate_override is not None:
+            fusion_mode = "fixed_gate"
+            fixed_gate_value = float(gate_override)
+
+        if fusion_mode == "learned_gate":
+            gate = learned_gate
+            return h_cur + gate * delta_h, gate, delta_h
+        if fusion_mode == "fixed_gate":
+            gate = torch.full_like(learned_gate, fixed_gate_value)
+            return h_cur + gate * delta_h, gate, delta_h
+        if fusion_mode == "scalar_alpha":
+            alpha = torch.sigmoid(self.scalar_alpha_logit).to(dtype=h_cur.dtype, device=h_cur.device)
+            gate = torch.ones_like(learned_gate) * alpha
+            return h_cur + gate * delta_h, gate, delta_h
+        if fusion_mode == "no_gate":
+            gate = torch.ones_like(learned_gate)
+            return h_cur + delta_h, gate, delta_h
+        if fusion_mode == "no_delta":
+            gate = torch.zeros_like(learned_gate)
+            zero_delta = torch.zeros_like(delta_h)
+            return h_cur, gate, zero_delta
+        raise ValueError(f"Unsupported DCD fusion_mode: {fusion_mode}")
+
     def forward(
         self,
         x: torch.Tensor,
@@ -250,20 +296,23 @@ class DCDST(nn.Module):
         labels: torch.Tensor | None = None,
         batches_seen: int | None = None,
         return_intermediates: bool = False,
+        gate_override: float | None = None,
     ) -> Dict[str, torch.Tensor]:
         h_cur, h_anchor = self._encode_pair(x, x_cov, x_his)
         deviation = self.deviation_extractor(x, x_his)
         node_identity, time_identity = self._identity_context(x_cov)
-        h_de, gate, delta_h, z_dev_emb = self.deviation_gate(
+        _, learned_gate, delta_h, z_dev_emb = self.deviation_gate(
             h_cur,
             h_anchor,
             deviation["z_dev"],
             node_identity,
             time_identity,
         )
+        h_de, gate, delta_h = self._apply_fusion(h_cur, learned_gate, delta_h, gate_override)
+        h_calibrated = h_de
         support = self._build_dynamic_support(h_de, h_anchor, gate)
 
-        ht_list = [h_de] * self.rnn_layers
+        ht_list = [h_calibrated] * self.rnn_layers
         go = torch.zeros((x.shape[0], self.num_nodes, self.output_dim), device=x.device, dtype=x.dtype)
         outputs = []
         for step in range(self.horizon):
@@ -297,8 +346,10 @@ class DCDST(nn.Module):
                 {
                     "h_c": h_cur,
                     "h_a": h_anchor,
-                    "h_de": h_de,
+                    "h_de": h_calibrated,
+                    "h_decoder_last": h_de,
                     "delta_h": delta_h,
+                    "g_learned": learned_gate,
                     "g_dev": gate,
                     "z_dev": deviation["z_dev"],
                     "z_dev_emb": z_dev_emb,

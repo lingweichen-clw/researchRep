@@ -1,0 +1,6 @@
+Experiment directory: D:\projects\researchProjects\TrafficRobustST\log\dha_debug_tensor_check
+Using device: cpu
+Trainable parameters: 508946
+DHA fusion mode: learned_gate
+epoch=1/1 batches=1 lr=0.001 train_loss=5.3466 train_mae=5.3466 contrastive=0.0000 deviation=0.0000 gate_sparse=0.4997 gate_smooth=0.0000 val_mae=4.4566 val_rmse=6.1150 val_mape=8.01% val_15min_mae=4.4850 val_15min_rmse=6.0587 val_15min_mape=8.00% val_30min_mae=4.3065 val_30min_rmse=5.7502 val_30min_mape=7.50% val_60min_mae=5.0012 val_60min_rmse=7.4162 val_60min_mape=10.12% best_val_mae=4.4566 improved=True train_time=0.42s val_time=0.10s
+test_mae=6.9306 test_rmse=11.4338 test_mape=20.64% test_15min_mae=5.6011 test_15min_rmse=8.6894 test_15min_mape=12.95% test_30min_mae=6.6159 test_30min_rmse=10.8553 test_30min_mape=18.49% test_60min_mae=9.0554 test_60min_rmse=14.8768 test_60min_mape=33.61% test_time=0.17s
