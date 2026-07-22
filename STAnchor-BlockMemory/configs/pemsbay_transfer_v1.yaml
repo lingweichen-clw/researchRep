@@ -1,0 +1,69 @@
+# Adjust these two paths to the local PEMS-BAY release before running transfer.
+data:
+  raw_path: ../data/PEMSBAY_data/PEMS-BAY.h5
+  adjacency_path: ../data/PEMSBAY_data/adj_mx_bay.pkl
+  context_length: 12
+  horizon: 12
+  frequency_minutes: 5
+  train_ratio: 0.7
+  val_ratio: 0.1
+  zero_is_missing: true
+  num_workers: 0
+
+model:
+  input_channels: 1
+  output_channels: 1
+  patch_size: 3
+  hidden_dim: 64
+  retrieval_dim: 32
+  num_heads: 4
+  encoder_layers: 2
+  ffn_multiplier: 2
+  dropout: 0.1
+  graph_bias: 1.0
+
+pretrain:
+  batch_size: 32
+  epochs: 50
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  time_mask_ratio: 0.25
+  time_mask_block_size: 3
+  space_mask_ratio: 0.25
+  time_task_probability: 0.5
+  retrieval_weight: 0.1
+  retrieval_temperature: 0.1
+  hard_negative_weight: 2.0
+  positive_quantile: 0.1
+  context_quantile: 0.2
+  negative_quantile: 0.8
+  patience: 10
+
+bank:
+  output_dir: artifacts/pemsbay_bank_from_metrla_v1
+  memory_fraction: 0.7
+  event_top_r: 32
+  node_top_k: 5
+  level_weight: 0.25
+  level_temperature: 1.0
+  search_temperature: 0.1
+  key_dtype: float16
+
+target:
+  batch_size: 32
+  epochs: 50
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  confidence_hidden_dim: 32
+  confidence_weight: 1.0
+  confidence_level_temperature: 1.0
+  help_margin: 0.0
+  help_temperature: 0.1
+  backbone_hidden_dim: 64
+  patience: 10
+
+runtime:
+  seed: 42
+  device: cuda:0
+  output_dir: artifacts
+  run_name: metrla_to_pemsbay_v1

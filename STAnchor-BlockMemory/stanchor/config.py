@@ -1,0 +1,206 @@
+"""Typed configuration for all STAnchor experiment stages."""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
+from pathlib import Path
+from typing import Any, Mapping, TypeVar
+
+import yaml
+
+from stanchor.modes import LEARNED_TOPK_CONFIDENCE, validate_downstream_mode
+
+
+@dataclass(frozen=True)
+class DataConfig:
+    raw_path: str
+    adjacency_path: str
+    context_length: int = 12
+    horizon: int = 12
+    frequency_minutes: int = 5
+    train_ratio: float = 0.7
+    val_ratio: float = 0.1
+    zero_is_missing: bool = True
+    num_workers: int = 0
+
+
+@dataclass(frozen=True)
+class ModelConfig:
+    input_channels: int = 1
+    output_channels: int = 1
+    patch_size: int = 3
+    hidden_dim: int = 64
+    retrieval_dim: int = 32
+    num_heads: int = 4
+    encoder_layers: int = 2
+    ffn_multiplier: int = 2
+    dropout: float = 0.1
+    graph_bias: float = 1.0
+
+
+@dataclass(frozen=True)
+class PretrainConfig:
+    batch_size: int = 32
+    epochs: int = 50
+    learning_rate: float = 1.0e-3
+    weight_decay: float = 1.0e-4
+    time_mask_ratio: float = 0.25
+    time_mask_block_size: int = 3
+    space_mask_ratio: float = 0.25
+    time_task_probability: float = 0.5
+    retrieval_weight: float = 0.1
+    retrieval_temperature: float = 0.1
+    hard_negative_weight: float = 2.0
+    positive_quantile: float = 0.1
+    context_quantile: float = 0.2
+    negative_quantile: float = 0.8
+    patience: int = 10
+
+
+@dataclass(frozen=True)
+class BankConfig:
+    output_dir: str = "artifacts/bank"
+    memory_fraction: float = 0.7
+    event_top_r: int = 32
+    node_top_k: int = 5
+    level_weight: float = 0.25
+    level_temperature: float = 1.0
+    search_temperature: float = 0.1
+    key_dtype: str = "float16"
+
+
+@dataclass(frozen=True)
+class TargetConfig:
+    downstream_mode: str = LEARNED_TOPK_CONFIDENCE
+    batch_size: int = 32
+    epochs: int = 50
+    learning_rate: float = 1.0e-3
+    weight_decay: float = 1.0e-4
+    confidence_hidden_dim: int = 32
+    confidence_weight: float = 1.0
+    confidence_level_temperature: float = 1.0
+    help_margin: float = 0.0
+    help_temperature: float = 0.1
+    backbone_hidden_dim: int = 64
+    patience: int = 10
+
+
+@dataclass(frozen=True)
+class RuntimeConfig:
+    seed: int = 42
+    device: str = "cuda:0"
+    output_dir: str = "artifacts"
+    run_name: str = "stanchor_v1"
+
+
+@dataclass(frozen=True)
+class ExperimentConfig:
+    data: DataConfig
+    model: ModelConfig = field(default_factory=ModelConfig)
+    pretrain: PretrainConfig = field(default_factory=PretrainConfig)
+    bank: BankConfig = field(default_factory=BankConfig)
+    target: TargetConfig = field(default_factory=TargetConfig)
+    runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
+
+    def validate(self) -> None:
+        validate_downstream_mode(self.target.downstream_mode)
+        if self.data.context_length <= 0 or self.data.horizon <= 0:
+            raise ValueError("context_length and horizon must be positive")
+        if self.data.context_length % self.model.patch_size != 0:
+            raise ValueError("context_length must be divisible by patch_size")
+        if not 0 < self.pretrain.time_mask_block_size <= self.data.context_length:
+            raise ValueError("time_mask_block_size must be in [1, context_length]")
+        if self.pretrain.time_mask_block_size % self.model.patch_size != 0:
+            raise ValueError("time_mask_block_size must be divisible by patch_size")
+        if self.model.hidden_dim % self.model.num_heads != 0:
+            raise ValueError("hidden_dim must be divisible by num_heads")
+        if self.model.input_channels != self.model.output_channels:
+            raise ValueError("v1 requires input_channels == output_channels")
+        if not 0.0 < self.data.train_ratio < 1.0:
+            raise ValueError("train_ratio must be in (0, 1)")
+        if not 0.0 <= self.data.val_ratio < 1.0:
+            raise ValueError("val_ratio must be in [0, 1)")
+        if self.data.train_ratio + self.data.val_ratio >= 1.0:
+            raise ValueError("train_ratio + val_ratio must be smaller than 1")
+        for name, value in (
+            ("time_mask_ratio", self.pretrain.time_mask_ratio),
+            ("space_mask_ratio", self.pretrain.space_mask_ratio),
+            ("time_task_probability", self.pretrain.time_task_probability),
+            ("memory_fraction", self.bank.memory_fraction),
+        ):
+            if not 0.0 < value < 1.0:
+                raise ValueError(f"{name} must be in (0, 1)")
+        if self.bank.event_top_r < self.bank.node_top_k:
+            raise ValueError("event_top_r must be greater than or equal to node_top_k")
+        if self.bank.key_dtype not in {"float16", "float32"}:
+            raise ValueError("key_dtype must be float16 or float32")
+        for name, value in (
+            ("retrieval_temperature", self.pretrain.retrieval_temperature),
+            ("hard_negative_weight", self.pretrain.hard_negative_weight),
+            ("level_temperature", self.bank.level_temperature),
+            ("search_temperature", self.bank.search_temperature),
+            ("confidence_level_temperature", self.target.confidence_level_temperature),
+            ("help_temperature", self.target.help_temperature),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be positive")
+        quantiles = (
+            self.pretrain.positive_quantile,
+            self.pretrain.context_quantile,
+            self.pretrain.negative_quantile,
+        )
+        if not all(0.0 < value < 1.0 for value in quantiles):
+            raise ValueError("retrieval quantiles must be in (0, 1)")
+        if self.pretrain.positive_quantile >= self.pretrain.negative_quantile:
+            raise ValueError("positive_quantile must be smaller than negative_quantile")
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+T = TypeVar("T")
+
+
+def _construct_dataclass(cls: type[T], values: Mapping[str, Any] | None) -> T:
+    values = dict(values or {})
+    allowed = {item.name for item in fields(cls)}
+    unknown = sorted(set(values) - allowed)
+    if unknown:
+        raise ValueError(f"Unknown {cls.__name__} fields: {unknown}")
+    return cls(**values)
+
+
+def load_config(path: str | Path) -> ExperimentConfig:
+    """Load a YAML experiment config and reject silent misspellings."""
+    path = Path(path)
+    with path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle) or {}
+    if not isinstance(raw, Mapping):
+        raise ValueError("Config root must be a mapping")
+    allowed_sections = {item.name for item in fields(ExperimentConfig)}
+    unknown_sections = sorted(set(raw) - allowed_sections)
+    if unknown_sections:
+        raise ValueError(f"Unknown config sections: {unknown_sections}")
+    if "data" not in raw:
+        raise ValueError("Config must contain a data section")
+    config = ExperimentConfig(
+        data=_construct_dataclass(DataConfig, raw.get("data")),
+        model=_construct_dataclass(ModelConfig, raw.get("model")),
+        pretrain=_construct_dataclass(PretrainConfig, raw.get("pretrain")),
+        bank=_construct_dataclass(BankConfig, raw.get("bank")),
+        target=_construct_dataclass(TargetConfig, raw.get("target")),
+        runtime=_construct_dataclass(RuntimeConfig, raw.get("runtime")),
+    )
+    if not is_dataclass(config):
+        raise TypeError("Failed to construct ExperimentConfig")
+    config.validate()
+    return config
+
+
+def project_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def resolve_project_path(path: str | Path) -> Path:
+    candidate = Path(path)
+    return candidate if candidate.is_absolute() else (project_root() / candidate).resolve()

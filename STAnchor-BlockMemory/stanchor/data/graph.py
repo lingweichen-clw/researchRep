@@ -1,0 +1,95 @@
+"""Graph loading and sparse edge representation."""
+
+from __future__ import annotations
+
+import pickle
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+import torch
+
+from stanchor.utils import array_sha256
+
+
+@dataclass(frozen=True)
+class GraphData:
+    edge_index: torch.Tensor  # [2, E], rows are target and source
+    edge_weight: torch.Tensor  # [E]
+    num_nodes: int
+    fingerprint: str
+
+    def validate(self) -> None:
+        if self.edge_index.ndim != 2 or self.edge_index.shape[0] != 2:
+            raise ValueError("edge_index must be [2, E]")
+        if self.edge_weight.ndim != 1 or self.edge_weight.shape[0] != self.edge_index.shape[1]:
+            raise ValueError("edge_weight must align with edge_index")
+        if self.edge_index.numel() == 0:
+            raise ValueError("graph must contain at least one edge")
+        if int(self.edge_index.min()) < 0 or int(self.edge_index.max()) >= self.num_nodes:
+            raise ValueError("edge_index contains out-of-range node ids")
+        target, source = self.edge_index
+        self_loop_nodes = torch.unique(target[target == source])
+        if self_loop_nodes.numel() != self.num_nodes:
+            raise ValueError("graph must contain one or more self-loops for every node")
+        if not torch.isfinite(self.edge_weight).all() or bool((self.edge_weight <= 0).any()):
+            raise ValueError("edge weights must be finite and positive")
+
+    def to(self, device: torch.device | str) -> "GraphData":
+        return GraphData(
+            edge_index=self.edge_index.to(device),
+            edge_weight=self.edge_weight.to(device),
+            num_nodes=self.num_nodes,
+            fingerprint=self.fingerprint,
+        )
+
+    def dense_neighbors(self, include_self: bool = False) -> torch.Tensor:
+        neighbors = torch.zeros((self.num_nodes, self.num_nodes), dtype=torch.bool)
+        target, source = self.edge_index.cpu()
+        neighbors[target, source] = True
+        if not include_self:
+            neighbors.fill_diagonal_(False)
+        return neighbors
+
+
+def _load_pickle(path: Path):
+    with path.open("rb") as handle:
+        try:
+            return pickle.load(handle)
+        except UnicodeDecodeError:
+            handle.seek(0)
+            return pickle.load(handle, encoding="latin1")
+
+
+def load_dense_adjacency(path: str | Path) -> np.ndarray:
+    value = _load_pickle(Path(path))
+    if isinstance(value, (tuple, list)):
+        value = value[-1]
+    adjacency = np.asarray(value, dtype=np.float32)
+    if adjacency.ndim != 2 or adjacency.shape[0] != adjacency.shape[1]:
+        raise ValueError("adjacency must be a square matrix")
+    if not np.isfinite(adjacency).all() or (adjacency < 0).any():
+        raise ValueError("adjacency must be finite and non-negative")
+    return adjacency
+
+
+def graph_from_dense(adjacency: np.ndarray, add_self_loops: bool = True) -> GraphData:
+    adjacency = np.asarray(adjacency, dtype=np.float32).copy()
+    if add_self_loops:
+        diagonal = np.diag_indices_from(adjacency)
+        adjacency[diagonal] = np.maximum(adjacency[diagonal], 1.0)
+    target, source = np.nonzero(adjacency > 0)
+    weights = adjacency[target, source]
+    graph = GraphData(
+        edge_index=torch.from_numpy(np.stack((target, source))).long(),
+        edge_weight=torch.from_numpy(weights).float(),
+        num_nodes=adjacency.shape[0],
+        fingerprint=array_sha256(adjacency),
+    )
+    graph.validate()
+    return graph
+
+
+def load_graph(path: str | Path) -> GraphData:
+    return graph_from_dense(load_dense_adjacency(path), add_self_loops=True)
+

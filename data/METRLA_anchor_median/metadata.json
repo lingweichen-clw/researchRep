@@ -1,0 +1,59 @@
+{
+  "anchor_mode": "median",
+  "traffic_h5": "data\\METRLA_data\\METR-LA.h5",
+  "seq_len": 12,
+  "horizon": 12,
+  "train_ratio": 0.7,
+  "val_ratio": 0.1,
+  "slots_per_day": 288,
+  "max_windows": null,
+  "splits": {
+    "train": {
+      "x": [
+        23974,
+        12,
+        207,
+        3
+      ],
+      "y": [
+        23974,
+        12,
+        207,
+        3
+      ]
+    },
+    "val": {
+      "x": [
+        3425,
+        12,
+        207,
+        3
+      ],
+      "y": [
+        3425,
+        12,
+        207,
+        3
+      ]
+    },
+    "test": {
+      "x": [
+        6850,
+        12,
+        207,
+        3
+      ],
+      "y": [
+        6850,
+        12,
+        207,
+        3
+      ]
+    }
+  },
+  "channel_order": [
+    "value",
+    "time_in_day",
+    "history_anchor_median"
+  ]
+}
