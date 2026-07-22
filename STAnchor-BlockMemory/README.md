@@ -25,10 +25,23 @@ v1 未实现可选 target adapter、FAISS 近似索引、多源联合预训练�
 ```powershell
 conda activate research
 cd D:\projects\researchProjects\TrafficRobustST\STAnchor-BlockMemory
+python -m pip install `
+  "numpy>=1.24" `
+  "pandas>=1.5" `
+  "PyYAML>=6.0" `
+  "scipy>=1.10" `
+  "tables>=3.8"
 python -m pip install -e . --no-deps
 ```
 
-核心依赖已经写入 `pyproject.toml`：`torch`、`numpy`、`pandas`、`scipy`、`tables`、`PyYAML`。单元测试使用 Python 内置 `unittest`，不要求安装 pytest。
+核心依赖已经写入 `pyproject.toml`：`torch`、`numpy`、`pandas`、`scipy`、`tables`、`PyYAML`。这里显式安装非 PyTorch 依赖后再使用 `--no-deps`，是为了避免 pip 覆盖实验机已经配置好的 CUDA PyTorch。单元测试使用 Python 内置 `unittest`，不要求安装 pytest。
+
+依赖与 CUDA 验证：
+
+```powershell
+python -c "import yaml, numpy, pandas, scipy, tables, torch; print('PyYAML', yaml.__version__); print('PyTorch', torch.__version__); print('CUDA available', torch.cuda.is_available()); print('CUDA version', torch.version.cuda)"
+python -m pip check
+```
 
 运行测试：
 
