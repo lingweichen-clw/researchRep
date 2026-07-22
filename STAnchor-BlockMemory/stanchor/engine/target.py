@@ -109,10 +109,10 @@ def retrieve_for_downstream_mode(
         return None, None
     if mode == LEARNED_TOPK_CONFIDENCE:
         encoding = pretrained.encode_clean(
-            x,
-            observed_x,
-            batch["weekday"].to(device),
-            batch["slot"].to(device),
+            batch["retrieval_x"].to(device),
+            batch["retrieval_observed"].to(device),
+            batch["retrieval_weekday"].to(device),
+            batch["retrieval_slot"].to(device),
             graph,
         )
         _, candidates, aggregation = retriever.retrieve(
@@ -149,10 +149,10 @@ def retrieve_for_downstream_mode(
         )
     if mode == LEARNED_TOPK_HORIZON:
         encoding = pretrained.encode_clean(
-            x,
-            observed_x,
-            batch["weekday"].to(device),
-            batch["slot"].to(device),
+            batch["retrieval_x"].to(device),
+            batch["retrieval_observed"].to(device),
+            batch["retrieval_weekday"].to(device),
+            batch["retrieval_slot"].to(device),
             graph,
         )
         candidates = retriever.rerank_nodes(
@@ -172,6 +172,8 @@ def _validate_bank(
 ) -> None:
     if bank.manifest.encoder_fingerprint != pretrained.retrieval_fingerprint():
         raise ValueError("Bank keys were built with a different retrieval encoder")
+    if bank.manifest.context_length != pretrained.context_length:
+        raise ValueError("Bank retrieval context length does not match the pretrained encoder")
     if bank.manifest.graph_fingerprint != graph.fingerprint:
         raise ValueError("Bank graph fingerprint does not match target graph")
     bank_mean = np.asarray(bank.manifest.scaler["mean"], dtype=np.float32)

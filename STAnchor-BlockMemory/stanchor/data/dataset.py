@@ -46,6 +46,7 @@ class TrafficWindowDataset(Dataset[dict[str, torch.Tensor]]):
         split_end: int,
         context_length: int,
         horizon: int,
+        retrieval_context_length: int | None = None,
     ) -> None:
         if not 0 <= split_start < split_end <= series.num_steps:
             raise ValueError("invalid split bounds")
@@ -54,15 +55,22 @@ class TrafficWindowDataset(Dataset[dict[str, torch.Tensor]]):
         self.series = series
         self.scaler = scaler
         self.context_length = int(context_length)
+        self.retrieval_context_length = int(
+            context_length if retrieval_context_length is None else retrieval_context_length
+        )
         self.horizon = int(horizon)
-        first_end = split_start + context_length - 1
+        if self.retrieval_context_length < self.context_length:
+            raise ValueError("retrieval_context_length must be at least context_length")
+        if split_end - split_start < self.retrieval_context_length + horizon:
+            raise ValueError("split is too short for one retrieval context/future event")
+        first_end = split_start + self.retrieval_context_length - 1
         last_end = split_end - horizon - 1
         candidates = np.arange(first_end, last_end + 1, dtype=np.int64)
         # Events with no context observation or no future supervision cannot
         # contribute to either pretraining objective or forecasting metrics.
         observed_per_step = series.observed.reshape(series.num_steps, -1).sum(axis=1)
         prefix = np.concatenate(([0], np.cumsum(observed_per_step, dtype=np.int64)))
-        context_start = candidates - context_length + 1
+        context_start = candidates - self.retrieval_context_length + 1
         context_count = prefix[candidates + 1] - prefix[context_start]
         future_count = prefix[candidates + horizon + 1] - prefix[candidates + 1]
         supervised = (context_count > 0) & (future_count > 0)
@@ -76,25 +84,43 @@ class TrafficWindowDataset(Dataset[dict[str, torch.Tensor]]):
 
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
         context_end = int(self.context_end_indices[index])
-        context_start = context_end - self.context_length + 1
+        context_start = context_end - self.retrieval_context_length + 1
+        forecast_context_start = context_end - self.context_length + 1
         future_start = context_end + 1
         future_end = context_end + self.horizon
-        x_raw = self.series.values[context_start : context_end + 1]
+        retrieval_raw = self.series.values[context_start : context_end + 1]
         y_raw = self.series.values[future_start : future_end + 1]
-        x_observed = self.series.observed[context_start : context_end + 1]
+        retrieval_observed = self.series.observed[context_start : context_end + 1]
         y_observed = self.series.observed[future_start : future_end + 1]
-        x_model = self.scaler.transform(x_raw, x_observed)
+        retrieval_model = self.scaler.transform(retrieval_raw, retrieval_observed)
+        x_model = retrieval_model[-self.context_length :]
+        x_observed = retrieval_observed[-self.context_length :]
         y_model = self.scaler.transform(y_raw, y_observed)
         return {
             "x": torch.from_numpy(x_model),
             "y": torch.from_numpy(y_model),
             "x_observed": torch.from_numpy(x_observed),
             "y_observed": torch.from_numpy(y_observed),
-            "weekday": torch.from_numpy(self.series.weekday[context_start : context_end + 1]).long(),
-            "slot": torch.from_numpy(self.series.slot[context_start : context_end + 1]).long(),
+            "weekday": torch.from_numpy(
+                self.series.weekday[forecast_context_start : context_end + 1]
+            ).long(),
+            "slot": torch.from_numpy(
+                self.series.slot[forecast_context_start : context_end + 1]
+            ).long(),
+            "retrieval_x": torch.from_numpy(retrieval_model),
+            "retrieval_observed": torch.from_numpy(retrieval_observed),
+            "retrieval_weekday": torch.from_numpy(
+                self.series.weekday[context_start : context_end + 1]
+            ).long(),
+            "retrieval_slot": torch.from_numpy(
+                self.series.slot[context_start : context_end + 1]
+            ).long(),
             "query_weekday": torch.tensor(self.series.weekday[context_end], dtype=torch.long),
             "query_slot": torch.tensor(self.series.slot[context_end], dtype=torch.long),
             "context_start": torch.tensor(context_start, dtype=torch.long),
+            "forecast_context_start": torch.tensor(
+                forecast_context_start, dtype=torch.long
+            ),
             "context_end": torch.tensor(context_end, dtype=torch.long),
             "future_end": torch.tensor(future_end, dtype=torch.long),
             "timestamp_ns": torch.tensor(self.series.timestamps_ns[context_end], dtype=torch.long),
@@ -149,6 +175,7 @@ def build_hdf_datasets(
     val_ratio: float,
     frequency_minutes: int = 5,
     zero_is_missing: bool = True,
+    retrieval_context_length: int | None = None,
 ) -> TrafficDataBundle:
     series = load_hdf_series(path, frequency_minutes, zero_is_missing)
     train_end = int(series.num_steps * train_ratio)
@@ -160,9 +187,33 @@ def build_hdf_datasets(
     return TrafficDataBundle(
         series=series,
         scaler=scaler,
-        train=TrafficWindowDataset(series, scaler, 0, train_end, context_length, horizon),
-        val=TrafficWindowDataset(series, scaler, train_end, val_end, context_length, horizon),
-        test=TrafficWindowDataset(series, scaler, val_end, series.num_steps, context_length, horizon),
+        train=TrafficWindowDataset(
+            series,
+            scaler,
+            0,
+            train_end,
+            context_length,
+            horizon,
+            retrieval_context_length,
+        ),
+        val=TrafficWindowDataset(
+            series,
+            scaler,
+            train_end,
+            val_end,
+            context_length,
+            horizon,
+            retrieval_context_length,
+        ),
+        test=TrafficWindowDataset(
+            series,
+            scaler,
+            val_end,
+            series.num_steps,
+            context_length,
+            horizon,
+            retrieval_context_length,
+        ),
         train_end=train_end,
         val_end=val_end,
     )

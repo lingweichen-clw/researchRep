@@ -22,6 +22,7 @@ def build_data_and_graph(config: ExperimentConfig) -> tuple[TrafficDataBundle, G
         val_ratio=config.data.val_ratio,
         frequency_minutes=config.data.frequency_minutes,
         zero_is_missing=config.data.zero_is_missing,
+        retrieval_context_length=config.data.retrieval_context_length,
     )
     graph = load_graph(resolve_project_path(config.data.adjacency_path))
     if graph.num_nodes != data.series.num_nodes:
@@ -35,7 +36,7 @@ def build_pretrain_model(config: ExperimentConfig, slots_per_day: int) -> STAnch
     return STAnchorPretrainModel(
         model_config=config.model,
         pretrain_config=config.pretrain,
-        context_length=config.data.context_length,
+        context_length=config.data.encoder_context_length,
         slots_per_day=slots_per_day,
     )
 
@@ -60,4 +61,3 @@ def load_pretrained_model(
     model = build_pretrain_model(config, slots_per_day).to(device)
     model.load_state_dict(checkpoint["model_state_dict"], strict=True)
     return model, checkpoint
-

@@ -94,6 +94,14 @@ class STAnchorPretrainModel(nn.Module):
         weekday: torch.Tensor,
         slot: torch.Tensor,
     ) -> tuple[torch.Tensor, WindowStatistics]:
+        if x.ndim != 4 or x.shape[1] != self.context_length:
+            raise ValueError(
+                f"x must match configured context length {self.context_length}: [B, T, N, C]"
+            )
+        if observed.shape != x.shape:
+            raise ValueError("observed must have the same shape as x")
+        if weekday.shape != x.shape[:2] or slot.shape != x.shape[:2]:
+            raise ValueError("weekday and slot must be [B, T] and align with x")
         statistics = normalize_window(x, observed)
         tokens = self.embedding(
             statistics.normalized,

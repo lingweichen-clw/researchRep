@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset, Subset
 
 from stanchor.config import ExperimentConfig, resolve_project_path
 from stanchor.data.graph import GraphData
@@ -37,6 +37,36 @@ class PretrainEpochResult:
     batches: int
 
 
+def build_validation_loader(
+    dataset: Dataset,
+    batch_size: int,
+    num_workers: int,
+    seed: int,
+) -> DataLoader:
+    """Keep legacy order when viable, otherwise use one reproducible permutation."""
+    retrieval_context = int(getattr(dataset, "retrieval_context_length", 0))
+    horizon = int(getattr(dataset, "horizon", 0))
+    if retrieval_context <= 0 or horizon <= 0:
+        raise ValueError("validation dataset must expose retrieval_context_length and horizon")
+    if batch_size > retrieval_context + horizon:
+        return DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            drop_last=False,
+        )
+    generator = torch.Generator().manual_seed(seed)
+    order = torch.randperm(len(dataset), generator=generator).tolist()
+    return DataLoader(
+        Subset(dataset, order),
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        drop_last=False,
+    )
+
+
 def run_pretrain_epoch(
     model: STAnchorPretrainModel,
     loader: DataLoader,
@@ -62,10 +92,10 @@ def run_pretrain_epoch(
             # alternates deterministically so both proxy tasks remain comparable.
             mask_task = None if training else ("time" if batch_index % 2 == 0 else "space")
             output = model.forward_pretrain(
-                x=batch["x"].to(device),
-                observed=batch["x_observed"].to(device),
-                weekday=batch["weekday"].to(device),
-                slot=batch["slot"].to(device),
+                x=batch["retrieval_x"].to(device),
+                observed=batch["retrieval_observed"].to(device),
+                weekday=batch["retrieval_weekday"].to(device),
+                slot=batch["retrieval_slot"].to(device),
                 graph=graph,
                 neighbors=neighbors,
                 mask_task=mask_task,
@@ -73,7 +103,7 @@ def run_pretrain_epoch(
             losses = compute_pretraining_loss(
                 output=output,
                 future_model=batch["y"].to(device),
-                observed_context=batch["x_observed"].to(device),
+                observed_context=batch["retrieval_observed"].to(device),
                 observed_future=batch["y_observed"].to(device),
                 context_start=batch["context_start"].to(device),
                 future_end=batch["future_end"].to(device),
@@ -132,12 +162,11 @@ def train_pretraining(
         num_workers=config.data.num_workers,
         drop_last=False,
     )
-    val_loader = DataLoader(
+    val_loader = build_validation_loader(
         data.val,
-        batch_size=config.pretrain.batch_size,
-        shuffle=False,
-        num_workers=config.data.num_workers,
-        drop_last=False,
+        config.pretrain.batch_size,
+        config.data.num_workers,
+        config.runtime.seed,
     )
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -182,8 +211,11 @@ def train_pretraining(
         data.test.dropped_unobserved_events,
     )
     logger.info(
-        "Tensor contract | x=[B,%d,%d,%d] | patches=%d | hidden=%d | "
-        "retrieval_dim=%d | y=[B,%d,%d,%d] | graph_edges=%d",
+        "Tensor contract | retrieval_x=[B,%d,%d,%d] | forecast_x=[B,%d,%d,%d] | "
+        "patches=%d | hidden=%d | retrieval_dim=%d | y=[B,%d,%d,%d] | graph_edges=%d",
+        config.data.encoder_context_length,
+        data.series.num_nodes,
+        config.model.input_channels,
         config.data.context_length,
         data.series.num_nodes,
         config.model.input_channels,

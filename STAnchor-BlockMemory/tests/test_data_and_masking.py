@@ -5,6 +5,7 @@ import unittest
 import numpy as np
 import torch
 
+from stanchor.config import DataConfig, ExperimentConfig, ModelConfig, PretrainConfig
 from stanchor.data.dataset import TrafficSeries, TrafficWindowDataset
 from stanchor.data.masking import StructuredMaskSampler
 from stanchor.data.normalization import NodeStandardScaler, normalize_window
@@ -40,6 +41,65 @@ class DataAndMaskingTest(unittest.TestCase):
         self.assertEqual(tuple(item["y"].shape), (6, nodes, 1))
         self.assertEqual(int(item["context_start"]), 0)
         self.assertEqual(int(item["future_end"]), 17)
+
+    def test_window_dataset_separates_retrieval_and_forecast_contexts(self) -> None:
+        length, nodes = 60, 3
+        values = np.arange(length * nodes, dtype=np.float32).reshape(length, nodes, 1) + 1
+        observed = np.ones_like(values, dtype=bool)
+        series = TrafficSeries(
+            values=values,
+            observed=observed,
+            timestamps_ns=np.arange(length, dtype=np.int64),
+            weekday=np.arange(length, dtype=np.int64) % 7,
+            slot=np.arange(length, dtype=np.int64) % 288,
+            slots_per_day=288,
+        )
+        scaler = NodeStandardScaler.fit(values[:48], observed[:48])
+        dataset = TrafficWindowDataset(
+            series,
+            scaler,
+            split_start=0,
+            split_end=48,
+            context_length=12,
+            horizon=6,
+            retrieval_context_length=24,
+        )
+
+        item = dataset[0]
+
+        self.assertEqual(tuple(item["x"].shape), (12, nodes, 1))
+        self.assertEqual(tuple(item["retrieval_x"].shape), (24, nodes, 1))
+        self.assertEqual(tuple(item["retrieval_observed"].shape), (24, nodes, 1))
+        self.assertEqual(tuple(item["retrieval_weekday"].shape), (24,))
+        self.assertEqual(tuple(item["retrieval_slot"].shape), (24,))
+        self.assertTrue(torch.equal(item["x"], item["retrieval_x"][-12:]))
+        self.assertEqual(int(item["context_start"]), 0)
+        self.assertEqual(int(item["forecast_context_start"]), 12)
+        self.assertEqual(int(item["context_end"]), 23)
+        self.assertEqual(int(item["future_end"]), 29)
+
+    def test_config_uses_retrieval_context_for_encoder_validation(self) -> None:
+        config = ExperimentConfig(
+            data=DataConfig(
+                raw_path="data.h5",
+                adjacency_path="graph.pkl",
+                context_length=12,
+                retrieval_context_length=288,
+                horizon=12,
+            ),
+            model=ModelConfig(
+                patch_size=12,
+                hidden_dim=96,
+                retrieval_dim=48,
+                num_heads=4,
+                encoder_layers=3,
+            ),
+            pretrain=PretrainConfig(time_mask_block_size=36),
+        )
+
+        config.validate()
+
+        self.assertEqual(config.data.encoder_context_length, 288)
 
     def test_mask_aware_window_statistics(self) -> None:
         values = torch.tensor([[[[1.0]], [[2.0]], [[100.0]], [[4.0]]]])

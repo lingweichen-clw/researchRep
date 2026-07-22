@@ -16,12 +16,21 @@ class DataConfig:
     raw_path: str
     adjacency_path: str
     context_length: int = 12
+    retrieval_context_length: int | None = None
     horizon: int = 12
     frequency_minutes: int = 5
     train_ratio: float = 0.7
     val_ratio: float = 0.1
     zero_is_missing: bool = True
     num_workers: int = 0
+
+    @property
+    def encoder_context_length(self) -> int:
+        return (
+            self.context_length
+            if self.retrieval_context_length is None
+            else self.retrieval_context_length
+        )
 
 
 @dataclass(frozen=True)
@@ -106,10 +115,12 @@ class ExperimentConfig:
         validate_downstream_mode(self.target.downstream_mode)
         if self.data.context_length <= 0 or self.data.horizon <= 0:
             raise ValueError("context_length and horizon must be positive")
-        if self.data.context_length % self.model.patch_size != 0:
-            raise ValueError("context_length must be divisible by patch_size")
-        if not 0 < self.pretrain.time_mask_block_size <= self.data.context_length:
-            raise ValueError("time_mask_block_size must be in [1, context_length]")
+        if self.data.encoder_context_length < self.data.context_length:
+            raise ValueError("retrieval_context_length must be at least context_length")
+        if self.data.encoder_context_length % self.model.patch_size != 0:
+            raise ValueError("retrieval context length must be divisible by patch_size")
+        if not 0 < self.pretrain.time_mask_block_size <= self.data.encoder_context_length:
+            raise ValueError("time_mask_block_size must be in [1, retrieval context length]")
         if self.pretrain.time_mask_block_size % self.model.patch_size != 0:
             raise ValueError("time_mask_block_size must be divisible by patch_size")
         if self.model.hidden_dim % self.model.num_heads != 0:

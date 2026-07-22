@@ -195,10 +195,10 @@ def diagnose_retrieval_value(
             target = batch["y"].to(device)
             target_observed = batch["y_observed"].to(device).bool()
             encoding = model.encode_clean(
-                x,
-                x_observed,
-                batch["weekday"].to(device),
-                batch["slot"].to(device),
+                batch["retrieval_x"].to(device),
+                batch["retrieval_observed"].to(device),
+                batch["retrieval_weekday"].to(device),
+                batch["retrieval_slot"].to(device),
                 graph,
             )
             events = retriever.search_events(

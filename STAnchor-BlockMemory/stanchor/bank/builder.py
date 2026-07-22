@@ -59,13 +59,13 @@ def build_memory_bank(
     writer = BankWriter(output_dir, manifest)
     model.eval()
     for batch in loader:
-        x = batch["x"].to(device)
-        observed = batch["x_observed"].to(device)
+        x = batch["retrieval_x"].to(device)
+        observed = batch["retrieval_observed"].to(device)
         encoding = model.encode_clean(
             x=x,
             observed=observed,
-            weekday=batch["weekday"].to(device),
-            slot=batch["slot"].to(device),
+            weekday=batch["retrieval_weekday"].to(device),
+            slot=batch["retrieval_slot"].to(device),
             graph=graph_device,
         )
         writer.write(
