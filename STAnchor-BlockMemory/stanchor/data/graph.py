@@ -52,13 +52,27 @@ class GraphData:
         return neighbors
 
 
+def _loads_pickle(payload: bytes):
+    try:
+        return pickle.loads(payload)
+    except UnicodeDecodeError:
+        return pickle.loads(payload, encoding="latin1")
+
+
 def _load_pickle(path: Path):
-    with path.open("rb") as handle:
+    payload = path.read_bytes()
+    try:
+        return _loads_pickle(payload)
+    except (pickle.UnpicklingError, ModuleNotFoundError) as original_error:
+        # Protocol-0 pickle is line-oriented and can be corrupted when a
+        # transfer tool rewrites LF as CRLF. Retry only that reversible case.
+        normalized = payload.replace(b"\r\n", b"\n")
+        if normalized == payload:
+            raise
         try:
-            return pickle.load(handle)
-        except UnicodeDecodeError:
-            handle.seek(0)
-            return pickle.load(handle, encoding="latin1")
+            return _loads_pickle(normalized)
+        except (pickle.UnpicklingError, ModuleNotFoundError, UnicodeDecodeError) as normalized_error:
+            raise original_error from normalized_error
 
 
 def load_dense_adjacency(path: str | Path) -> np.ndarray:
@@ -92,4 +106,3 @@ def graph_from_dense(adjacency: np.ndarray, add_self_loops: bool = True) -> Grap
 
 def load_graph(path: str | Path) -> GraphData:
     return graph_from_dense(load_dense_adjacency(path), add_self_loops=True)
-
