@@ -38,6 +38,7 @@ pretrain:
   context_quantile: 0.2
   negative_quantile: 0.8
   patience: 10
+  progress_interval: 10
 
 bank:
   output_dir: artifacts/metrla_bank_e2_day96_v1

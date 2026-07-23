@@ -296,6 +296,7 @@ class PretrainingFlowTest(unittest.TestCase):
             slots_per_day=288,
         )
 
+        progress: list[tuple[int, int, float, float]] = []
         result = run_pretrain_epoch(
             model,
             DataLoader(dataset, batch_size=6, shuffle=False),
@@ -305,10 +306,18 @@ class PretrainingFlowTest(unittest.TestCase):
             torch.device("cpu"),
             optimizer=None,
             max_batches=1,
+            progress_interval=1,
+            progress_callback=lambda completed, total, elapsed, eta: progress.append(
+                (completed, total, elapsed, eta)
+            ),
         )
 
         self.assertEqual(result.batches, 1)
         self.assertGreater(result.reconstruction_positions, 0)
+        self.assertEqual(len(progress), 1)
+        self.assertEqual(progress[0][:2], (1, 1))
+        self.assertGreaterEqual(progress[0][2], 0.0)
+        self.assertGreaterEqual(progress[0][3], 0.0)
 
     def test_validation_loader_is_reproducible_and_contains_non_overlapping_events(self) -> None:
         length, nodes = 500, self.nodes

@@ -64,6 +64,7 @@ class PretrainConfig:
     context_quantile: float = 0.2
     negative_quantile: float = 0.8
     patience: int = 10
+    progress_interval: int = 10
 
 
 @dataclass(frozen=True)
@@ -164,6 +165,8 @@ class ExperimentConfig:
             raise ValueError("retrieval quantiles must be in (0, 1)")
         if self.pretrain.positive_quantile >= self.pretrain.negative_quantile:
             raise ValueError("positive_quantile must be smaller than negative_quantile")
+        if self.pretrain.progress_interval <= 0:
+            raise ValueError("progress_interval must be positive")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
