@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import torch
 from torch.utils.data import DataLoader, Dataset, Subset
@@ -22,6 +24,9 @@ from stanchor.utils import (
 )
 
 from .common import build_data_and_graph, build_pretrain_model, save_checkpoint
+
+
+ProgressCallback = Callable[[int, int, float, float], None]
 
 
 @dataclass(frozen=True)
@@ -76,12 +81,31 @@ def run_pretrain_epoch(
     device: torch.device,
     optimizer: torch.optim.Optimizer | None,
     max_batches: int | None = None,
+    progress_interval: int = 10,
+    progress_callback: ProgressCallback | None = None,
 ) -> PretrainEpochResult:
+    if progress_interval <= 0:
+        raise ValueError("progress_interval must be positive")
     training = optimizer is not None
     model.train(training)
     totals = {"total": 0.0, "reconstruction": 0.0, "retrieval": 0.0}
     anchors = positives = hard_negatives = reconstruction_positions = batches = skipped_batches = 0
     context = torch.enable_grad() if training else torch.no_grad()
+    planned_batches = len(loader)
+    if max_batches is not None:
+        planned_batches = min(planned_batches, max_batches)
+    started = time.perf_counter()
+
+    def emit_progress(completed: int) -> None:
+        if progress_callback is None:
+            return
+        if completed != 1 and completed % progress_interval != 0 and completed != planned_batches:
+            return
+        elapsed = time.perf_counter() - started
+        seconds_per_batch = elapsed / max(completed, 1)
+        eta = seconds_per_batch * max(planned_batches - completed, 0)
+        progress_callback(completed, planned_batches, elapsed, eta)
+
     with context:
         for batch_index, batch in enumerate(loader):
             if max_batches is not None and batch_index >= max_batches:
@@ -116,6 +140,7 @@ def run_pretrain_epoch(
             )
             if losses.reconstruction_positions == 0 and losses.valid_retrieval_anchors == 0:
                 skipped_batches += 1
+                emit_progress(batch_index + 1)
                 continue
             require_finite(losses.total, "pretraining loss")
             if training:
@@ -130,6 +155,7 @@ def run_pretrain_epoch(
             hard_negatives += losses.hard_negative_pairs
             reconstruction_positions += losses.reconstruction_positions
             batches += 1
+            emit_progress(batch_index + 1)
     if batches == 0:
         raise ValueError("pretraining epoch processed no batches")
     return PretrainEpochResult(
@@ -254,11 +280,52 @@ def train_pretraining(
     best_value = float("inf")
     stale_epochs = 0
     for epoch in range(1, config.pretrain.epochs + 1):
+        logger.info(
+            "Epoch %03d/%03d started | train_batches=%d | val_batches=%d",
+            epoch,
+            config.pretrain.epochs,
+            len(train_loader),
+            len(val_loader),
+        )
+        train_progress = lambda completed, total, elapsed, eta: logger.info(
+            "Epoch %03d | train batch=%d/%d | elapsed=%.1f min | eta=%.1f min",
+            epoch,
+            completed,
+            total,
+            elapsed / 60.0,
+            eta / 60.0,
+        )
         train_result = run_pretrain_epoch(
-            model, train_loader, graph, neighbors, config, device, optimizer, max_batches
+            model,
+            train_loader,
+            graph,
+            neighbors,
+            config,
+            device,
+            optimizer,
+            max_batches,
+            progress_interval=config.pretrain.progress_interval,
+            progress_callback=train_progress,
+        )
+        val_progress = lambda completed, total, elapsed, eta: logger.info(
+            "Epoch %03d | val batch=%d/%d | elapsed=%.1f min | eta=%.1f min",
+            epoch,
+            completed,
+            total,
+            elapsed / 60.0,
+            eta / 60.0,
         )
         val_result = run_pretrain_epoch(
-            model, val_loader, graph, neighbors, config, device, None, max_batches
+            model,
+            val_loader,
+            graph,
+            neighbors,
+            config,
+            device,
+            None,
+            max_batches,
+            progress_interval=config.pretrain.progress_interval,
+            progress_callback=val_progress,
         )
         record = {
             "epoch": epoch,
