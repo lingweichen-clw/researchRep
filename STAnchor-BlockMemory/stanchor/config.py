@@ -58,7 +58,10 @@ class PretrainConfig:
     space_mask_ratio: float = 0.25
     time_task_probability: float = 0.5
     retrieval_weight: float = 0.1
+    retrieval_loss_mode: str = "hard_negative"
     retrieval_temperature: float = 0.1
+    relation_teacher_temperature: float = 0.1
+    relation_student_temperature: float = 0.1
     hard_negative_weight: float = 2.0
     positive_quantile: float = 0.1
     context_quantile: float = 0.2
@@ -128,6 +131,10 @@ class ExperimentConfig:
             raise ValueError("hidden_dim must be divisible by num_heads")
         if self.model.input_channels != self.model.output_channels:
             raise ValueError("v1 requires input_channels == output_channels")
+        if self.pretrain.retrieval_loss_mode not in {"hard_negative", "relation"}:
+            raise ValueError(
+                "retrieval_loss_mode must be hard_negative or relation"
+            )
         if not 0.0 < self.data.train_ratio < 1.0:
             raise ValueError("train_ratio must be in (0, 1)")
         if not 0.0 <= self.data.val_ratio < 1.0:
@@ -148,6 +155,14 @@ class ExperimentConfig:
             raise ValueError("key_dtype must be float16 or float32")
         for name, value in (
             ("retrieval_temperature", self.pretrain.retrieval_temperature),
+            (
+                "relation_teacher_temperature",
+                self.pretrain.relation_teacher_temperature,
+            ),
+            (
+                "relation_student_temperature",
+                self.pretrain.relation_student_temperature,
+            ),
             ("hard_negative_weight", self.pretrain.hard_negative_weight),
             ("level_temperature", self.bank.level_temperature),
             ("search_temperature", self.bank.search_temperature),

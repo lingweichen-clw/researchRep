@@ -17,6 +17,19 @@ class RetrievalLossOutput:
     valid_anchors: int
     positive_pairs: int
     hard_negative_pairs: int
+    candidate_pairs: int = 0
+    teacher_effective_support: float = 0.0
+    student_effective_support: float = 0.0
+
+
+@dataclass(frozen=True)
+class FutureRelationTargets:
+    """Future-derived teacher relations for one source pretraining batch."""
+
+    future_distance: torch.Tensor  # [B, B, N]
+    candidate_mask: torch.Tensor  # [B, B, N]
+    teacher_distribution: torch.Tensor  # [B, B, N]
+    valid_anchors: torch.Tensor  # [B, N]
 
 
 @dataclass(frozen=True)
@@ -28,6 +41,9 @@ class PretrainingLoss:
     positive_pairs: int
     hard_negative_pairs: int
     reconstruction_positions: int
+    relation_candidate_pairs: int = 0
+    teacher_effective_support: float = 0.0
+    student_effective_support: float = 0.0
 
 
 def masked_reconstruction_loss(
@@ -139,6 +155,134 @@ def future_guided_retrieval_loss(
     )
 
 
+def _masked_softmax(
+    logits: torch.Tensor,
+    mask: torch.Tensor,
+    valid_anchors: torch.Tensor,
+) -> torch.Tensor:
+    """Softmax over candidates while keeping empty anchors finite and zeroed."""
+    if logits.shape != mask.shape:
+        raise ValueError("logits and mask must have the same shape")
+    masked_logits = logits.masked_fill(~mask, -torch.inf)
+    safe_logits = torch.where(
+        valid_anchors[:, None, :],
+        masked_logits,
+        torch.zeros_like(masked_logits),
+    )
+    distribution = torch.softmax(safe_logits, dim=1)
+    return distribution * mask.to(distribution.dtype)
+
+
+def build_future_relation_targets(
+    future_model: torch.Tensor,
+    context_statistics,
+    future_observed: torch.Tensor,
+    context_start: torch.Tensor,
+    future_end: torch.Tensor,
+    teacher_temperature: float = 0.1,
+) -> FutureRelationTargets:
+    """Construct future-distance teacher distributions without model gradients."""
+    if future_model.ndim != 4:
+        raise ValueError("future_model must be [B, H, N, C]")
+    if future_observed.shape != future_model.shape:
+        raise ValueError("future_observed must align with future_model")
+    batch, _, nodes, _ = future_model.shape
+    if context_start.shape != (batch,) or future_end.shape != (batch,):
+        raise ValueError("context_start and future_end must be [B]")
+    if teacher_temperature <= 0:
+        raise ValueError("teacher_temperature must be positive")
+
+    with torch.no_grad():
+        future_signature = normalize_future_with_context(future_model, context_statistics)
+        observed = future_observed.bool() & torch.isfinite(future_signature)
+        future_distance, future_pair_valid = _pairwise_masked_mae(
+            future_signature,
+            observed,
+        )
+        non_overlap = (future_end[:, None] < context_start[None, :]) | (
+            future_end[None, :] < context_start[:, None]
+        )
+        non_self = ~torch.eye(batch, dtype=torch.bool, device=future_model.device)
+        candidate_mask = (
+            non_overlap.unsqueeze(-1).expand(-1, -1, nodes)
+            & non_self.unsqueeze(-1).expand(-1, -1, nodes)
+            & future_pair_valid
+        )
+        candidate_count = candidate_mask.sum(dim=1)
+        valid_anchors = candidate_count >= 2
+        teacher_logits = -future_distance / teacher_temperature
+        teacher_distribution = _masked_softmax(
+            teacher_logits,
+            candidate_mask,
+            valid_anchors,
+        )
+    return FutureRelationTargets(
+        future_distance=future_distance,
+        candidate_mask=candidate_mask,
+        teacher_distribution=teacher_distribution,
+        valid_anchors=valid_anchors,
+    )
+
+
+def future_relation_retrieval_loss(
+    node_keys: torch.Tensor,
+    future_model: torch.Tensor,
+    context_statistics,
+    future_observed: torch.Tensor,
+    context_start: torch.Tensor,
+    future_end: torch.Tensor,
+    teacher_temperature: float = 0.1,
+    student_temperature: float = 0.1,
+) -> RetrievalLossOutput:
+    """Match node-key similarity distributions to future-distance relations."""
+    if node_keys.ndim != 3:
+        raise ValueError("node_keys must be [B, N, D]")
+    batch, nodes, _ = node_keys.shape
+    if future_model.shape[0] != batch or future_model.shape[2] != nodes:
+        raise ValueError("future and node keys do not align")
+    if student_temperature <= 0:
+        raise ValueError("student_temperature must be positive")
+    targets = build_future_relation_targets(
+        future_model=future_model,
+        context_statistics=context_statistics,
+        future_observed=future_observed,
+        context_start=context_start,
+        future_end=future_end,
+        teacher_temperature=teacher_temperature,
+    )
+    normalized_keys = functional.normalize(node_keys, dim=-1)
+    student_logits = torch.einsum("ind,jnd->ijn", normalized_keys, normalized_keys)
+    student_logits = student_logits / student_temperature
+    student_distribution = _masked_softmax(
+        student_logits,
+        targets.candidate_mask,
+        targets.valid_anchors,
+    )
+    log_student = torch.log(student_distribution.clamp_min(1.0e-12))
+    cross_entropy = -(targets.teacher_distribution * log_student).sum(dim=1)
+    valid_anchors = targets.valid_anchors
+    if bool(valid_anchors.any()):
+        loss = cross_entropy.masked_select(valid_anchors).mean()
+        teacher_keff = 1.0 / targets.teacher_distribution.pow(2).sum(dim=1).clamp_min(1.0e-12)
+        student_keff = 1.0 / student_distribution.pow(2).sum(dim=1).clamp_min(1.0e-12)
+        teacher_support = float(teacher_keff.masked_select(valid_anchors).mean().detach())
+        student_support = float(student_keff.masked_select(valid_anchors).mean().detach())
+    else:
+        loss = node_keys.sum() * 0.0
+        teacher_support = 0.0
+        student_support = 0.0
+    valid_candidates = targets.candidate_mask & valid_anchors[:, None, :]
+    return RetrievalLossOutput(
+        loss=loss,
+        valid_anchors=int(valid_anchors.sum().item()),
+        positive_pairs=0,
+        hard_negative_pairs=0,
+        candidate_pairs=int(valid_candidates.sum().item()),
+        teacher_effective_support=teacher_support,
+        student_effective_support=student_support,
+    )
+
+
 def compute_pretraining_loss(
     output: PretrainForwardOutput,
     future_model: torch.Tensor,
@@ -152,6 +296,9 @@ def compute_pretraining_loss(
     context_quantile: float,
     negative_quantile: float,
     hard_negative_weight: float,
+    retrieval_loss_mode: str = "hard_negative",
+    relation_teacher_temperature: float = 0.1,
+    relation_student_temperature: float = 0.1,
 ) -> PretrainingLoss:
     reconstruction = masked_reconstruction_loss(
         output.reconstruction,
@@ -159,21 +306,35 @@ def compute_pretraining_loss(
         output.mask.value_mask,
         observed_context,
     )
-    retrieval_output = future_guided_retrieval_loss(
-        node_keys=output.clean.retrieval.node_keys,
-        context_normalized=output.clean.statistics.normalized,
-        future_model=future_model,
-        context_statistics=output.clean.statistics,
-        context_observed=observed_context,
-        future_observed=observed_future,
-        context_start=context_start,
-        future_end=future_end,
-        temperature=retrieval_temperature,
-        positive_quantile=positive_quantile,
-        context_quantile=context_quantile,
-        negative_quantile=negative_quantile,
-        hard_negative_weight=hard_negative_weight,
-    )
+    if retrieval_loss_mode == "hard_negative":
+        retrieval_output = future_guided_retrieval_loss(
+            node_keys=output.clean.retrieval.node_keys,
+            context_normalized=output.clean.statistics.normalized,
+            future_model=future_model,
+            context_statistics=output.clean.statistics,
+            context_observed=observed_context,
+            future_observed=observed_future,
+            context_start=context_start,
+            future_end=future_end,
+            temperature=retrieval_temperature,
+            positive_quantile=positive_quantile,
+            context_quantile=context_quantile,
+            negative_quantile=negative_quantile,
+            hard_negative_weight=hard_negative_weight,
+        )
+    elif retrieval_loss_mode == "relation":
+        retrieval_output = future_relation_retrieval_loss(
+            node_keys=output.clean.retrieval.node_keys,
+            future_model=future_model,
+            context_statistics=output.clean.statistics,
+            future_observed=observed_future,
+            context_start=context_start,
+            future_end=future_end,
+            teacher_temperature=relation_teacher_temperature,
+            student_temperature=relation_student_temperature,
+        )
+    else:
+        raise ValueError(f"unknown retrieval_loss_mode: {retrieval_loss_mode}")
     total = reconstruction + retrieval_weight * retrieval_output.loss
     reconstruction_positions = int(
         (output.mask.value_mask.bool() & observed_context.bool()).sum().item()
@@ -186,4 +347,7 @@ def compute_pretraining_loss(
         positive_pairs=retrieval_output.positive_pairs,
         hard_negative_pairs=retrieval_output.hard_negative_pairs,
         reconstruction_positions=reconstruction_positions,
+        relation_candidate_pairs=retrieval_output.candidate_pairs,
+        teacher_effective_support=retrieval_output.teacher_effective_support,
+        student_effective_support=retrieval_output.student_effective_support,
     )

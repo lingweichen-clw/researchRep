@@ -116,6 +116,46 @@ class PretrainingFlowTest(unittest.TestCase):
     def test_space_mask_pretraining_flow(self) -> None:
         self._run_task("space")
 
+    def test_future_relation_mode_reaches_model_keys(self) -> None:
+        output = self.model.forward_pretrain(
+            self.x,
+            self.observed,
+            self.weekday,
+            self.slot,
+            self.graph,
+            self.neighbors,
+            mask_task="time",
+        )
+        losses = compute_pretraining_loss(
+            output=output,
+            future_model=self.y,
+            observed_context=self.observed,
+            observed_future=torch.ones_like(self.y, dtype=torch.bool),
+            context_start=self.context_start,
+            future_end=self.future_end,
+            retrieval_weight=0.1,
+            retrieval_temperature=0.1,
+            positive_quantile=0.2,
+            context_quantile=0.3,
+            negative_quantile=0.7,
+            hard_negative_weight=2.0,
+            retrieval_loss_mode="relation",
+            relation_teacher_temperature=0.1,
+            relation_student_temperature=0.1,
+        )
+
+        self.assertGreater(losses.relation_candidate_pairs, 0)
+        self.assertGreater(losses.teacher_effective_support, 1.0)
+        self.assertGreater(losses.student_effective_support, 1.0)
+        self.assertTrue(bool(torch.isfinite(losses.total)))
+        losses.total.backward()
+        self.assertTrue(
+            any(
+                parameter.grad is not None and float(parameter.grad.abs().sum()) > 0.0
+                for parameter in self.model.retrieval_head.parameters()
+            )
+        )
+
     def test_patch_size_one_keeps_twelve_tokens_and_masks_three_contiguous_steps(self) -> None:
         model = STAnchorPretrainModel(
             ModelConfig(

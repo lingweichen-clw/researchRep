@@ -38,6 +38,9 @@ class PretrainEpochResult:
     positive_pairs: int
     hard_negative_pairs: int
     reconstruction_positions: int
+    relation_candidate_pairs: int
+    teacher_effective_support: float
+    student_effective_support: float
     skipped_batches: int
     batches: int
 
@@ -90,6 +93,9 @@ def run_pretrain_epoch(
     model.train(training)
     totals = {"total": 0.0, "reconstruction": 0.0, "retrieval": 0.0}
     anchors = positives = hard_negatives = reconstruction_positions = batches = skipped_batches = 0
+    relation_candidates = 0
+    teacher_support = student_support = 0.0
+    support_anchors = 0
     context = torch.enable_grad() if training else torch.no_grad()
     planned_batches = len(loader)
     if max_batches is not None:
@@ -137,6 +143,9 @@ def run_pretrain_epoch(
                 context_quantile=config.pretrain.context_quantile,
                 negative_quantile=config.pretrain.negative_quantile,
                 hard_negative_weight=config.pretrain.hard_negative_weight,
+                retrieval_loss_mode=config.pretrain.retrieval_loss_mode,
+                relation_teacher_temperature=config.pretrain.relation_teacher_temperature,
+                relation_student_temperature=config.pretrain.relation_student_temperature,
             )
             if losses.reconstruction_positions == 0 and losses.valid_retrieval_anchors == 0:
                 skipped_batches += 1
@@ -154,6 +163,15 @@ def run_pretrain_epoch(
             positives += losses.positive_pairs
             hard_negatives += losses.hard_negative_pairs
             reconstruction_positions += losses.reconstruction_positions
+            relation_candidates += losses.relation_candidate_pairs
+            if losses.valid_retrieval_anchors > 0:
+                teacher_support += (
+                    losses.teacher_effective_support * losses.valid_retrieval_anchors
+                )
+                student_support += (
+                    losses.student_effective_support * losses.valid_retrieval_anchors
+                )
+                support_anchors += losses.valid_retrieval_anchors
             batches += 1
             emit_progress(batch_index + 1)
     if batches == 0:
@@ -166,6 +184,9 @@ def run_pretrain_epoch(
         positive_pairs=positives,
         hard_negative_pairs=hard_negatives,
         reconstruction_positions=reconstruction_positions,
+        relation_candidate_pairs=relation_candidates,
+        teacher_effective_support=teacher_support / max(support_anchors, 1),
+        student_effective_support=student_support / max(support_anchors, 1),
         skipped_batches=skipped_batches,
         batches=batches,
     )
@@ -266,7 +287,8 @@ def train_pretraining(
     logger.info(
         "Optimization | epochs=%d | batch_size=%d | lr=%.3g | weight_decay=%.3g | "
         "time_mask=%.3f | time_mask_block=%d steps | space_mask=%.3f | "
-        "retrieval_weight=%.3f | patience=%d",
+        "retrieval_loss=%s | retrieval_weight=%.3f | student_tau=%.3f | "
+        "teacher_tau=%.3f | patience=%d",
         config.pretrain.epochs,
         config.pretrain.batch_size,
         config.pretrain.learning_rate,
@@ -274,11 +296,31 @@ def train_pretraining(
         config.pretrain.time_mask_ratio,
         config.pretrain.time_mask_block_size,
         config.pretrain.space_mask_ratio,
+        config.pretrain.retrieval_loss_mode,
         config.pretrain.retrieval_weight,
+        config.pretrain.relation_student_temperature,
+        config.pretrain.relation_teacher_temperature,
         config.pretrain.patience,
     )
     best_value = float("inf")
+    best_relation_value = float("inf")
     stale_epochs = 0
+    best_relation_path = run_dir / "pretrain_best_relation.pt"
+
+    def checkpoint_payload(record: dict, epoch: int) -> dict:
+        return {
+            "model_state_dict": model.state_dict(),
+            "encoder_state_dict": model.encoder.state_dict(),
+            "retrieval_state_dict": model.retrieval_state_dict(),
+            "retrieval_fingerprint": model.retrieval_fingerprint(),
+            "config": config.to_dict(),
+            "normalizer": data.scaler.state_dict(),
+            "graph_fingerprint": graph_cpu.fingerprint,
+            "metrics": record,
+            "epoch": epoch,
+            "seed": config.runtime.seed,
+        }
+
     for epoch in range(1, config.pretrain.epochs + 1):
         logger.info(
             "Epoch %03d/%03d started | train_batches=%d | val_batches=%d",
@@ -339,7 +381,9 @@ def train_pretraining(
         logger.info(
             "Epoch %03d | train_total=%.6f | val_total=%.6f | val_mask=%.6f | "
             "val_retrieval=%.6f | val_anchors=%d | val_positive_pairs=%d | "
-            "val_hard_negatives=%d | val_masked_positions=%d | skipped(train/val)=%d/%d",
+            "val_hard_negatives=%d | val_relation_candidates=%d | "
+            "val_teacher_keff=%.3f | val_student_keff=%.3f | "
+            "val_masked_positions=%d | skipped(train/val)=%d/%d",
             epoch,
             train_result.total,
             val_result.total,
@@ -348,6 +392,9 @@ def train_pretraining(
             val_result.valid_retrieval_anchors,
             val_result.positive_pairs,
             val_result.hard_negative_pairs,
+            val_result.relation_candidate_pairs,
+            val_result.teacher_effective_support,
+            val_result.student_effective_support,
             val_result.reconstruction_positions,
             train_result.skipped_batches,
             val_result.skipped_batches,
@@ -357,18 +404,7 @@ def train_pretraining(
             stale_epochs = 0
             save_checkpoint(
                 best_path,
-                {
-                    "model_state_dict": model.state_dict(),
-                    "encoder_state_dict": model.encoder.state_dict(),
-                    "retrieval_state_dict": model.retrieval_state_dict(),
-                    "retrieval_fingerprint": model.retrieval_fingerprint(),
-                    "config": config.to_dict(),
-                    "normalizer": data.scaler.state_dict(),
-                    "graph_fingerprint": graph_cpu.fingerprint,
-                    "metrics": record,
-                    "epoch": epoch,
-                    "seed": config.runtime.seed,
-                },
+                checkpoint_payload(record, epoch),
             )
             logger.info(
                 "Checkpoint updated | epoch=%d | best_val=%.6f | path=%s",
@@ -386,5 +422,30 @@ def train_pretraining(
                     best_value,
                 )
                 break
-    logger.info("Pretraining finished | best_val=%.6f | checkpoint=%s", best_value, best_path)
+        if (
+            config.pretrain.retrieval_loss_mode == "relation"
+            and val_result.retrieval < best_relation_value
+        ):
+            best_relation_value = val_result.retrieval
+            save_checkpoint(
+                best_relation_path,
+                checkpoint_payload(record, epoch),
+            )
+            logger.info(
+                "Relation checkpoint updated | epoch=%d | best_val_relation=%.6f | path=%s",
+                epoch,
+                best_relation_value,
+                best_relation_path,
+            )
+    if config.pretrain.retrieval_loss_mode == "relation":
+        logger.info(
+            "Pretraining finished | best_val=%.6f | best_val_relation=%.6f | "
+            "checkpoint=%s | relation_checkpoint=%s",
+            best_value,
+            best_relation_value,
+            best_path,
+            best_relation_path,
+        )
+    else:
+        logger.info("Pretraining finished | best_val=%.6f | checkpoint=%s", best_value, best_path)
     return best_path

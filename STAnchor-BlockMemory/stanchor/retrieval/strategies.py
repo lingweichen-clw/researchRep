@@ -145,9 +145,10 @@ def candidate_contexts(
     context_length: int,
     device: torch.device,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Load and normalize candidate contexts as [B, R, T, N, C]."""
+    """Load the forecast-tail contexts as [B, R, T, N, C]."""
     safe_ids = event_ids.clamp_min(0).cpu().numpy()
-    starts = np.asarray(bank.context_start)[safe_ids]
+    ends = np.asarray(bank.context_end)[safe_ids]
+    starts = ends - int(context_length) + 1
     indices = starts[..., None] + np.arange(context_length, dtype=np.int64)
     raw = np.asarray(series.values[indices], dtype=np.float32)
     observed = np.asarray(series.observed[indices], dtype=bool)

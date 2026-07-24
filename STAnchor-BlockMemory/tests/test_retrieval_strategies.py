@@ -1,17 +1,46 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 import torch
 
 from stanchor.retrieval.strategies import (
     calendar_event_candidates,
+    candidate_contexts,
     uniform_candidate_aggregation,
 )
 
 
 class RetrievalStrategiesTest(unittest.TestCase):
+    def test_candidate_contexts_use_forecast_tail_of_long_retrieval_window(self) -> None:
+        values = np.arange(30, dtype=np.float32).reshape(30, 1, 1)
+        observed = np.ones_like(values, dtype=bool)
+        series = SimpleNamespace(values=values, observed=observed)
+        scaler = SimpleNamespace(
+            mean=np.zeros((1, 1), dtype=np.float32),
+            std=np.ones((1, 1), dtype=np.float32),
+            eps=1.0e-6,
+        )
+        bank = SimpleNamespace(
+            context_start=np.asarray([0], dtype=np.int64),
+            context_end=np.asarray([23], dtype=np.int64),
+        )
+
+        contexts, context_observed = candidate_contexts(
+            bank,
+            event_ids=torch.tensor([[0]]),
+            series=series,
+            scaler=scaler,
+            context_length=12,
+            device=torch.device("cpu"),
+        )
+
+        expected = torch.arange(12, 24, dtype=torch.float32).view(1, 1, 12, 1, 1)
+        self.assertTrue(torch.allclose(contexts, expected, atol=1.0e-5))
+        self.assertTrue(bool(context_observed.all()))
+
     def test_calendar_candidates_keep_all_and_only_causal_events(self) -> None:
         class Calendar:
             @staticmethod
