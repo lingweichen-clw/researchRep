@@ -106,6 +106,16 @@ def binary_confidence_metrics(
         auprc = area
 
     squared = np.square(scores - labels.astype(np.float64))
+    ece_bins = 10
+    bin_ids = np.minimum((scores * ece_bins).astype(np.int64), ece_bins - 1)
+    ece = 0.0
+    for bin_index in range(ece_bins):
+        in_bin = bin_ids == bin_index
+        if not bool(in_bin.any()):
+            continue
+        bin_confidence = float(scores[in_bin].mean())
+        bin_accuracy = float(labels[in_bin].mean())
+        ece += float(in_bin.mean()) * abs(bin_accuracy - bin_confidence)
     return {
         "count": int(labels.size),
         "positives": positives,
@@ -114,6 +124,8 @@ def binary_confidence_metrics(
         "auroc": None if auroc is None else float(auroc),
         "auprc": None if auprc is None else float(auprc),
         "brier": float(squared.mean()),
+        "ece": ece,
+        "ece_bins": ece_bins,
         "constant_brier": float(prevalence * (1.0 - prevalence)),
     }
 

@@ -146,6 +146,13 @@ def run_pretrain_epoch(
                 retrieval_loss_mode=config.pretrain.retrieval_loss_mode,
                 relation_teacher_temperature=config.pretrain.relation_teacher_temperature,
                 relation_student_temperature=config.pretrain.relation_student_temperature,
+                forecast_context=batch["x"].to(device),
+                forecast_context_observed=batch["x_observed"].to(device),
+                relation_teacher_mode=config.pretrain.relation_teacher_mode,
+                relation_distance_normalization=(
+                    config.pretrain.relation_distance_normalization
+                ),
+                future_increment_weight=config.pretrain.future_increment_weight,
             )
             if losses.reconstruction_positions == 0 and losses.valid_retrieval_anchors == 0:
                 skipped_batches += 1
@@ -287,8 +294,9 @@ def train_pretraining(
     logger.info(
         "Optimization | epochs=%d | batch_size=%d | lr=%.3g | weight_decay=%.3g | "
         "time_mask=%.3f | time_mask_block=%d steps | space_mask=%.3f | "
-        "retrieval_loss=%s | retrieval_weight=%.3f | student_tau=%.3f | "
-        "teacher_tau=%.3f | patience=%d",
+        "retrieval_loss=%s | teacher_mode=%s | distance_normalization=%s | "
+        "future_increment_weight=%.3f | retrieval_weight=%.3f | "
+        "student_tau=%.3f | teacher_tau=%.3f | patience=%d",
         config.pretrain.epochs,
         config.pretrain.batch_size,
         config.pretrain.learning_rate,
@@ -297,6 +305,9 @@ def train_pretraining(
         config.pretrain.time_mask_block_size,
         config.pretrain.space_mask_ratio,
         config.pretrain.retrieval_loss_mode,
+        config.pretrain.relation_teacher_mode,
+        config.pretrain.relation_distance_normalization,
+        config.pretrain.future_increment_weight,
         config.pretrain.retrieval_weight,
         config.pretrain.relation_student_temperature,
         config.pretrain.relation_teacher_temperature,

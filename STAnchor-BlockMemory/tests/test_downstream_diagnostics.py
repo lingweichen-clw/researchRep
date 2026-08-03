@@ -124,6 +124,8 @@ class DownstreamDiagnosticsTest(unittest.TestCase):
         self.assertAlmostEqual(result["auroc"], 1.0)
         self.assertAlmostEqual(result["auprc"], 1.0)
         self.assertAlmostEqual(result["brier"], 0.025)
+        self.assertAlmostEqual(result["ece"], 0.15)
+        self.assertEqual(result["ece_bins"], 10)
         self.assertAlmostEqual(result["prevalence"], 0.5)
         self.assertAlmostEqual(result["constant_brier"], 0.25)
 
@@ -136,6 +138,7 @@ class DownstreamDiagnosticsTest(unittest.TestCase):
         self.assertAlmostEqual(result["auroc"], 0.5)
         self.assertAlmostEqual(result["auprc"], 0.5)
         self.assertAlmostEqual(result["brier"], 0.25)
+        self.assertAlmostEqual(result["ece"], 0.0)
 
     def test_quartile_gain_increases_with_confidence(self) -> None:
         confidence = np.asarray([0.1, 0.2, 0.3, 0.4, 0.6, 0.7, 0.8, 0.9])

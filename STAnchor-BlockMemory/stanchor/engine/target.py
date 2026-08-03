@@ -20,6 +20,7 @@ from stanchor.modes import (
     BASE_ONLY,
     LEARNED_TOPK_CONFIDENCE,
     LEARNED_TOPK_HORIZON,
+    LEARNED_TOPK_OFFSET_DECAY_HORIZON,
     RAW_L1_TOPK_HORIZON,
     WEEKLY_MEAN_HORIZON,
     validate_downstream_mode,
@@ -34,6 +35,7 @@ from stanchor.models.pretraining import STAnchorPretrainModel
 from stanchor.retrieval.retriever import AggregationOutput, NodeCandidates, TwoStageRetriever
 from stanchor.retrieval.strategies import (
     calendar_event_candidates,
+    offset_decay_aggregation,
     raw_l1_topk_aggregation,
     weekly_mean_aggregation,
 )
@@ -147,7 +149,7 @@ def retrieve_for_downstream_mode(
             retriever.node_top_k,
             device,
         )
-    if mode == LEARNED_TOPK_HORIZON:
+    if mode in {LEARNED_TOPK_HORIZON, LEARNED_TOPK_OFFSET_DECAY_HORIZON}:
         encoding = pretrained.encode_clean(
             batch["retrieval_x"].to(device),
             batch["retrieval_observed"].to(device),
@@ -160,6 +162,17 @@ def retrieve_for_downstream_mode(
             encoding.statistics.level_features,
             events,
         )
+        if mode == LEARNED_TOPK_OFFSET_DECAY_HORIZON:
+            return candidates, offset_decay_aggregation(
+                candidates,
+                x,
+                observed_x,
+                bank,
+                data.series,
+                data.scaler,
+                data.train.context_length,
+                device,
+            )
         return candidates, retriever.aggregate(candidates)
     raise AssertionError(f"unhandled downstream mode: {mode}")
 

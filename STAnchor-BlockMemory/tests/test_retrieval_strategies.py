@@ -9,8 +9,10 @@ import torch
 from stanchor.retrieval.strategies import (
     calendar_event_candidates,
     candidate_contexts,
+    offset_decay_aggregation,
     uniform_candidate_aggregation,
 )
+from stanchor.retrieval.retriever import NodeCandidates
 
 
 class RetrievalStrategiesTest(unittest.TestCase):
@@ -96,6 +98,96 @@ class RetrievalStrategiesTest(unittest.TestCase):
         self.assertTrue(bool(result.valid.all()))
         self.assertTrue(torch.equal(result.candidate_futures, candidates))
         self.assertTrue(torch.equal(result.candidate_masks, valid))
+
+    def test_offset_decay_aggregation_aligns_near_horizon_and_returns_to_raw(self) -> None:
+        values = np.concatenate(
+            (
+                np.full((12, 1, 1), 2.0, dtype=np.float32),
+                np.full((12, 1, 1), 12.0, dtype=np.float32),
+            ),
+            axis=0,
+        )
+        observed = np.ones_like(values, dtype=bool)
+        series = SimpleNamespace(values=values, observed=observed)
+        scaler = SimpleNamespace(
+            mean=np.zeros((1, 1), dtype=np.float32),
+            std=np.ones((1, 1), dtype=np.float32),
+            eps=1.0e-6,
+        )
+        bank = SimpleNamespace(
+            context_end=np.asarray([11, 23], dtype=np.int64),
+            future_values=np.asarray(
+                [
+                    [[[3.0]], [[4.0]]],
+                    [[[13.0]], [[14.0]]],
+                ],
+                dtype=np.float32,
+            ),
+            future_masks=np.ones((2, 2, 1, 1), dtype=np.uint8),
+        )
+        candidates = NodeCandidates(
+            event_ids=torch.tensor([[[0, 1]]]),
+            total_scores=torch.ones(1, 1, 2),
+            shape_scores=torch.ones(1, 1, 2),
+            level_distances=torch.zeros(1, 1, 2),
+            weights=torch.tensor([[[0.5, 0.5]]]),
+            valid=torch.ones(1, 1, 2, dtype=torch.bool),
+        )
+        query = torch.full((1, 12, 1, 1), 10.0)
+        query_observed = torch.ones_like(query, dtype=torch.bool)
+
+        result = offset_decay_aggregation(
+            candidates,
+            query,
+            query_observed,
+            bank,
+            series,
+            scaler,
+            context_length=12,
+            device=torch.device("cpu"),
+        )
+
+        expected = torch.tensor([[[[11.0]], [[9.0]]]])
+        self.assertTrue(torch.allclose(result.prediction, expected, atol=1.0e-6))
+        self.assertTrue(bool(result.valid.all()))
+        self.assertTrue(torch.allclose(result.candidate_futures[:, 0], torch.tensor([[[[11.0], [11.0]]]])))
+
+    def test_offset_decay_aggregation_has_exact_empty_candidate_fallback_mask(self) -> None:
+        values = np.full((12, 1, 1), 2.0, dtype=np.float32)
+        series = SimpleNamespace(values=values, observed=np.ones_like(values, dtype=bool))
+        scaler = SimpleNamespace(
+            mean=np.zeros((1, 1), dtype=np.float32),
+            std=np.ones((1, 1), dtype=np.float32),
+            eps=1.0e-6,
+        )
+        bank = SimpleNamespace(
+            context_end=np.asarray([11], dtype=np.int64),
+            future_values=np.asarray([[[[3.0]], [[4.0]]]], dtype=np.float32),
+            future_masks=np.ones((1, 2, 1, 1), dtype=np.uint8),
+        )
+        candidates = NodeCandidates(
+            event_ids=torch.tensor([[[0]]]),
+            total_scores=torch.full((1, 1, 1), -torch.inf),
+            shape_scores=torch.zeros(1, 1, 1),
+            level_distances=torch.zeros(1, 1, 1),
+            weights=torch.zeros(1, 1, 1),
+            valid=torch.zeros(1, 1, 1, dtype=torch.bool),
+        )
+        query = torch.full((1, 12, 1, 1), 10.0)
+
+        result = offset_decay_aggregation(
+            candidates,
+            query,
+            torch.ones_like(query, dtype=torch.bool),
+            bank,
+            series,
+            scaler,
+            context_length=12,
+            device=torch.device("cpu"),
+        )
+
+        self.assertTrue(torch.equal(result.prediction, torch.zeros_like(result.prediction)))
+        self.assertFalse(bool(result.valid.any()))
 
 
 if __name__ == "__main__":

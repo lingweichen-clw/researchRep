@@ -79,6 +79,103 @@ def _pairwise_masked_mae(
     return distance / count.clamp_min(1), count > 0
 
 
+def _endpoint_level_from_context(
+    context: torch.Tensor,
+    observed: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return endpoint levels and validity as ``[B,N,C]``."""
+    if context.ndim != 4 or observed.shape != context.shape:
+        raise ValueError("context and observed must be [B, T, N, C]")
+    if context.shape[1] <= 0:
+        raise ValueError("context time dimension must be positive")
+    visible = observed.bool() & torch.isfinite(context)
+    count = visible.sum(dim=1)
+    safe_count = count.clamp_min(1)
+    mean = torch.where(visible, context, torch.zeros_like(context)).sum(dim=1) / safe_count
+    endpoint_visible = visible[:, -1]
+    endpoint = torch.where(endpoint_visible, context[:, -1], mean)
+    valid = count > 0
+    return torch.where(valid, endpoint, torch.zeros_like(endpoint)), valid
+
+
+def build_offset_decay_signature(
+    future_model: torch.Tensor,
+    future_observed: torch.Tensor,
+    forecast_context: torch.Tensor,
+    context_observed: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Build ``Y - lambda * endpoint`` and its mask as ``[B,H,N,C]``."""
+    if future_model.ndim != 4 or future_observed.shape != future_model.shape:
+        raise ValueError("future_model and future_observed must be [B, H, N, C]")
+    if forecast_context.ndim != 4 or context_observed.shape != forecast_context.shape:
+        raise ValueError("forecast_context and context_observed must be [B, T, N, C]")
+    if future_model.shape[0] != forecast_context.shape[0] or future_model.shape[2:] != forecast_context.shape[2:]:
+        raise ValueError("future and forecast context batch/node/channel dimensions must align")
+    endpoint, endpoint_valid = _endpoint_level_from_context(
+        forecast_context,
+        context_observed,
+    )
+    horizon = future_model.shape[1]
+    decay = torch.linspace(
+        1.0,
+        0.0,
+        horizon,
+        dtype=future_model.dtype,
+        device=future_model.device,
+    ).view(1, horizon, 1, 1)
+    valid = (
+        future_observed.bool()
+        & torch.isfinite(future_model)
+        & endpoint_valid.unsqueeze(1)
+    )
+    signature = future_model - decay * endpoint.unsqueeze(1)
+    return torch.where(valid, signature, torch.zeros_like(signature)), valid
+
+
+def build_future_increment(
+    future_model: torch.Tensor,
+    future_observed: torch.Tensor,
+    endpoint_level: torch.Tensor,
+    endpoint_valid: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Build endpoint-to-H1 and adjacent future increments as ``[B,H,N,C]``."""
+    if future_model.ndim != 4 or future_observed.shape != future_model.shape:
+        raise ValueError("future_model and future_observed must be [B, H, N, C]")
+    expected = future_model.shape[:1] + future_model.shape[2:]
+    if endpoint_level.shape != expected or endpoint_valid.shape != expected:
+        raise ValueError("endpoint tensors must be [B, N, C]")
+    future_valid = future_observed.bool() & torch.isfinite(future_model)
+    first_valid = future_valid[:, :1] & endpoint_valid.unsqueeze(1)
+    first = future_model[:, :1] - endpoint_level.unsqueeze(1)
+    if future_model.shape[1] == 1:
+        valid = first_valid
+        increment = first
+    else:
+        adjacent_valid = future_valid[:, 1:] & future_valid[:, :-1]
+        adjacent = future_model[:, 1:] - future_model[:, :-1]
+        valid = torch.cat((first_valid, adjacent_valid), dim=1)
+        increment = torch.cat((first, adjacent), dim=1)
+    return torch.where(valid, increment, torch.zeros_like(increment)), valid
+
+
+def anchor_mean_normalize_distances(
+    distances: torch.Tensor,
+    valid: torch.Tensor,
+    eps: float = 1.0e-6,
+) -> torch.Tensor:
+    """Normalize candidate distances per sample-node anchor without changing order."""
+    if distances.ndim != 3 or valid.shape != distances.shape:
+        raise ValueError("distances and valid must be [B, B, N]")
+    if eps <= 0:
+        raise ValueError("eps must be positive")
+    finite_valid = valid.bool() & torch.isfinite(distances)
+    count = finite_valid.sum(dim=1)
+    total = torch.where(finite_valid, distances, torch.zeros_like(distances)).sum(dim=1)
+    scale = total / count.clamp_min(1)
+    normalized = distances / scale.unsqueeze(1).clamp_min(eps)
+    return torch.where(finite_valid, normalized, torch.zeros_like(normalized))
+
+
 def future_guided_retrieval_loss(
     node_keys: torch.Tensor,
     context_normalized: torch.Tensor,
@@ -180,6 +277,11 @@ def build_future_relation_targets(
     context_start: torch.Tensor,
     future_end: torch.Tensor,
     teacher_temperature: float = 0.1,
+    relation_teacher_mode: str = "context_normalized",
+    forecast_context: torch.Tensor | None = None,
+    forecast_context_observed: torch.Tensor | None = None,
+    relation_distance_normalization: str = "none",
+    future_increment_weight: float = 0.0,
 ) -> FutureRelationTargets:
     """Construct future-distance teacher distributions without model gradients."""
     if future_model.ndim != 4:
@@ -191,23 +293,94 @@ def build_future_relation_targets(
         raise ValueError("context_start and future_end must be [B]")
     if teacher_temperature <= 0:
         raise ValueError("teacher_temperature must be positive")
+    if relation_teacher_mode not in {
+        "context_normalized",
+        "offset_decay",
+        "offset_decay_increment",
+    }:
+        raise ValueError(f"unknown relation_teacher_mode: {relation_teacher_mode}")
+    if relation_distance_normalization not in {"none", "anchor_mean"}:
+        raise ValueError(
+            "relation_distance_normalization must be none or anchor_mean"
+        )
+    if not 0.0 <= future_increment_weight <= 1.0:
+        raise ValueError("future_increment_weight must be in [0, 1]")
 
     with torch.no_grad():
-        future_signature = normalize_future_with_context(future_model, context_statistics)
-        observed = future_observed.bool() & torch.isfinite(future_signature)
-        future_distance, future_pair_valid = _pairwise_masked_mae(
-            future_signature,
-            observed,
-        )
         non_overlap = (future_end[:, None] < context_start[None, :]) | (
             future_end[None, :] < context_start[:, None]
         )
         non_self = ~torch.eye(batch, dtype=torch.bool, device=future_model.device)
-        candidate_mask = (
+        temporal_candidates = (
             non_overlap.unsqueeze(-1).expand(-1, -1, nodes)
             & non_self.unsqueeze(-1).expand(-1, -1, nodes)
-            & future_pair_valid
         )
+        if relation_teacher_mode == "context_normalized":
+            future_signature = normalize_future_with_context(
+                future_model,
+                context_statistics,
+            )
+            observed = future_observed.bool() & torch.isfinite(future_signature)
+            raw_distance, future_pair_valid = _pairwise_masked_mae(
+                future_signature,
+                observed,
+            )
+            candidate_mask = temporal_candidates & future_pair_valid
+            future_distance = raw_distance
+        else:
+            if forecast_context is None or forecast_context_observed is None:
+                raise ValueError(
+                    "OffsetDecay relation teachers require forecast_context and its mask"
+                )
+            offset_signature, offset_observed = build_offset_decay_signature(
+                future_model,
+                future_observed,
+                forecast_context,
+                forecast_context_observed,
+            )
+            offset_distance, offset_pair_valid = _pairwise_masked_mae(
+                offset_signature,
+                offset_observed,
+            )
+            if relation_teacher_mode == "offset_decay":
+                candidate_mask = temporal_candidates & offset_pair_valid
+                future_distance = offset_distance
+                if relation_distance_normalization == "anchor_mean":
+                    future_distance = anchor_mean_normalize_distances(
+                        future_distance,
+                        candidate_mask,
+                    )
+            else:
+                endpoint, endpoint_valid = _endpoint_level_from_context(
+                    forecast_context,
+                    forecast_context_observed,
+                )
+                increment, increment_observed = build_future_increment(
+                    future_model,
+                    future_observed,
+                    endpoint,
+                    endpoint_valid,
+                )
+                increment_distance, increment_pair_valid = _pairwise_masked_mae(
+                    increment,
+                    increment_observed,
+                )
+                candidate_mask = (
+                    temporal_candidates & offset_pair_valid & increment_pair_valid
+                )
+                if relation_distance_normalization == "anchor_mean":
+                    offset_distance = anchor_mean_normalize_distances(
+                        offset_distance,
+                        candidate_mask,
+                    )
+                    increment_distance = anchor_mean_normalize_distances(
+                        increment_distance,
+                        candidate_mask,
+                    )
+                future_distance = (
+                    (1.0 - future_increment_weight) * offset_distance
+                    + future_increment_weight * increment_distance
+                )
         candidate_count = candidate_mask.sum(dim=1)
         valid_anchors = candidate_count >= 2
         teacher_logits = -future_distance / teacher_temperature
@@ -233,6 +406,11 @@ def future_relation_retrieval_loss(
     future_end: torch.Tensor,
     teacher_temperature: float = 0.1,
     student_temperature: float = 0.1,
+    relation_teacher_mode: str = "context_normalized",
+    forecast_context: torch.Tensor | None = None,
+    forecast_context_observed: torch.Tensor | None = None,
+    relation_distance_normalization: str = "none",
+    future_increment_weight: float = 0.0,
 ) -> RetrievalLossOutput:
     """Match node-key similarity distributions to future-distance relations."""
     if node_keys.ndim != 3:
@@ -249,6 +427,11 @@ def future_relation_retrieval_loss(
         context_start=context_start,
         future_end=future_end,
         teacher_temperature=teacher_temperature,
+        relation_teacher_mode=relation_teacher_mode,
+        forecast_context=forecast_context,
+        forecast_context_observed=forecast_context_observed,
+        relation_distance_normalization=relation_distance_normalization,
+        future_increment_weight=future_increment_weight,
     )
     normalized_keys = functional.normalize(node_keys, dim=-1)
     student_logits = torch.einsum("ind,jnd->ijn", normalized_keys, normalized_keys)
@@ -299,6 +482,11 @@ def compute_pretraining_loss(
     retrieval_loss_mode: str = "hard_negative",
     relation_teacher_temperature: float = 0.1,
     relation_student_temperature: float = 0.1,
+    forecast_context: torch.Tensor | None = None,
+    forecast_context_observed: torch.Tensor | None = None,
+    relation_teacher_mode: str = "context_normalized",
+    relation_distance_normalization: str = "none",
+    future_increment_weight: float = 0.0,
 ) -> PretrainingLoss:
     reconstruction = masked_reconstruction_loss(
         output.reconstruction,
@@ -332,6 +520,11 @@ def compute_pretraining_loss(
             future_end=future_end,
             teacher_temperature=relation_teacher_temperature,
             student_temperature=relation_student_temperature,
+            relation_teacher_mode=relation_teacher_mode,
+            forecast_context=forecast_context,
+            forecast_context_observed=forecast_context_observed,
+            relation_distance_normalization=relation_distance_normalization,
+            future_increment_weight=future_increment_weight,
         )
     else:
         raise ValueError(f"unknown retrieval_loss_mode: {retrieval_loss_mode}")

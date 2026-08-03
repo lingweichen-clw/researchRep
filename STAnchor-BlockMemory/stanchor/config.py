@@ -62,6 +62,9 @@ class PretrainConfig:
     retrieval_temperature: float = 0.1
     relation_teacher_temperature: float = 0.1
     relation_student_temperature: float = 0.1
+    relation_teacher_mode: str = "context_normalized"
+    relation_distance_normalization: str = "none"
+    future_increment_weight: float = 0.0
     hard_negative_weight: float = 2.0
     positive_quantile: float = 0.1
     context_quantile: float = 0.2
@@ -135,6 +138,43 @@ class ExperimentConfig:
             raise ValueError(
                 "retrieval_loss_mode must be hard_negative or relation"
             )
+        teacher_mode = self.pretrain.relation_teacher_mode
+        if teacher_mode not in {
+            "context_normalized",
+            "offset_decay",
+            "offset_decay_increment",
+        }:
+            raise ValueError(
+                "relation_teacher_mode must be context_normalized, offset_decay, "
+                "or offset_decay_increment"
+            )
+        distance_normalization = self.pretrain.relation_distance_normalization
+        if distance_normalization not in {"none", "anchor_mean"}:
+            raise ValueError(
+                "relation_distance_normalization must be none or anchor_mean"
+            )
+        increment_weight = self.pretrain.future_increment_weight
+        if not 0.0 <= increment_weight <= 1.0:
+            raise ValueError("future_increment_weight must be in [0, 1]")
+        if teacher_mode == "context_normalized":
+            if distance_normalization != "none" or increment_weight != 0.0:
+                raise ValueError(
+                    "context_normalized teacher requires normalization=none and "
+                    "future_increment_weight=0"
+                )
+        else:
+            if distance_normalization != "anchor_mean":
+                raise ValueError(
+                    "OffsetDecay relation teachers require anchor_mean distance normalization"
+                )
+            if teacher_mode == "offset_decay" and increment_weight != 0.0:
+                raise ValueError(
+                    "offset_decay teacher requires future_increment_weight=0"
+                )
+            if teacher_mode == "offset_decay_increment" and increment_weight != 0.5:
+                raise ValueError(
+                    "offset_decay_increment teacher requires future_increment_weight=0.5"
+                )
         if not 0.0 < self.data.train_ratio < 1.0:
             raise ValueError("train_ratio must be in (0, 1)")
         if not 0.0 <= self.data.val_ratio < 1.0:

@@ -7,7 +7,8 @@ from typing import Any
 import numpy as np
 import torch
 
-from stanchor.retrieval.retriever import AggregationOutput, EventCandidates
+from stanchor.retrieval.retriever import AggregationOutput, EventCandidates, NodeCandidates
+from stanchor.retrieval.trend_residual import estimate_local_trend
 
 
 def calendar_event_candidates(
@@ -175,6 +176,139 @@ def event_candidate_futures(
     valid = torch.from_numpy(observed).to(device)
     valid = valid & event_valid[:, None, None, :, None]
     return future, valid
+
+
+def offset_decay_aggregation(
+    candidates: NodeCandidates,
+    query_context: torch.Tensor,
+    query_observed: torch.Tensor,
+    bank: Any,
+    series: Any,
+    scaler: Any,
+    context_length: int,
+    device: torch.device,
+) -> AggregationOutput:
+    """Aggregate learned candidates in the zero-parameter OffsetDecay coordinate."""
+    if query_context.ndim != 4 or query_observed.shape != query_context.shape:
+        raise ValueError("query context and mask must be [B, T, N, C]")
+    batch, time, nodes, channels = query_context.shape
+    if time != context_length:
+        raise ValueError("query context time axis must match context_length")
+    if candidates.event_ids.shape[:2] != (batch, nodes):
+        raise ValueError("candidate event ids must align with query batch and nodes")
+    top_k = candidates.event_ids.shape[-1]
+    if candidates.weights.shape != (batch, nodes, top_k):
+        raise ValueError("candidate weights must be [B, N, K]")
+
+    query_statistics = estimate_local_trend(
+        query_context,
+        query_observed,
+        context_length,
+        mode="offset",
+    )
+    flat_ids = candidates.event_ids.reshape(batch * nodes, top_k)
+    flat_valid = candidates.valid.reshape(batch * nodes, top_k)
+    flat_contexts, flat_context_observed = candidate_contexts(
+        bank,
+        flat_ids,
+        series,
+        scaler,
+        context_length,
+        device,
+    )
+    candidate_statistics = estimate_local_trend(
+        flat_contexts,
+        flat_context_observed,
+        context_length,
+        mode="offset",
+    )
+    candidate_levels_all = candidate_statistics.level.view(
+        batch,
+        nodes,
+        top_k,
+        nodes,
+        channels,
+    )
+    candidate_level_valid_all = candidate_statistics.valid.view(
+        batch,
+        nodes,
+        top_k,
+        nodes,
+        channels,
+    )
+    level_index = torch.arange(nodes, device=device).view(1, nodes, 1, 1, 1)
+    level_index = level_index.expand(batch, nodes, top_k, 1, channels)
+    candidate_levels = candidate_levels_all.gather(3, level_index).squeeze(3)
+    candidate_level_valid = (
+        candidate_level_valid_all.gather(3, level_index).squeeze(3)
+        & candidates.valid.unsqueeze(-1)
+    )
+
+    flat_future, flat_future_valid = event_candidate_futures(
+        bank,
+        flat_ids,
+        flat_valid,
+        device,
+    )
+    horizon = flat_future.shape[1]
+    future_all = flat_future.view(
+        batch,
+        nodes,
+        horizon,
+        nodes,
+        top_k,
+        channels,
+    )
+    future_valid_all = flat_future_valid.view_as(future_all)
+    future_index = torch.arange(nodes, device=device).view(1, nodes, 1, 1, 1, 1)
+    future_index = future_index.expand(
+        batch,
+        nodes,
+        horizon,
+        1,
+        top_k,
+        channels,
+    )
+    selected_future = future_all.gather(3, future_index).squeeze(3)
+    selected_future_valid = future_valid_all.gather(3, future_index).squeeze(3)
+    selected_future = selected_future.permute(0, 2, 1, 3, 4).contiguous()
+    selected_future_valid = selected_future_valid.permute(0, 2, 1, 3, 4).contiguous()
+
+    query_level = query_statistics.level[:, None, :, None, :]
+    candidate_level = candidate_levels[:, None, :, :, :]
+    aligned = query_level + selected_future - candidate_level
+    decay = torch.linspace(
+        1.0,
+        0.0,
+        horizon,
+        dtype=selected_future.dtype,
+        device=device,
+    ).view(1, horizon, 1, 1, 1)
+    offset_decay = selected_future + decay * (aligned - selected_future)
+    valid = (
+        selected_future_valid
+        & query_statistics.valid[:, None, :, None, :]
+        & candidate_level_valid[:, None, :, :, :]
+    )
+    offset_decay = torch.where(valid, offset_decay, torch.zeros_like(offset_decay))
+
+    effective = candidates.weights[:, None, :, :, None] * valid.to(
+        candidates.weights.dtype
+    )
+    denominator = effective.sum(dim=3)
+    prediction = (effective * offset_decay).sum(dim=3) / denominator.clamp_min(1.0e-8)
+    prediction_valid = denominator > 0
+    prediction = torch.where(prediction_valid, prediction, torch.zeros_like(prediction))
+    difference = offset_decay - prediction.unsqueeze(3)
+    variance = (effective * difference.square()).sum(dim=3) / denominator.clamp_min(1.0e-8)
+    variance = torch.where(prediction_valid, variance, torch.zeros_like(variance))
+    return AggregationOutput(
+        prediction=prediction,
+        variance=variance,
+        valid=prediction_valid,
+        candidate_futures=offset_decay,
+        candidate_masks=valid,
+    )
 
 
 def weekly_mean_aggregation(

@@ -4,9 +4,13 @@ import unittest
 
 import torch
 
+from stanchor.config import DataConfig, ExperimentConfig, PretrainConfig
 from stanchor.data.normalization import WindowStatistics
 from stanchor.losses.pretraining import (
+    anchor_mean_normalize_distances,
+    build_future_increment,
     build_future_relation_targets,
+    build_offset_decay_signature,
     future_relation_retrieval_loss,
 )
 
@@ -33,6 +37,195 @@ class FutureRelationLossTest(unittest.TestCase):
         self.future_observed = torch.ones_like(self.future, dtype=torch.bool)
         self.context_start = torch.tensor([0, 20, 40, 60])
         self.future_end = self.context_start + 11
+
+    def test_config_enforces_teacher_mode_contract(self) -> None:
+        ExperimentConfig(
+            data=DataConfig(raw_path="data.h5", adjacency_path="adj.pkl"),
+            pretrain=PretrainConfig(),
+        ).validate()
+        ExperimentConfig(
+            data=DataConfig(raw_path="data.h5", adjacency_path="adj.pkl"),
+            pretrain=PretrainConfig(
+                retrieval_loss_mode="relation",
+                relation_teacher_mode="offset_decay",
+                relation_distance_normalization="anchor_mean",
+            ),
+        ).validate()
+        with self.assertRaisesRegex(ValueError, "anchor_mean"):
+            ExperimentConfig(
+                data=DataConfig(raw_path="data.h5", adjacency_path="adj.pkl"),
+                pretrain=PretrainConfig(
+                    retrieval_loss_mode="relation",
+                    relation_teacher_mode="offset_decay",
+                ),
+            ).validate()
+        with self.assertRaisesRegex(ValueError, "0.5"):
+            ExperimentConfig(
+                data=DataConfig(raw_path="data.h5", adjacency_path="adj.pkl"),
+                pretrain=PretrainConfig(
+                    retrieval_loss_mode="relation",
+                    relation_teacher_mode="offset_decay_increment",
+                    relation_distance_normalization="anchor_mean",
+                    future_increment_weight=0.25,
+                ),
+            ).validate()
+
+    def test_offset_decay_signature_uses_endpoint_and_linear_horizon_decay(self) -> None:
+        forecast_context = torch.tensor([[[[1.0]], [[2.0]], [[3.0]]]])
+        context_observed = torch.ones_like(forecast_context, dtype=torch.bool)
+        future = torch.tensor([[[[4.0]], [[5.0]], [[6.0]]]])
+        future_observed = torch.ones_like(future, dtype=torch.bool)
+
+        signature, valid = build_offset_decay_signature(
+            future,
+            future_observed,
+            forecast_context,
+            context_observed,
+        )
+
+        expected = torch.tensor([[[[1.0]], [[3.5]], [[6.0]]]])
+        self.assertTrue(torch.allclose(signature, expected))
+        self.assertTrue(torch.equal(valid, future_observed))
+
+    def test_offset_decay_signature_falls_back_to_visible_mean_endpoint(self) -> None:
+        forecast_context = torch.tensor([[[[1.0]], [[3.0]], [[99.0]]]])
+        context_observed = torch.tensor([[[[True]], [[True]], [[False]]]])
+        future = torch.tensor([[[[4.0]], [[5.0]], [[6.0]]]])
+        future_observed = torch.ones_like(future, dtype=torch.bool)
+
+        signature, valid = build_offset_decay_signature(
+            future,
+            future_observed,
+            forecast_context,
+            context_observed,
+        )
+
+        expected = torch.tensor([[[[2.0]], [[4.0]], [[6.0]]]])
+        self.assertTrue(torch.allclose(signature, expected))
+        self.assertTrue(torch.equal(valid, future_observed))
+
+    def test_future_increment_starts_from_endpoint_then_uses_adjacent_future(self) -> None:
+        endpoint = torch.tensor([[[3.0]]])
+        endpoint_valid = torch.ones_like(endpoint, dtype=torch.bool)
+        future = torch.tensor([[[[4.0]], [[7.0]], [[6.0]]]])
+        future_observed = torch.ones_like(future, dtype=torch.bool)
+
+        increment, valid = build_future_increment(
+            future,
+            future_observed,
+            endpoint,
+            endpoint_valid,
+        )
+
+        expected = torch.tensor([[[[1.0]], [[3.0]], [[-1.0]]]])
+        self.assertTrue(torch.allclose(increment, expected))
+        self.assertTrue(torch.equal(valid, future_observed))
+
+    def test_anchor_mean_normalization_preserves_order_and_masks_invalid_pairs(self) -> None:
+        distances = torch.tensor([[[0.0], [2.0], [4.0]]])
+        valid = torch.tensor([[[False], [True], [True]]])
+
+        normalized = anchor_mean_normalize_distances(distances, valid)
+
+        self.assertTrue(torch.allclose(normalized[0, :, 0], torch.tensor([0.0, 2.0 / 3.0, 4.0 / 3.0])))
+        self.assertTrue(bool(torch.isfinite(normalized).all()))
+
+    def test_offset_decay_teacher_uses_forecast_endpoint_not_context_statistics(self) -> None:
+        future = torch.tensor(
+            [
+                [[1.0], [100.0]],
+                [[11.0], [101.0]],
+                [[13.0], [102.0]],
+            ]
+        ).unsqueeze(-1)
+        forecast_context = torch.tensor([[[[0.0]]], [[[10.0]]], [[[20.0]]]])
+        context_observed = torch.ones_like(forecast_context, dtype=torch.bool)
+        observed = torch.ones_like(future, dtype=torch.bool)
+        starts = torch.tensor([0, 20, 40])
+        ends = starts + 1
+        statistics = WindowStatistics(
+            normalized=torch.zeros(3, 1, 1, 1),
+            level_features=torch.zeros(3, 1, 4),
+            level_valid=torch.ones(3, 1, 1, dtype=torch.bool),
+            mean=torch.zeros(3, 1, 1),
+            std=torch.ones(3, 1, 1),
+        )
+
+        targets = build_future_relation_targets(
+            future,
+            statistics,
+            observed,
+            starts,
+            ends,
+            teacher_temperature=0.1,
+            relation_teacher_mode="offset_decay",
+            forecast_context=forecast_context,
+            forecast_context_observed=context_observed,
+            relation_distance_normalization="anchor_mean",
+        )
+
+        self.assertGreater(
+            float(targets.teacher_distribution[0, 1, 0]),
+            float(targets.teacher_distribution[0, 2, 0]),
+        )
+        self.assertTrue(bool(torch.isfinite(targets.teacher_distribution).all()))
+
+    def test_increment_teacher_adds_future_dynamics_relation(self) -> None:
+        future = torch.tensor(
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, 1.0, 2.0],
+                [2.0, 1.0, 0.0],
+            ],
+            dtype=torch.float32,
+        ).view(3, 3, 1, 1)
+        observed = torch.ones_like(future, dtype=torch.bool)
+        forecast_context = torch.zeros(3, 2, 1, 1)
+        context_observed = torch.ones_like(forecast_context, dtype=torch.bool)
+        starts = torch.tensor([0, 20, 40])
+        ends = starts + 2
+        statistics = WindowStatistics(
+            normalized=torch.zeros(3, 2, 1, 1),
+            level_features=torch.zeros(3, 1, 4),
+            level_valid=torch.ones(3, 1, 1, dtype=torch.bool),
+            mean=torch.zeros(3, 1, 1),
+            std=torch.ones(3, 1, 1),
+        )
+
+        offset_targets = build_future_relation_targets(
+            future,
+            statistics,
+            observed,
+            starts,
+            ends,
+            relation_teacher_mode="offset_decay",
+            forecast_context=forecast_context,
+            forecast_context_observed=context_observed,
+            relation_distance_normalization="anchor_mean",
+        )
+        increment_targets = build_future_relation_targets(
+            future,
+            statistics,
+            observed,
+            starts,
+            ends,
+            relation_teacher_mode="offset_decay_increment",
+            forecast_context=forecast_context,
+            forecast_context_observed=context_observed,
+            relation_distance_normalization="anchor_mean",
+            future_increment_weight=0.5,
+        )
+
+        self.assertAlmostEqual(
+            float(offset_targets.teacher_distribution[0, 1, 0]),
+            float(offset_targets.teacher_distribution[0, 2, 0]),
+            places=6,
+        )
+        self.assertGreater(
+            float(increment_targets.teacher_distribution[0, 1, 0]),
+            float(increment_targets.teacher_distribution[0, 2, 0]),
+        )
+        self.assertTrue(bool(torch.isfinite(increment_targets.future_distance).all()))
 
     def test_teacher_distribution_prefers_closer_future(self) -> None:
         targets = build_future_relation_targets(

@@ -7,6 +7,7 @@ import torch
 from stanchor.config import DataConfig, ExperimentConfig, TargetConfig
 from stanchor.engine.target import checkpoint_downstream_mode
 from stanchor.losses.downstream import compute_downstream_loss
+from stanchor.modes import LEARNED_TOPK_OFFSET_DECAY_HORIZON
 from stanchor.models.downstream import (
     ConfidenceHead,
     LightweightForecastBackbone,
@@ -139,6 +140,33 @@ class DownstreamFlowTest(unittest.TestCase):
             output,
             target,
             torch.ones_like(target, dtype=torch.bool),
+            confidence_weight=1.0,
+            help_margin=0.0,
+            help_temperature=0.1,
+            use_confidence=False,
+        )
+        losses.total.backward()
+        self.assertIsNone(model.confidence_head.network[0].weight.grad)
+        self.assertIsNotNone(model.fusion.horizon_logits.grad)
+
+    def test_offset_decay_horizon_mode_uses_memory_without_confidence_head_gradient(self) -> None:
+        x, candidates, aggregation, _ = self._inputs(with_memory=True)
+        model = STAnchorDownstreamModel(
+            LightweightForecastBackbone(12, 3, 1, 1, hidden_dim=16, dropout=0.0),
+            ConfidenceHead(hidden_dim=8),
+            SafeResidualFusion(3, initial_max_weight=0.1),
+            confidence_level_temperature=1.0,
+            mode=LEARNED_TOPK_OFFSET_DECAY_HORIZON,
+        )
+
+        output = model(x, candidates, aggregation)
+
+        self.assertTrue(torch.equal(output.confidence, torch.ones_like(output.confidence)))
+        self.assertTrue(torch.equal(output.confidence_features, torch.zeros_like(output.confidence_features)))
+        losses = compute_downstream_loss(
+            output,
+            torch.randn_like(output.final_prediction),
+            torch.ones_like(output.final_prediction, dtype=torch.bool),
             confidence_weight=1.0,
             help_margin=0.0,
             help_temperature=0.1,

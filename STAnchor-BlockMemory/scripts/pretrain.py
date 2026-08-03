@@ -19,6 +19,7 @@ def main() -> None:
     parser.add_argument("--max-batches", type=int, default=None)
     parser.add_argument("--epochs", type=int, default=None, help="Temporary debug override.")
     parser.add_argument("--run-name", default=None, help="Override the artifact directory name.")
+    parser.add_argument("--seed", type=int, default=None, help="Override only the pretraining seed.")
     args = parser.parse_args()
     config = load_config(args.config)
     if args.epochs is not None:
@@ -27,6 +28,9 @@ def main() -> None:
         config = replace(config, pretrain=replace(config.pretrain, epochs=args.epochs))
     if args.run_name is not None:
         config = replace(config, runtime=replace(config.runtime, run_name=args.run_name))
+    if args.seed is not None:
+        config = replace(config, runtime=replace(config.runtime, seed=args.seed))
+    config.validate()
     checkpoint = train_pretraining(config, max_batches=args.max_batches)
     print(f"pretraining checkpoint: {checkpoint}")
 
