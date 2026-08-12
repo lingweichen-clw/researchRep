@@ -32,6 +32,8 @@ def build_memory_bank(
     num_workers: int,
     device: torch.device,
     key_dtype: str = "float16",
+    profile_scale_floor: float = 0.1,
+    relation_distance_normalization: str = "none",
 ) -> BankManifest:
     if len(dataset) <= 0:
         raise ValueError("cannot build an empty bank")
@@ -40,8 +42,9 @@ def build_memory_bank(
     sample = dataset[0]
     nodes = int(sample["x"].shape[1])
     channels = int(sample["x"].shape[2])
+    profile_enabled = model.model_config.profile_dim > 0
     manifest = BankManifest(
-        schema_version=1,
+        schema_version=2 if profile_enabled else 1,
         dataset_name=dataset_name,
         num_events=len(dataset),
         num_nodes=nodes,
@@ -55,6 +58,15 @@ def build_memory_bank(
         encoder_fingerprint=model.retrieval_fingerprint(),
         graph_fingerprint=graph.fingerprint,
         scaler=scaler.state_dict(),
+        key_layout=("canonical_profile_latent" if profile_enabled else "legacy"),
+        profile_dim=(model.model_config.profile_dim if profile_enabled else 0),
+        latent_dim=(model.model_config.latent_dim if profile_enabled else 0),
+        profile_weight=(model.model_config.profile_weight if profile_enabled else 0.0),
+        profile_grid_size=(model.model_config.profile_dim if profile_enabled else 0),
+        profile_scale_floor=(profile_scale_floor if profile_enabled else 0.1),
+        relation_distance_normalization=(
+            relation_distance_normalization if profile_enabled else "none"
+        ),
     )
     writer = BankWriter(output_dir, manifest)
     model.eval()

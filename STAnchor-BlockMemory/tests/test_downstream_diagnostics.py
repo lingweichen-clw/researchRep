@@ -14,6 +14,7 @@ from stanchor.diagnostics.downstream import (
     confidence_quartile_gains,
     diagnose_downstream_checkpoint,
     distribution_summary,
+    error_aware_diagnostic_metrics,
 )
 
 
@@ -43,6 +44,7 @@ class DownstreamDiagnosticsTest(unittest.TestCase):
         graph = MagicMock()
         graph.to.return_value = graph
         pretrained = MagicMock()
+        pretrained.model_config.profile_dim = 0
         downstream = MagicMock()
         bank = MagicMock()
         bank.__enter__.return_value = bank
@@ -50,6 +52,7 @@ class DownstreamDiagnosticsTest(unittest.TestCase):
         bank.manifest.dataset_name = "METR-LA"
         checkpoint = {
             "downstream_mode": "weekly_mean_horizon",
+            "candidate_protocol": "relaxed_calendar",
             "downstream_state_dict": {},
             "bank_manifest": bank.manifest.to_dict(),
         }
@@ -83,6 +86,10 @@ class DownstreamDiagnosticsTest(unittest.TestCase):
                 )
 
         self.assertEqual(retrieval.call_args.args[0], "weekly_mean_horizon")
+        self.assertEqual(
+            retrieval.call_args.kwargs["candidate_protocol"],
+            "relaxed_calendar",
+        )
 
     def test_accumulator_compares_memory_on_common_valid_positions(self) -> None:
         target = torch.full((1, 2, 2, 1), 10.0)
@@ -114,6 +121,25 @@ class DownstreamDiagnosticsTest(unittest.TestCase):
         self.assertAlmostEqual(result["gains"]["final_vs_base_percent"], 25.0)
         self.assertAlmostEqual(result["confidence_quality"]["auroc"], 1.0)
         self.assertAlmostEqual(result["confidence_quality"]["prevalence"], 0.5)
+
+    def test_accumulator_reports_zero_coverage_without_memory_metric_crash(self) -> None:
+        target = torch.ones(1, 1, 1, 1)
+        base = torch.zeros_like(target)
+        accumulator = DownstreamDiagnosticAccumulator(horizon=1)
+        accumulator.update(
+            base,
+            torch.zeros_like(target),
+            base,
+            target,
+            torch.ones_like(target, dtype=torch.bool),
+            torch.zeros(1, 1, 1, 1, dtype=torch.bool),
+            torch.zeros(1, 1, 1, 1),
+            torch.zeros(1, 1, 1, 1),
+        )
+        result = accumulator.compute()
+        self.assertEqual(result["memory_coverage"], 0.0)
+        self.assertIsNone(result["branches"]["memory"])
+        self.assertIsNone(result["gains"]["memory_vs_base_common_absolute_mae"])
 
     def test_binary_metrics_are_exact_for_perfect_ranking(self) -> None:
         confidence = np.asarray([0.9, 0.8, 0.2, 0.1], dtype=np.float64)
@@ -155,6 +181,80 @@ class DownstreamDiagnosticsTest(unittest.TestCase):
         summary = distribution_summary(confidence)
         self.assertAlmostEqual(summary["mean"], 0.5)
         self.assertAlmostEqual(summary["median"], 0.5)
+
+    def test_error_aware_metrics_report_risk_blend_and_contributions(self) -> None:
+        result = error_aware_diagnostic_metrics(
+            predicted_risk=np.asarray([1.0, 2.0, 3.0, 4.0]),
+            true_risk=np.asarray([1.0, 2.0, 3.0, 4.0]),
+            fusion_weight=np.asarray([0.1, 0.3, 0.7, 0.9]),
+            blend_target=np.asarray([0.0, 0.2, 0.8, 1.0]),
+            blend_valid=np.asarray([True, True, True, True]),
+            contributions=np.tile(np.arange(10, dtype=np.float64), (4, 1)),
+        )
+        self.assertAlmostEqual(result["risk_mae"], 0.0)
+        self.assertAlmostEqual(result["risk_spearman"], 1.0)
+        self.assertAlmostEqual(result["risk_r2"], 1.0)
+        self.assertAlmostEqual(result["blend_target_mae"], 0.1)
+        self.assertEqual(len(result["contribution_distributions"]), 10)
+        self.assertNotIn("brier", result)
+
+    def test_error_aware_accumulator_does_not_claim_probability_calibration(self) -> None:
+        accumulator = DownstreamDiagnosticAccumulator(
+            horizon=1, confidence_is_probability=False
+        )
+        target = torch.tensor([[[[1.0]]], [[[1.0]]]])
+        base = torch.tensor([[[[2.0]]], [[[2.0]]]])
+        memory = torch.tensor([[[[1.0]]], [[[3.0]]]])
+        final = torch.tensor([[[[1.1]]], [[[2.1]]]])
+        observed = torch.ones_like(target, dtype=torch.bool)
+        valid = torch.ones(2, 1, 1, 1, dtype=torch.bool)
+        weight = torch.tensor([[[[0.9]]], [[[0.1]]]])
+        accumulator.update(
+            base,
+            memory,
+            final,
+            target,
+            observed,
+            valid,
+            weight,
+            weight,
+            predicted_risk=torch.tensor([[[[0.5]]], [[[0.5]]]]),
+            true_risk=torch.tensor([[[[0.5]]], [[[0.5]]]]),
+            blend_target=torch.tensor([[[[0.5]]], [[[0.0]]]]),
+            blend_valid=valid,
+            additive_contributions=torch.zeros(2, 1, 1, 10),
+        )
+        result = accumulator.compute()
+        self.assertIsNone(result["confidence_quality"])
+        self.assertIn("fusion_helpfulness_ranking", result)
+        self.assertNotIn("brier", result["fusion_helpfulness_ranking"])
+        self.assertIn("error_aware_quality", result)
+
+    def test_error_aware_risk_quality_survives_zero_memory_coverage(self) -> None:
+        accumulator = DownstreamDiagnosticAccumulator(
+            horizon=1, confidence_is_probability=False
+        )
+        target = torch.tensor([[[[1.0]]], [[[2.0]]]])
+        base = torch.zeros_like(target)
+        no_memory = torch.zeros(2, 1, 1, 1, dtype=torch.bool)
+        accumulator.update(
+            base,
+            torch.zeros_like(target),
+            base,
+            target,
+            torch.ones_like(target, dtype=torch.bool),
+            no_memory,
+            torch.zeros_like(target),
+            torch.zeros_like(target),
+            predicted_risk=torch.tensor([[[[0.5]]], [[[1.5]]]]),
+            true_risk=torch.tensor([[[[0.5]]], [[[1.5]]]]),
+            blend_target=torch.zeros_like(target),
+            blend_valid=no_memory,
+            additive_contributions=torch.zeros(2, 1, 1, 10),
+        )
+        result = accumulator.compute()
+        self.assertAlmostEqual(result["error_aware_quality"]["risk_mae"], 0.0)
+        self.assertIsNone(result["error_aware_quality"]["blend_target_mae"])
 
 
 if __name__ == "__main__":

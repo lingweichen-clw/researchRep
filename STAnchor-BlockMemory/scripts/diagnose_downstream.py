@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from stanchor.config import load_config, resolve_project_path
 from stanchor.diagnostics.downstream import diagnose_downstream_checkpoint
 from stanchor.utils import save_json
+from stanchor.retrieval.strategies import CANDIDATE_PROTOCOLS
 
 
 def main() -> None:
@@ -23,6 +24,7 @@ def main() -> None:
     parser.add_argument("--split", choices=("val", "test"), default="val")
     parser.add_argument("--output", required=True)
     parser.add_argument("--max-batches", type=int, default=None)
+    parser.add_argument("--candidate-protocol", choices=CANDIDATE_PROTOCOLS, default=None)
     args = parser.parse_args()
     result = diagnose_downstream_checkpoint(
         load_config(args.config),
@@ -31,6 +33,7 @@ def main() -> None:
         bank_path=args.bank,
         split=args.split,
         max_batches=args.max_batches,
+        candidate_protocol=args.candidate_protocol,
     )
     output = resolve_project_path(args.output)
     save_json(output, result)

@@ -8,6 +8,8 @@ import torch
 import torch.nn.functional as functional
 
 from stanchor.data.normalization import normalize_future_with_context
+from stanchor.retrieval.semantic_profile import symmetric_geometric_mean_normalize
+from stanchor.retrieval.semantic_profile import build_cfdp_teacher
 from stanchor.models.pretraining import PretrainForwardOutput
 
 
@@ -44,6 +46,7 @@ class PretrainingLoss:
     relation_candidate_pairs: int = 0
     teacher_effective_support: float = 0.0
     student_effective_support: float = 0.0
+    profile: torch.Tensor | None = None
 
 
 def masked_reconstruction_loss(
@@ -299,9 +302,14 @@ def build_future_relation_targets(
         "offset_decay_increment",
     }:
         raise ValueError(f"unknown relation_teacher_mode: {relation_teacher_mode}")
-    if relation_distance_normalization not in {"none", "anchor_mean"}:
+    if relation_distance_normalization not in {
+        "none",
+        "anchor_mean",
+        "symmetric_geometric_mean",
+    }:
         raise ValueError(
-            "relation_distance_normalization must be none or anchor_mean"
+            "relation_distance_normalization must be none, anchor_mean, "
+            "or symmetric_geometric_mean"
         )
     if not 0.0 <= future_increment_weight <= 1.0:
         raise ValueError("future_increment_weight must be in [0, 1]")
@@ -350,6 +358,11 @@ def build_future_relation_targets(
                         future_distance,
                         candidate_mask,
                     )
+                elif relation_distance_normalization == "symmetric_geometric_mean":
+                    future_distance = symmetric_geometric_mean_normalize(
+                        future_distance,
+                        candidate_mask,
+                    )
             else:
                 endpoint, endpoint_valid = _endpoint_level_from_context(
                     forecast_context,
@@ -374,6 +387,15 @@ def build_future_relation_targets(
                         candidate_mask,
                     )
                     increment_distance = anchor_mean_normalize_distances(
+                        increment_distance,
+                        candidate_mask,
+                    )
+                elif relation_distance_normalization == "symmetric_geometric_mean":
+                    offset_distance = symmetric_geometric_mean_normalize(
+                        offset_distance,
+                        candidate_mask,
+                    )
+                    increment_distance = symmetric_geometric_mean_normalize(
                         increment_distance,
                         candidate_mask,
                     )
@@ -487,6 +509,8 @@ def compute_pretraining_loss(
     relation_teacher_mode: str = "context_normalized",
     relation_distance_normalization: str = "none",
     future_increment_weight: float = 0.0,
+    profile_loss_weight: float = 0.0,
+    profile_scale_floor: float = 0.1,
 ) -> PretrainingLoss:
     reconstruction = masked_reconstruction_loss(
         output.reconstruction,
@@ -528,7 +552,39 @@ def compute_pretraining_loss(
         )
     else:
         raise ValueError(f"unknown retrieval_loss_mode: {retrieval_loss_mode}")
-    total = reconstruction + retrieval_weight * retrieval_output.loss
+    profile_loss = output.clean.retrieval.node_keys.sum() * 0.0
+    profile_prediction = output.clean.retrieval.profile_prediction
+    if profile_loss_weight > 0.0:
+        if profile_prediction is None:
+            raise ValueError("profile loss requires a profile-enabled retrieval head")
+        if future_model.shape[-1] != 1:
+            raise ValueError("CFDP profile supervision currently requires C=1")
+        if forecast_context is None or forecast_context_observed is None:
+            raise ValueError(
+                "CFDP profile supervision requires forecast_context and "
+                "forecast_context_observed"
+            )
+        target_profile, target_valid = build_cfdp_teacher(
+            future=future_model,
+            future_observed=observed_future,
+            context=forecast_context,
+            context_observed=forecast_context_observed,
+            profile_size=profile_prediction.shape[-1],
+            scale_floor=profile_scale_floor,
+        )
+        target_profile = target_profile.squeeze(-1).permute(0, 2, 1).contiguous()
+        target_valid = target_valid.squeeze(-1).permute(0, 2, 1).contiguous()
+        if profile_prediction.shape != target_profile.shape:
+            raise ValueError("profile prediction and CFDP target shapes do not align")
+        element_loss = functional.smooth_l1_loss(
+            profile_prediction, target_profile, reduction="none"
+        )
+        profile_loss = (
+            element_loss.masked_select(target_valid).mean()
+            if bool(target_valid.any())
+            else profile_prediction.sum() * 0.0
+        )
+    total = reconstruction + retrieval_weight * retrieval_output.loss + profile_loss_weight * profile_loss
     reconstruction_positions = int(
         (output.mask.value_mask.bool() & observed_context.bool()).sum().item()
     )
@@ -543,4 +599,5 @@ def compute_pretraining_loss(
         relation_candidate_pairs=retrieval_output.candidate_pairs,
         teacher_effective_support=retrieval_output.teacher_effective_support,
         student_effective_support=retrieval_output.student_effective_support,
+        profile=profile_loss,
     )

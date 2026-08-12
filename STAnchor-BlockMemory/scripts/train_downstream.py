@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from stanchor.config import load_config
 from stanchor.engine.target import train_downstream
 from stanchor.modes import DOWNSTREAM_MODES
+from stanchor.retrieval.strategies import CANDIDATE_PROTOCOLS
 
 
 def main() -> None:
@@ -21,8 +22,16 @@ def main() -> None:
     parser.add_argument("--bank", required=True)
     parser.add_argument("--max-batches", type=int, default=None)
     parser.add_argument("--epochs", type=int, default=None, help="Temporary debug override.")
+    parser.add_argument("--base-warmup-epochs", type=int, default=None)
+    parser.add_argument("--calibrator-warmup-epochs", type=int, default=None)
     parser.add_argument("--run-name", default=None, help="Override the artifact directory name.")
     parser.add_argument("--mode", choices=DOWNSTREAM_MODES, default=None)
+    parser.add_argument(
+        "--candidate-protocol",
+        choices=CANDIDATE_PROTOCOLS,
+        default=None,
+        help="Historical candidate pool used consistently in train and validation.",
+    )
     parser.add_argument("--seed", type=int, default=None, help="Override only the downstream seed.")
     args = parser.parse_args()
     config = load_config(args.config)
@@ -30,10 +39,34 @@ def main() -> None:
         if args.epochs <= 0:
             raise ValueError("epochs must be positive")
         config = replace(config, target=replace(config.target, epochs=args.epochs))
+    if args.base_warmup_epochs is not None:
+        if args.base_warmup_epochs < 0:
+            raise ValueError("base-warmup-epochs must be non-negative")
+        config = replace(
+            config,
+            target=replace(
+                config.target, base_warmup_epochs=args.base_warmup_epochs
+            ),
+        )
+    if args.calibrator_warmup_epochs is not None:
+        if args.calibrator_warmup_epochs < 0:
+            raise ValueError("calibrator-warmup-epochs must be non-negative")
+        config = replace(
+            config,
+            target=replace(
+                config.target,
+                calibrator_warmup_epochs=args.calibrator_warmup_epochs,
+            ),
+        )
     if args.run_name is not None:
         config = replace(config, runtime=replace(config.runtime, run_name=args.run_name))
     if args.mode is not None:
         config = replace(config, target=replace(config.target, downstream_mode=args.mode))
+    if args.candidate_protocol is not None:
+        config = replace(
+            config,
+            target=replace(config.target, candidate_protocol=args.candidate_protocol),
+        )
     if args.seed is not None:
         config = replace(config, runtime=replace(config.runtime, seed=args.seed))
     config.validate()

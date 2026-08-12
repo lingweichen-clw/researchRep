@@ -5,7 +5,11 @@ import unittest
 import torch
 
 from stanchor.config import DataConfig, ExperimentConfig, TargetConfig
-from stanchor.engine.target import checkpoint_downstream_mode
+from stanchor.engine.target import (
+    build_downstream_model,
+    checkpoint_candidate_protocol,
+    checkpoint_downstream_mode,
+)
 from stanchor.losses.downstream import compute_downstream_loss
 from stanchor.modes import LEARNED_TOPK_OFFSET_DECAY_HORIZON
 from stanchor.models.downstream import (
@@ -28,6 +32,15 @@ class DownstreamFlowTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "downstream mode"):
             config.validate()
 
+    def test_config_rejects_unknown_candidate_protocol(self) -> None:
+        config = ExperimentConfig(
+            data=DataConfig(raw_path="data.h5", adjacency_path="adj.pkl"),
+            target=TargetConfig(candidate_protocol="future_oracle"),
+        )
+
+        with self.assertRaisesRegex(ValueError, "candidate protocol"):
+            config.validate()
+
     def test_legacy_checkpoint_defaults_to_existing_confidence_mode(self) -> None:
         self.assertEqual(
             checkpoint_downstream_mode({"config": {"target": {}}}),
@@ -37,6 +50,39 @@ class DownstreamFlowTest(unittest.TestCase):
             checkpoint_downstream_mode({"downstream_mode": "base_only"}),
             "base_only",
         )
+
+    def test_legacy_mode_does_not_add_error_aware_checkpoint_parameters(self) -> None:
+        config = ExperimentConfig(
+            data=DataConfig(raw_path="data.h5", adjacency_path="adj.pkl"),
+            target=TargetConfig(downstream_mode="learned_topk_confidence"),
+        )
+        model = build_downstream_model(config)
+        self.assertIsNone(model.risk_head)
+        self.assertIsNone(model.error_aware_fusion)
+        self.assertFalse(
+            any(name.startswith("risk_head") for name in model.state_dict())
+        )
+
+    def test_candidate_protocol_defaults_to_exact_calendar(self) -> None:
+        self.assertEqual(
+            checkpoint_candidate_protocol({"config": {"target": {}}}),
+            "exact_calendar",
+        )
+        self.assertEqual(
+            checkpoint_candidate_protocol({"candidate_protocol": "relaxed_calendar"}),
+            "relaxed_calendar",
+        )
+
+    def test_candidate_protocol_rejects_unknown_checkpoint_value(self) -> None:
+        with self.assertRaisesRegex(ValueError, "candidate protocol"):
+            checkpoint_candidate_protocol({"candidate_protocol": "future_oracle"})
+
+    def test_candidate_protocol_rejects_explicit_evaluation_mismatch(self) -> None:
+        with self.assertRaisesRegex(ValueError, "differs from checkpoint"):
+            checkpoint_candidate_protocol(
+                {"candidate_protocol": "relaxed_calendar"},
+                expected="exact_calendar",
+            )
 
     def _inputs(self, with_memory: bool = True):
         batch, time, horizon, nodes, channels, top_k = 2, 12, 3, 4, 1, 2

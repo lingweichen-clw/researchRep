@@ -60,7 +60,13 @@ class STAnchorPretrainModel(nn.Module):
             dropout=model_config.dropout,
             graph_bias=model_config.graph_bias,
         )
-        self.retrieval_head = RetrievalHead(model_config.hidden_dim, model_config.retrieval_dim)
+        self.retrieval_head = RetrievalHead(
+            model_config.hidden_dim,
+            model_config.retrieval_dim,
+            profile_dim=model_config.profile_dim,
+            latent_dim=model_config.latent_dim,
+            profile_weight=model_config.profile_weight,
+        )
         self.reconstruction_head = nn.Linear(
             model_config.hidden_dim,
             model_config.patch_size * model_config.input_channels,

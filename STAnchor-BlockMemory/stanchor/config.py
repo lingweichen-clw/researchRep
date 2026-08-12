@@ -9,6 +9,7 @@ from typing import Any, Mapping, TypeVar
 import yaml
 
 from stanchor.modes import LEARNED_TOPK_CONFIDENCE, validate_downstream_mode
+from stanchor.retrieval.strategies import validate_candidate_protocol
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,9 @@ class ModelConfig:
     ffn_multiplier: int = 2
     dropout: float = 0.1
     graph_bias: float = 1.0
+    profile_dim: int = 0
+    latent_dim: int = 0
+    profile_weight: float = 0.25
 
 
 @dataclass(frozen=True)
@@ -65,6 +69,8 @@ class PretrainConfig:
     relation_teacher_mode: str = "context_normalized"
     relation_distance_normalization: str = "none"
     future_increment_weight: float = 0.0
+    profile_loss_weight: float = 0.0
+    profile_scale_floor: float = 0.1
     hard_negative_weight: float = 2.0
     positive_quantile: float = 0.1
     context_quantile: float = 0.2
@@ -88,6 +94,7 @@ class BankConfig:
 @dataclass(frozen=True)
 class TargetConfig:
     downstream_mode: str = LEARNED_TOPK_CONFIDENCE
+    candidate_protocol: str = "exact_calendar"
     batch_size: int = 32
     epochs: int = 50
     learning_rate: float = 1.0e-3
@@ -99,6 +106,14 @@ class TargetConfig:
     help_temperature: float = 0.1
     backbone_hidden_dim: int = 64
     patience: int = 10
+    risk_hidden_dim: int = 32
+    fusion_feature_hidden_dim: int = 8
+    risk_weight: float = 0.1
+    blend_weight: float = 0.1
+    blend_minimum_direction_norm: float = 1.0e-4
+    base_warmup_epochs: int = 0
+    calibrator_warmup_epochs: int = 5
+    backbone_learning_rate_scale: float = 0.1
 
 
 @dataclass(frozen=True)
@@ -120,6 +135,7 @@ class ExperimentConfig:
 
     def validate(self) -> None:
         validate_downstream_mode(self.target.downstream_mode)
+        validate_candidate_protocol(self.target.candidate_protocol)
         if self.data.context_length <= 0 or self.data.horizon <= 0:
             raise ValueError("context_length and horizon must be positive")
         if self.data.encoder_context_length < self.data.context_length:
@@ -134,6 +150,33 @@ class ExperimentConfig:
             raise ValueError("hidden_dim must be divisible by num_heads")
         if self.model.input_channels != self.model.output_channels:
             raise ValueError("v1 requires input_channels == output_channels")
+        if self.model.profile_dim < 0 or self.model.latent_dim < 0:
+            raise ValueError("profile_dim and latent_dim must be non-negative")
+        if (self.model.profile_dim == 0) != (self.model.latent_dim == 0):
+            raise ValueError(
+                "profile_dim and latent_dim must either both be zero or both be positive"
+            )
+        if self.model.profile_dim > 0 and self.model.profile_dim + self.model.latent_dim != self.model.retrieval_dim:
+            raise ValueError("profile_dim + latent_dim must equal retrieval_dim")
+        if self.model.profile_dim > 0:
+            if self.model.profile_dim != 12:
+                raise ValueError("E5-Final requires a fixed 12-D canonical profile")
+            if self.model.input_channels != 1:
+                raise ValueError("E5-Final CFDP currently requires one input channel")
+            if self.pretrain.relation_distance_normalization != "symmetric_geometric_mean":
+                raise ValueError(
+                    "profile-enabled E5-Final requires symmetric_geometric_mean relation normalization"
+                )
+        if not 0.0 <= self.model.profile_weight <= 1.0:
+            raise ValueError("profile_weight must be in [0, 1]")
+        if self.pretrain.profile_loss_weight < 0:
+            raise ValueError("profile_loss_weight must be non-negative")
+        if self.pretrain.profile_scale_floor <= 0:
+            raise ValueError("profile_scale_floor must be positive")
+        if self.model.profile_dim == 0 and self.pretrain.profile_loss_weight != 0.0:
+            raise ValueError("profile_loss_weight requires a profile-enabled retrieval head")
+        if self.model.profile_dim > 0 and self.pretrain.profile_loss_weight <= 0.0:
+            raise ValueError("profile-enabled retrieval requires positive profile_loss_weight")
         if self.pretrain.retrieval_loss_mode not in {"hard_negative", "relation"}:
             raise ValueError(
                 "retrieval_loss_mode must be hard_negative or relation"
@@ -149,9 +192,14 @@ class ExperimentConfig:
                 "or offset_decay_increment"
             )
         distance_normalization = self.pretrain.relation_distance_normalization
-        if distance_normalization not in {"none", "anchor_mean"}:
+        if distance_normalization not in {
+            "none",
+            "anchor_mean",
+            "symmetric_geometric_mean",
+        }:
             raise ValueError(
-                "relation_distance_normalization must be none or anchor_mean"
+                "relation_distance_normalization must be none, anchor_mean, "
+                "or symmetric_geometric_mean"
             )
         increment_weight = self.pretrain.future_increment_weight
         if not 0.0 <= increment_weight <= 1.0:
@@ -163,9 +211,13 @@ class ExperimentConfig:
                     "future_increment_weight=0"
                 )
         else:
-            if distance_normalization != "anchor_mean":
+            if distance_normalization not in {
+                "anchor_mean",
+                "symmetric_geometric_mean",
+            }:
                 raise ValueError(
-                    "OffsetDecay relation teachers require anchor_mean distance normalization"
+                    "OffsetDecay relation teachers require anchor_mean or "
+                    "symmetric_geometric_mean distance normalization"
                 )
             if teacher_mode == "offset_decay" and increment_weight != 0.0:
                 raise ValueError(
@@ -222,6 +274,24 @@ class ExperimentConfig:
             raise ValueError("positive_quantile must be smaller than negative_quantile")
         if self.pretrain.progress_interval <= 0:
             raise ValueError("progress_interval must be positive")
+        for name, value in (
+            ("risk_hidden_dim", self.target.risk_hidden_dim),
+            ("fusion_feature_hidden_dim", self.target.fusion_feature_hidden_dim),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be positive")
+        for name, value in (
+            ("risk_weight", self.target.risk_weight),
+            ("blend_weight", self.target.blend_weight),
+        ):
+            if value < 0:
+                raise ValueError(f"{name} must be non-negative")
+        if self.target.blend_minimum_direction_norm <= 0:
+            raise ValueError("blend_minimum_direction_norm must be positive")
+        if self.target.base_warmup_epochs < 0 or self.target.calibrator_warmup_epochs < 0:
+            raise ValueError("downstream warmup epochs must be non-negative")
+        if not 0.0 < self.target.backbone_learning_rate_scale <= 1.0:
+            raise ValueError("backbone_learning_rate_scale must be in (0,1]")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

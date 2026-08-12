@@ -51,6 +51,8 @@ def main() -> None:
         num_workers=config.data.num_workers,
         device=device,
         key_dtype=config.bank.key_dtype,
+        profile_scale_floor=config.pretrain.profile_scale_floor,
+        relation_distance_normalization=config.pretrain.relation_distance_normalization,
     )
     print(f"bank: {output_dir}")
     print(f"events={manifest.num_events} nodes={manifest.num_nodes} key_dim={manifest.retrieval_dim}")
@@ -58,4 +60,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

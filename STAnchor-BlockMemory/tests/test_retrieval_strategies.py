@@ -86,6 +86,35 @@ class RetrievalStrategiesTest(unittest.TestCase):
                 device=torch.device("cpu"),
             )
 
+    def test_relaxed_calendar_candidates_include_adjacent_slots_without_duplicates(self) -> None:
+        class Calendar:
+            @staticmethod
+            def lookup(weekday: int, slot: int) -> np.ndarray:
+                self.assertEqual(weekday, 2)
+                return {
+                    9: np.asarray([0, 1], dtype=np.int64),
+                    10: np.asarray([1, 2], dtype=np.int64),
+                    11: np.asarray([3], dtype=np.int64),
+                }[slot]
+
+        class Bank:
+            calendar = Calendar()
+            future_end = np.asarray([5, 6, 7, 25], dtype=np.int64)
+            manifest = SimpleNamespace(slots_per_day=288)
+
+        result = calendar_event_candidates(
+            Bank(),
+            weekday=torch.tensor([2]),
+            slot=torch.tensor([10]),
+            context_start=torch.tensor([20]),
+            max_candidates=5,
+            device=torch.device("cpu"),
+            candidate_protocol="relaxed_calendar",
+        )
+
+        self.assertTrue(torch.equal(result.event_ids, torch.tensor([[0, 1, 2, -1, -1]])))
+        self.assertTrue(torch.equal(result.valid, torch.tensor([[True, True, True, False, False]])))
+
     def test_uniform_aggregation_ignores_missing_candidate_and_computes_variance(self) -> None:
         # [B, H, N, K, C]
         candidates = torch.tensor([[[[[1.0], [3.0], [100.0]]]]])

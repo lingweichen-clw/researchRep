@@ -143,12 +143,17 @@ class BankWriter:
 
 
 class MemoryBank:
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, expected_schema_version: int | None = None) -> None:
         self.path = Path(path)
         manifest_path = self.path / "manifest.json"
         if not manifest_path.exists():
             raise FileNotFoundError(f"Bank is incomplete or missing manifest: {manifest_path}")
         self.manifest = BankManifest.from_dict(load_json(manifest_path))
+        if expected_schema_version is not None and self.manifest.schema_version != expected_schema_version:
+            raise ValueError(
+                f"Bank schema version {self.manifest.schema_version} does not match "
+                f"expected schema version {expected_schema_version}"
+            )
         self.arrays: dict[str, np.ndarray] = {
             name: np.load(self.path / filename, mmap_mode="r") for name, filename in ARRAY_FILES.items()
         }

@@ -175,7 +175,10 @@ def diagnose_retrieval_value(
     top1_weights: list[torch.Tensor] = []
     effective_support: list[torch.Tensor] = []
 
-    with MemoryBank(bank_path) as bank:
+    with MemoryBank(
+        bank_path,
+        expected_schema_version=(2 if model.model_config.profile_dim > 0 else 1),
+    ) as bank:
         _validate_bank(bank, model, graph_cpu, data.scaler.state_dict())
         retriever = TwoStageRetriever(
             bank,

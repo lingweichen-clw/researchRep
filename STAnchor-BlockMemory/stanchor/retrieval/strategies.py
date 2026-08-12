@@ -10,6 +10,16 @@ import torch
 from stanchor.retrieval.retriever import AggregationOutput, EventCandidates, NodeCandidates
 from stanchor.retrieval.trend_residual import estimate_local_trend
 
+CANDIDATE_PROTOCOLS = ("exact_calendar", "relaxed_calendar")
+
+
+def validate_candidate_protocol(protocol: str) -> str:
+    protocol = str(protocol).lower()
+    if protocol not in CANDIDATE_PROTOCOLS:
+        choices = ", ".join(CANDIDATE_PROTOCOLS)
+        raise ValueError(f"candidate protocol must be one of: {choices}")
+    return protocol
+
 
 def calendar_event_candidates(
     bank: Any,
@@ -18,8 +28,16 @@ def calendar_event_candidates(
     context_start: torch.Tensor,
     max_candidates: int,
     device: torch.device,
+    candidate_protocol: str = "exact_calendar",
 ) -> EventCandidates:
-    """Return every causal event in the exact weekday-slot bucket."""
+    """Return causal events from the configured calendar candidate protocol.
+
+    ``exact_calendar`` selects the same weekday and slot. ``relaxed_calendar``
+    selects the same weekday and slots in ``slot - 1, slot, slot + 1``. Both
+    protocols use only historical events whose future has ended before the
+    query context starts.
+    """
+    candidate_protocol = validate_candidate_protocol(candidate_protocol)
     if max_candidates <= 0:
         raise ValueError("max_candidates must be positive")
     if weekday.ndim != 1 or slot.shape != weekday.shape or context_start.shape != weekday.shape:
@@ -30,16 +48,29 @@ def calendar_event_candidates(
     valid = torch.zeros((batch, max_candidates), dtype=torch.bool, device=device)
     future_end = np.asarray(bank.future_end)
     for batch_index in range(batch):
-        calendar_ids = np.asarray(
-            bank.calendar.lookup(
-                int(weekday[batch_index].item()),
-                int(slot[batch_index].item()),
-            ),
-            dtype=np.int64,
+        query_weekday = int(weekday[batch_index].item())
+        query_slot = int(slot[batch_index].item())
+        slots_per_day = int(
+            getattr(getattr(bank, "manifest", None), "slots_per_day", 24 * 60 // 5)
         )
-        legal = calendar_ids[
-            future_end[calendar_ids] < int(context_start[batch_index].item())
-        ]
+        radius = 1 if candidate_protocol == "relaxed_calendar" else 0
+        collected: list[int] = []
+        seen: set[int] = set()
+        for slot_offset in range(-radius, radius + 1):
+            candidate_slot = query_slot + slot_offset
+            if not 0 <= candidate_slot < slots_per_day:
+                continue
+            calendar_ids = np.asarray(
+                bank.calendar.lookup(query_weekday, candidate_slot),
+                dtype=np.int64,
+            )
+            for event_id in calendar_ids.tolist():
+                event_id = int(event_id)
+                if event_id in seen or future_end[event_id] >= int(context_start[batch_index].item()):
+                    continue
+                seen.add(event_id)
+                collected.append(event_id)
+        legal = np.asarray(collected, dtype=np.int64)
         if legal.size > max_candidates:
             raise ValueError(
                 "event_top_r truncates the legal calendar pool; increase it for a fair ablation"

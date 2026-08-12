@@ -43,6 +43,7 @@ class PretrainEpochResult:
     student_effective_support: float
     skipped_batches: int
     batches: int
+    profile: float = 0.0
 
 
 def build_validation_loader(
@@ -91,7 +92,7 @@ def run_pretrain_epoch(
         raise ValueError("progress_interval must be positive")
     training = optimizer is not None
     model.train(training)
-    totals = {"total": 0.0, "reconstruction": 0.0, "retrieval": 0.0}
+    totals = {"total": 0.0, "reconstruction": 0.0, "retrieval": 0.0, "profile": 0.0}
     anchors = positives = hard_negatives = reconstruction_positions = batches = skipped_batches = 0
     relation_candidates = 0
     teacher_support = student_support = 0.0
@@ -153,6 +154,8 @@ def run_pretrain_epoch(
                     config.pretrain.relation_distance_normalization
                 ),
                 future_increment_weight=config.pretrain.future_increment_weight,
+                profile_loss_weight=config.pretrain.profile_loss_weight,
+                profile_scale_floor=config.pretrain.profile_scale_floor,
             )
             if losses.reconstruction_positions == 0 and losses.valid_retrieval_anchors == 0:
                 skipped_batches += 1
@@ -166,6 +169,7 @@ def run_pretrain_epoch(
             totals["total"] += float(losses.total.detach())
             totals["reconstruction"] += float(losses.reconstruction.detach())
             totals["retrieval"] += float(losses.retrieval.detach())
+            totals["profile"] += float((losses.profile if losses.profile is not None else losses.total * 0.0).detach())
             anchors += losses.valid_retrieval_anchors
             positives += losses.positive_pairs
             hard_negatives += losses.hard_negative_pairs
@@ -194,6 +198,7 @@ def run_pretrain_epoch(
         relation_candidate_pairs=relation_candidates,
         teacher_effective_support=teacher_support / max(support_anchors, 1),
         student_effective_support=student_support / max(support_anchors, 1),
+        profile=totals["profile"] / batches,
         skipped_batches=skipped_batches,
         batches=batches,
     )
@@ -391,7 +396,7 @@ def train_pretraining(
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         logger.info(
             "Epoch %03d | train_total=%.6f | val_total=%.6f | val_mask=%.6f | "
-            "val_retrieval=%.6f | val_anchors=%d | val_positive_pairs=%d | "
+            "val_retrieval=%.6f | val_profile=%.6f | val_anchors=%d | val_positive_pairs=%d | "
             "val_hard_negatives=%d | val_relation_candidates=%d | "
             "val_teacher_keff=%.3f | val_student_keff=%.3f | "
             "val_masked_positions=%d | skipped(train/val)=%d/%d",
@@ -400,6 +405,7 @@ def train_pretraining(
             val_result.total,
             val_result.reconstruction,
             val_result.retrieval,
+            val_result.profile,
             val_result.valid_retrieval_anchors,
             val_result.positive_pairs,
             val_result.hard_negative_pairs,

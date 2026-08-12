@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
+import torch.nn.functional as functional
 
 from stanchor.bank.storage import MemoryBank
 
@@ -25,6 +26,8 @@ class NodeCandidates:
     level_distances: torch.Tensor  # [B, N, K]
     weights: torch.Tensor  # [B, N, K]
     valid: torch.Tensor  # [B, N, K]
+    profile_scores: torch.Tensor | None = None  # [B, N, K]
+    latent_scores: torch.Tensor | None = None  # [B, N, K]
 
 
 @dataclass(frozen=True)
@@ -109,6 +112,29 @@ class TwoStageRetriever:
             np.asarray(self.bank.level_features[safe_ids], dtype=np.float32)
         ).to(self.device)  # [B, R, N, 4C]
         shape = torch.einsum("bnd,brnd->bnr", query_node_keys, candidate_keys)
+        profile = latent = None
+        if self.bank.manifest.schema_version == 2:
+            profile_dim = self.bank.manifest.profile_dim
+            if profile_dim <= 0 or profile_dim >= retrieval_dim:
+                raise ValueError("invalid profile/latent dimensions in v2 Bank")
+            query_profile = functional.normalize(
+                query_node_keys[..., :profile_dim], dim=-1
+            )
+            candidate_profile = functional.normalize(
+                candidate_keys[..., :profile_dim], dim=-1
+            )
+            query_latent = functional.normalize(
+                query_node_keys[..., profile_dim:], dim=-1
+            )
+            candidate_latent = functional.normalize(
+                candidate_keys[..., profile_dim:], dim=-1
+            )
+            profile = torch.einsum(
+                "bnd,brnd->bnr", query_profile, candidate_profile
+            )
+            latent = torch.einsum(
+                "bnd,brnd->bnr", query_latent, candidate_latent
+            )
         level_distance = (query_levels[:, None, :, :] - candidate_levels).abs().mean(dim=-1).permute(0, 2, 1)
         total = shape + self.level_weight * torch.exp(-level_distance / self.level_temperature)
         event_valid = events.valid[:, None, :].expand(batch, nodes, -1)
@@ -118,6 +144,8 @@ class TwoStageRetriever:
         global_ids = expanded_event_ids.gather(-1, local_top)
         shape_top = shape.gather(-1, local_top)
         level_top = level_distance.gather(-1, local_top)
+        profile_top = None if profile is None else profile.gather(-1, local_top)
+        latent_top = None if latent is None else latent.gather(-1, local_top)
         valid_top = event_valid.gather(-1, local_top) & torch.isfinite(top_scores)
         logits = top_scores / self.search_temperature
         stable = logits.masked_fill(~valid_top, -torch.inf)
@@ -125,7 +153,16 @@ class TwoStageRetriever:
         max_value = torch.where(torch.isfinite(max_value), max_value, torch.zeros_like(max_value))
         exponent = torch.where(valid_top, torch.exp(logits - max_value), torch.zeros_like(logits))
         weights = exponent / exponent.sum(dim=-1, keepdim=True).clamp_min(1.0e-8)
-        return NodeCandidates(global_ids, top_scores, shape_top, level_top, weights, valid_top)
+        return NodeCandidates(
+            global_ids,
+            top_scores,
+            shape_top,
+            level_top,
+            weights,
+            valid_top,
+            profile_top,
+            latent_top,
+        )
 
     @torch.no_grad()
     def aggregate(self, candidates: NodeCandidates) -> AggregationOutput:
@@ -173,4 +210,3 @@ class TwoStageRetriever:
         events = self.search_events(query_event_keys, weekday, slot, context_start)
         nodes = self.rerank_nodes(query_node_keys, query_levels, events)
         return events, nodes, self.aggregate(nodes)
-

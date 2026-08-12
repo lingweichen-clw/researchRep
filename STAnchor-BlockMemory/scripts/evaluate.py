@@ -11,6 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from stanchor.config import load_config
 from stanchor.engine.target import evaluate_downstream
+from stanchor.retrieval.strategies import CANDIDATE_PROTOCOLS
 
 
 def main() -> None:
@@ -21,6 +22,7 @@ def main() -> None:
     parser.add_argument("--bank", required=True)
     parser.add_argument("--split", choices=("val", "test"), default="test")
     parser.add_argument("--max-batches", type=int, default=None)
+    parser.add_argument("--candidate-protocol", choices=CANDIDATE_PROTOCOLS, default=None)
     args = parser.parse_args()
     result = evaluate_downstream(
         load_config(args.config),
@@ -29,10 +31,10 @@ def main() -> None:
         bank_path=args.bank,
         split=args.split,
         max_batches=args.max_batches,
+        candidate_protocol=args.candidate_protocol,
     )
     print(json.dumps(result.__dict__, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
     main()
-
