@@ -20,6 +20,7 @@ from stanchor.diagnostics.retrieval_visualization import (
     render_visualization_figures,
     run_retrieval_visualization,
     select_quantile_cases,
+    teacher_candidate_distances,
     validate_aligned_bank_axes,
 )
 
@@ -212,6 +213,37 @@ class RetrievalVisualizationTest(unittest.TestCase):
 
         self.assertTrue(bool(anchor_valid.all()))
         self.assertTrue(torch.allclose(mae, torch.tensor([[1.5, 0.0]])))
+
+    def test_e5_candidate_distance_uses_configured_symmetric_normalization(self) -> None:
+        query = torch.tensor([[[[0.0]]]])
+        query_observed = torch.ones_like(query, dtype=torch.bool)
+        candidates = torch.tensor([[[[[1.0]]], [[[10.0]]]]])
+        candidate_observed = torch.ones_like(candidates, dtype=torch.bool)
+        event_valid = torch.tensor([[True, True]])
+
+        anchor_distance, anchor_valid = teacher_candidate_distances(
+            query,
+            query_observed,
+            candidates,
+            candidate_observed,
+            event_valid,
+            normalization="anchor_mean",
+        )
+        symmetric_distance, symmetric_valid = teacher_candidate_distances(
+            query,
+            query_observed,
+            candidates,
+            candidate_observed,
+            event_valid,
+            normalization="symmetric_geometric_mean",
+            symmetric_chunk_size=1,
+        )
+
+        self.assertTrue(torch.equal(anchor_valid, symmetric_valid))
+        self.assertTrue(bool(symmetric_valid.all()))
+        self.assertFalse(torch.allclose(anchor_distance, symmetric_distance))
+        expected = torch.tensor([[[1.0 / (27.5 ** 0.5), 10.0 / (52.25 ** 0.5)]]])
+        self.assertTrue(torch.allclose(symmetric_distance, expected, atol=1.0e-5))
 
     def test_complete_anchor_mask_requires_every_horizon_and_channel(self) -> None:
         valid = torch.ones((1, 3, 2, 1), dtype=torch.bool)

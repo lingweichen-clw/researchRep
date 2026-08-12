@@ -132,6 +132,113 @@ def masked_candidate_future_mae(
     return torch.where(valid, distance, torch.zeros_like(distance)), valid
 
 
+def _symmetric_candidate_distance(
+    query: torch.Tensor,
+    query_observed: torch.Tensor,
+    candidates: torch.Tensor,
+    candidate_observed: torch.Tensor,
+    event_valid: torch.Tensor,
+    eps: float = 1.0e-6,
+    chunk_size: int = 2,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Normalize query-candidate MAE by query and candidate event scales."""
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    values = torch.cat((query.unsqueeze(1), candidates), dim=1)
+    observed = torch.cat((query_observed.unsqueeze(1), candidate_observed), dim=1)
+    batch, event_count, _, nodes, _ = values.shape
+    all_event_valid = torch.cat(
+        (
+            torch.ones((batch, 1), dtype=torch.bool, device=query.device),
+            event_valid.bool(),
+        ),
+        dim=1,
+    )
+    pair_distance = torch.zeros(
+        (batch, event_count, event_count, nodes),
+        dtype=query.dtype,
+        device=query.device,
+    )
+    pair_valid = torch.zeros_like(pair_distance, dtype=torch.bool)
+    right = values[:, None]
+    right_observed = observed[:, None].bool()
+    for start in range(0, event_count, chunk_size):
+        end = min(start + chunk_size, event_count)
+        left = values[:, start:end, None]
+        common = observed[:, start:end, None].bool() & right_observed
+        common &= torch.isfinite(left) & torch.isfinite(right)
+        counts = common.sum(dim=(3, 5))  # [B, chunk, E, N]
+        totals = torch.where(
+            common,
+            (left - right).abs(),
+            torch.zeros_like(left),
+        ).sum(dim=(3, 5))
+        valid_chunk = (counts > 0) & all_event_valid[:, start:end, None, None]
+        valid_chunk &= all_event_valid[:, None, :, None]
+        pair_distance[:, start:end] = torch.where(
+            valid_chunk,
+            totals / counts.clamp_min(1),
+            torch.zeros_like(totals),
+        )
+        pair_valid[:, start:end] = valid_chunk
+    pair_valid &= ~torch.eye(event_count, dtype=torch.bool, device=query.device).view(
+        1, event_count, event_count, 1
+    )
+    scale_count = pair_valid.sum(dim=2)
+    scale = torch.where(
+        pair_valid,
+        pair_distance,
+        torch.zeros_like(pair_distance),
+    ).sum(dim=2) / scale_count.clamp_min(1).to(pair_distance.dtype)
+    denominator = torch.sqrt(
+        (scale.unsqueeze(2) + eps) * (scale.unsqueeze(1) + eps)
+    )
+    normalized = pair_distance / denominator.clamp_min(eps)
+    valid = pair_valid & (scale_count > 0).unsqueeze(2) & (scale_count > 0).unsqueeze(1)
+    return (
+        torch.where(valid[:, 0, 1:], normalized[:, 0, 1:], torch.zeros_like(normalized[:, 0, 1:]))
+        .permute(0, 2, 1)
+        .contiguous(),
+        valid[:, 0, 1:].permute(0, 2, 1).contiguous(),
+    )
+
+
+def teacher_candidate_distances(
+    query: torch.Tensor,
+    query_observed: torch.Tensor,
+    candidates: torch.Tensor,
+    candidate_observed: torch.Tensor,
+    event_valid: torch.Tensor,
+    normalization: str,
+    symmetric_chunk_size: int = 2,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compute candidate future distances using the configured teacher metric."""
+    if normalization == "symmetric_geometric_mean":
+        return _symmetric_candidate_distance(
+            query,
+            query_observed,
+            candidates,
+            candidate_observed,
+            event_valid,
+            chunk_size=symmetric_chunk_size,
+        )
+    distance, valid = masked_candidate_future_mae(
+        query,
+        query_observed,
+        candidates,
+        candidate_observed,
+        event_valid,
+    )
+    if normalization == "anchor_mean":
+        distance = anchor_mean_normalize_distances(
+            distance.permute(0, 2, 1),
+            valid.permute(0, 2, 1),
+        ).permute(0, 2, 1)
+    elif normalization != "none":
+        raise ValueError(f"unknown teacher distance normalization: {normalization}")
+    return distance, valid
+
+
 def node_key_distances(
     query_keys: torch.Tensor,
     candidate_keys: torch.Tensor,
@@ -862,18 +969,19 @@ def run_retrieval_visualization(
                 config.data.context_length,
                 device,
             )
-            future_distance, future_valid = masked_candidate_future_mae(
+            normalization = (
+                config.pretrain.relation_distance_normalization
+                if version == "e5a"
+                else "none"
+            )
+            future_distance, future_valid = teacher_candidate_distances(
                 query_signature,
                 query_signature_valid,
                 candidate_signature,
                 candidate_signature_valid,
                 events.valid,
+                normalization,
             )
-            if version == "e5a":
-                future_distance = anchor_mean_normalize_distances(
-                    future_distance.permute(0, 2, 1),
-                    future_valid.permute(0, 2, 1),
-                ).permute(0, 2, 1)
             alignment_valid = future_valid & pretrained_key_valid & random_key_valid
             pretrained_key_chunks.append(
                 pretrained_key_distance.masked_select(alignment_valid).detach().cpu().numpy()

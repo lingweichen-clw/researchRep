@@ -16,7 +16,11 @@ from stanchor.config import (
 from stanchor.data.dataset import TrafficSeries, TrafficWindowDataset
 from stanchor.data.graph import graph_from_dense
 from stanchor.data.normalization import NodeStandardScaler
-from stanchor.engine.pretrainer import build_validation_loader, run_pretrain_epoch
+from stanchor.engine.pretrainer import (
+    build_validation_loader,
+    early_stopping_metric,
+    run_pretrain_epoch,
+)
 from stanchor.losses.pretraining import compute_pretraining_loss
 from stanchor.losses.pretraining import masked_reconstruction_loss
 from stanchor.models.pretraining import STAnchorPretrainModel
@@ -115,6 +119,22 @@ class PretrainingFlowTest(unittest.TestCase):
 
     def test_space_mask_pretraining_flow(self) -> None:
         self._run_task("space")
+
+    def test_relation_pretraining_early_stopping_tracks_relation_loss(self) -> None:
+        result = type(
+            "ValidationResult",
+            (),
+            {"total": 0.25, "retrieval": 1.75},
+        )()
+
+        name, value = early_stopping_metric("relation", result)
+
+        self.assertEqual(name, "val_retrieval")
+        self.assertEqual(value, 1.75)
+
+        name, value = early_stopping_metric("contrastive", result)
+        self.assertEqual(name, "val_total")
+        self.assertEqual(value, 0.25)
 
     def test_future_relation_mode_reaches_model_keys(self) -> None:
         output = self.model.forward_pretrain(

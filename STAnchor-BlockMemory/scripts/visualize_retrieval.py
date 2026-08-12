@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -35,15 +36,33 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--level-weight",
+        type=float,
+        default=None,
+        help=(
+            "Optional diagnostic override for endpoint-level reranking. "
+            "Use 0 to attribute retrieval entirely to learned key similarity."
+        ),
+    )
+    parser.add_argument(
         "--max-batches",
         type=int,
         default=None,
         help="Engineering smoke only. Omit for a formal complete-validation run.",
     )
     args = parser.parse_args()
+    config = load_config(args.config)
+    if args.level_weight is not None:
+        if args.level_weight < 0:
+            raise ValueError("level-weight must be non-negative")
+        config = replace(
+            config,
+            bank=replace(config.bank, level_weight=args.level_weight),
+        )
+        config.validate()
     result = run_retrieval_visualization(
         version=args.version,
-        config=load_config(args.config),
+        config=config,
         checkpoint_path=args.checkpoint,
         bank_path=args.bank,
         random_checkpoint_path=args.random_checkpoint,
