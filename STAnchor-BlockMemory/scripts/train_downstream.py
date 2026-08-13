@@ -32,6 +32,12 @@ def main() -> None:
         default=None,
         help="Historical candidate pool used consistently in train and validation.",
     )
+    parser.add_argument(
+        "--level-weight",
+        type=float,
+        default=None,
+        help="Override the node reranking level weight; use 0 for key-only attribution.",
+    )
     parser.add_argument("--seed", type=int, default=None, help="Override only the downstream seed.")
     args = parser.parse_args()
     config = load_config(args.config)
@@ -66,6 +72,13 @@ def main() -> None:
         config = replace(
             config,
             target=replace(config.target, candidate_protocol=args.candidate_protocol),
+        )
+    if args.level_weight is not None:
+        if args.level_weight < 0:
+            raise ValueError("level-weight must be non-negative")
+        config = replace(
+            config,
+            bank=replace(config.bank, level_weight=args.level_weight),
         )
     if args.seed is not None:
         config = replace(config, runtime=replace(config.runtime, seed=args.seed))

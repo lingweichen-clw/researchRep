@@ -32,6 +32,17 @@ class PretrainingCliTest(unittest.TestCase):
         )
         self.assertIn("--level-weight", result.stdout)
 
+    def test_downstream_help_exposes_level_weight_override(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        result = subprocess.run(
+            [sys.executable, "scripts/train_downstream.py", "--help"],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("--level-weight", result.stdout)
+
     def test_e5_configs_freeze_teacher_contract(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         cases = (

@@ -121,6 +121,15 @@ def checkpoint_candidate_protocol(
     return protocol
 
 
+def checkpoint_bank_level_weight(checkpoint: dict, default: float) -> float:
+    """Restore the node reranking level weight used during downstream training."""
+    bank_config = checkpoint.get("config", {}).get("bank", {})
+    value = float(bank_config.get("level_weight", default))
+    if not np.isfinite(value) or value < 0.0:
+        raise ValueError("checkpoint bank level_weight must be finite and non-negative")
+    return value
+
+
 def configure_downstream_trainable(
     downstream: STAnchorDownstreamModel,
     mode: str,
@@ -718,6 +727,10 @@ def evaluate_downstream(
     pretrained, _ = load_pretrained_model(config, pretrained_checkpoint, data.series.slots_per_day, device)
     checkpoint = load_checkpoint(downstream_checkpoint, device)
     mode = checkpoint_downstream_mode(checkpoint)
+    level_weight = checkpoint_bank_level_weight(
+        checkpoint,
+        default=config.bank.level_weight,
+    )
     saved_candidate_protocol = checkpoint_candidate_protocol(checkpoint)
     if candidate_protocol is not None:
         candidate_protocol = checkpoint_candidate_protocol(
@@ -728,6 +741,7 @@ def evaluate_downstream(
         candidate_protocol = saved_candidate_protocol
     config = replace(
         config,
+        bank=replace(config.bank, level_weight=level_weight),
         target=replace(
             config.target,
             downstream_mode=mode,

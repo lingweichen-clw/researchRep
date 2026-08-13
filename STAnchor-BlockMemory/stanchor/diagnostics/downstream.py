@@ -22,6 +22,7 @@ from stanchor.engine.common import (
 from stanchor.engine.target import (
     _validate_bank,
     build_downstream_model,
+    checkpoint_bank_level_weight,
     checkpoint_candidate_protocol,
     checkpoint_downstream_mode,
     retrieve_for_downstream_mode,
@@ -456,6 +457,10 @@ def diagnose_downstream_checkpoint(
     )
     checkpoint = load_checkpoint(downstream_checkpoint, device)
     mode = checkpoint_downstream_mode(checkpoint)
+    level_weight = checkpoint_bank_level_weight(
+        checkpoint,
+        default=config.bank.level_weight,
+    )
     saved_candidate_protocol = checkpoint_candidate_protocol(checkpoint)
     if candidate_protocol is not None:
         candidate_protocol = checkpoint_candidate_protocol(
@@ -466,6 +471,7 @@ def diagnose_downstream_checkpoint(
         candidate_protocol = saved_candidate_protocol
     config = replace(
         config,
+        bank=replace(config.bank, level_weight=level_weight),
         target=replace(
             config.target,
             downstream_mode=mode,
@@ -572,6 +578,7 @@ def diagnose_downstream_checkpoint(
             "dataset": dataset_name,
             "downstream_mode": mode,
             "candidate_protocol": candidate_protocol,
+            "level_weight": config.bank.level_weight,
             "split": split,
             "queries": queries,
             "batches": batches,

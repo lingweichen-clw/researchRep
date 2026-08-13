@@ -7,6 +7,7 @@ import torch
 from stanchor.config import DataConfig, ExperimentConfig, TargetConfig
 from stanchor.engine.target import (
     build_downstream_model,
+    checkpoint_bank_level_weight,
     checkpoint_candidate_protocol,
     checkpoint_downstream_mode,
 )
@@ -82,6 +83,18 @@ class DownstreamFlowTest(unittest.TestCase):
             checkpoint_candidate_protocol(
                 {"candidate_protocol": "relaxed_calendar"},
                 expected="exact_calendar",
+            )
+
+    def test_bank_level_weight_is_restored_from_training_checkpoint(self) -> None:
+        checkpoint = {"config": {"bank": {"level_weight": 0.0}}}
+
+        self.assertEqual(checkpoint_bank_level_weight(checkpoint, default=0.25), 0.0)
+        self.assertEqual(checkpoint_bank_level_weight({}, default=0.25), 0.25)
+
+        with self.assertRaisesRegex(ValueError, "level_weight"):
+            checkpoint_bank_level_weight(
+                {"config": {"bank": {"level_weight": -1.0}}},
+                default=0.25,
             )
 
     def _inputs(self, with_memory: bool = True):

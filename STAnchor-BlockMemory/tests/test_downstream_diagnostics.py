@@ -53,6 +53,7 @@ class DownstreamDiagnosticsTest(unittest.TestCase):
         checkpoint = {
             "downstream_mode": "weekly_mean_horizon",
             "candidate_protocol": "relaxed_calendar",
+            "config": {"bank": {"level_weight": 0.0}},
             "downstream_state_dict": {},
             "bank_manifest": bank.manifest.to_dict(),
         }
@@ -68,7 +69,7 @@ class DownstreamDiagnosticsTest(unittest.TestCase):
             patch("stanchor.diagnostics.downstream.build_downstream_model", return_value=downstream),
             patch("stanchor.diagnostics.downstream.MemoryBank", return_value=bank),
             patch("stanchor.diagnostics.downstream._validate_bank"),
-            patch("stanchor.diagnostics.downstream.TwoStageRetriever"),
+            patch("stanchor.diagnostics.downstream.TwoStageRetriever") as retriever_class,
             patch(
                 "stanchor.diagnostics.downstream.retrieve_for_downstream_mode",
                 side_effect=RetrievalReached,
@@ -90,6 +91,7 @@ class DownstreamDiagnosticsTest(unittest.TestCase):
             retrieval.call_args.kwargs["candidate_protocol"],
             "relaxed_calendar",
         )
+        self.assertEqual(retriever_class.call_args.args[3], 0.0)
 
     def test_accumulator_compares_memory_on_common_valid_positions(self) -> None:
         target = torch.full((1, 2, 2, 1), 10.0)
