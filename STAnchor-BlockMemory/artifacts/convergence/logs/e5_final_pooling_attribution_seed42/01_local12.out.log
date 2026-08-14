@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "diagnostic": "frozen_cfdp_probes",
+  "split": "val",
+  "checkpoint": "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\metrla_e5_final_sym_profile_local12_seed42\\pretrain_best_relation.pt",
+  "checkpoint_epoch": 43,
+  "context_length": 12,
+  "forecast_horizon": 12,
+  "profile_dim": 12,
+  "probe_epochs": 5,
+  "max_train_batches": null,
+  "max_val_batches": null,
+  "probe_parameter_counts": {
+    "linear_pooled": 1164,
+    "mlp_pooled": 10476,
+    "horizon_specific": 11628
+  },
+  "probe_contract": {
+    "original": "checkpoint profile head without retraining",
+    "linear_pooled": "A: checkpoint shared pooling followed by a newly trained linear head",
+    "mlp_pooled": "B: checkpoint shared pooling followed by a newly trained two-layer MLP",
+    "horizon_specific": "C: one learned history-token attention distribution per future horizon",
+    "teacher_profile_oracle": "true CFDP used directly as an offline profile key; this is a geometry upper-bound diagnostic, not a deployable method"
+  },
+  "train_history": [
+    {
+      "epoch": 1,
+      "linear_pooled": 0.945541062301577,
+      "mlp_pooled": 0.9142581645892731,
+      "horizon_specific": 0.943389379401765
+    },
+    {
+      "epoch": 2,
+      "linear_pooled": 0.9259706088606093,
+      "mlp_pooled": 0.8919380635503463,
+      "horizon_specific": 0.9199934039570354
+    },
+    {
+      "epoch": 3,
+      "linear_pooled": 0.9243196852990774,
+      "mlp_pooled": 0.883538398862971,
+      "horizon_specific": 0.9155658218688537
+    },
+    {
+      "epoch": 4,
+      "linear_pooled": 0.9236516503078084,
+      "mlp_pooled": 0.8790512682260461,
+      "horizon_specific": 0.911969808406068
+    },
+    {
+      "epoch": 5,
+      "linear_pooled": 0.923425895146916,
+      "mlp_pooled": 0.8765665230503764,
+      "horizon_specific": 0.9090988507367718
+    }
+  ],
+  "validation": {
+    "original": {
+      "profile_mae": 1.3128671838085244,
+      "profile_cosine": 0.0754538929064859,
+      "profile_mae_relation_spearman": 0.12551711886162598,
+      "profile_mae_relation_recall_at_k": 0.4129001013968553,
+      "od_relation_spearman": 0.11108097969337337,
+      "od_relation_recall_at_k": 0.41681674410157865
+    },
+    "linear_pooled": {
+      "profile_mae": 1.2683710471252865,
+      "profile_cosine": 0.3656986257401879,
+      "profile_mae_relation_spearman": 0.1170189123622961,
+      "profile_mae_relation_recall_at_k": 0.41791183013756666,
+      "od_relation_spearman": 0.07429600875308315,
+      "od_relation_recall_at_k": 0.3923080648334518
+    },
+    "mlp_pooled": {
+      "profile_mae": 1.230484108508336,
+      "profile_cosine": 0.38517974701509294,
+      "profile_mae_relation_spearman": 0.12128767921300992,
+      "profile_mae_relation_recall_at_k": 0.42403408145042915,
+      "od_relation_spearman": 0.06104394792222059,
+      "od_relation_recall_at_k": 0.39042571545318333
+    },
+    "horizon_specific": {
+      "profile_mae": 1.2546262054318087,
+      "profile_cosine": 0.37668842720355217,
+      "profile_mae_relation_spearman": 0.11824840689711927,
+      "profile_mae_relation_recall_at_k": 0.4195644475384776,
+      "od_relation_spearman": 0.06461499803074826,
+      "od_relation_recall_at_k": 0.3902065771751138
+    },
+    "teacher_profile_oracle": {
+      "profile_mae": 0.0,
+      "profile_cosine": 0.9999999964611329,
+      "profile_mae_relation_spearman": 0.33991012140819515,
+      "profile_mae_relation_recall_at_k": 0.6104123976572784,
+      "od_relation_spearman": 0.16173305704880742,
+      "od_relation_recall_at_k": 0.48571969066392273
+    }
+  },
+  "counts": {
+    "batches": 203,
+    "profile_points": 7814031
+  },
+  "future_information_boundary": "future is used only to construct source-train probe targets and offline validation diagnostics; the frozen encoder and all probe inputs use history only",
+  "elapsed_seconds": 3541.779790200293
+}
