@@ -50,6 +50,15 @@ def main() -> None:
         default=None,
         help="Engineering smoke only. Omit for a formal complete-validation run.",
     )
+    parser.add_argument(
+        "--profile-weight-override",
+        type=float,
+        default=None,
+        help=(
+            "Validation-only override for profile/latent cosine composition. "
+            "Reuses the same v2 checkpoint and Bank; valid values are in [0, 1]."
+        ),
+    )
     args = parser.parse_args()
     config = load_config(args.config)
     if args.level_weight is not None:
@@ -71,6 +80,7 @@ def main() -> None:
         output_dir=args.output_dir,
         max_batches=args.max_batches,
         candidate_protocol=args.candidate_protocol,
+        profile_weight_override=args.profile_weight_override,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     print(f"visualization output: {Path(args.output_dir).resolve()}")

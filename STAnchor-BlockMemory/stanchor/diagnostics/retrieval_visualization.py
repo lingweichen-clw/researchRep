@@ -243,6 +243,8 @@ def node_key_distances(
     query_keys: torch.Tensor,
     candidate_keys: torch.Tensor,
     event_valid: torch.Tensor,
+    profile_dim: int | None = None,
+    profile_weight: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return one-minus-cosine node-key distances as [B, N, R]."""
     if query_keys.ndim != 3:
@@ -255,9 +257,37 @@ def node_key_distances(
     if event_valid.shape != (batch, candidate_count):
         raise ValueError("event_valid must be [B, R]")
 
-    query = torch.nn.functional.normalize(query_keys.float(), dim=-1)
-    candidates = torch.nn.functional.normalize(candidate_keys.float(), dim=-1)
-    cosine = torch.einsum("bnd,brnd->bnr", query, candidates).clamp(-1.0, 1.0)
+    if (profile_dim is None) != (profile_weight is None):
+        raise ValueError("profile_dim and profile_weight must be provided together")
+    if profile_weight is None:
+        query = torch.nn.functional.normalize(query_keys.float(), dim=-1)
+        candidates = torch.nn.functional.normalize(candidate_keys.float(), dim=-1)
+        cosine = torch.einsum("bnd,brnd->bnr", query, candidates)
+    else:
+        if profile_dim is None or profile_dim <= 0 or profile_dim >= dimension:
+            raise ValueError("profile_dim must split the profile and latent key dimensions")
+        if not 0.0 <= profile_weight <= 1.0:
+            raise ValueError("profile_weight must be in [0, 1]")
+        query_profile = torch.nn.functional.normalize(
+            query_keys[..., :profile_dim].float(), dim=-1
+        )
+        candidate_profile = torch.nn.functional.normalize(
+            candidate_keys[..., :profile_dim].float(), dim=-1
+        )
+        query_latent = torch.nn.functional.normalize(
+            query_keys[..., profile_dim:].float(), dim=-1
+        )
+        candidate_latent = torch.nn.functional.normalize(
+            candidate_keys[..., profile_dim:].float(), dim=-1
+        )
+        profile_cosine = torch.einsum(
+            "bnd,brnd->bnr", query_profile, candidate_profile
+        )
+        latent_cosine = torch.einsum(
+            "bnd,brnd->bnr", query_latent, candidate_latent
+        )
+        cosine = profile_weight * profile_cosine + (1.0 - profile_weight) * latent_cosine
+    cosine = cosine.clamp(-1.0, 1.0)
     valid = event_valid[:, None, :].expand(batch, nodes, candidate_count).bool()
     distance = (1.0 - cosine).clamp(0.0, 2.0)
     return torch.where(valid, distance, torch.zeros_like(distance)), valid
@@ -805,6 +835,7 @@ def run_retrieval_visualization(
     output_dir: str | Path,
     max_batches: int | None = None,
     candidate_protocol: str = "exact_calendar",
+    profile_weight_override: float | None = None,
 ) -> dict[str, Any]:
     """Run the leakage-safe E2/E3/E5A validation visualization experiment."""
     if split != "val":
@@ -819,6 +850,11 @@ def run_retrieval_visualization(
         )
     if config is None:
         raise ValueError("config is required")
+    if profile_weight_override is not None:
+        if config.model.profile_dim <= 0:
+            raise ValueError("profile_weight_override requires a profile-enabled model")
+        if not 0.0 <= profile_weight_override <= 1.0:
+            raise ValueError("profile_weight_override must be in [0, 1]")
     started = time.perf_counter()
     device = resolve_device(config.runtime.device)
     data, graph_cpu = build_data_and_graph(config)
@@ -881,6 +917,7 @@ def run_retrieval_visualization(
             config.bank.level_temperature,
             config.bank.search_temperature,
             device,
+            profile_weight_override=profile_weight_override,
         )
         random_retriever = TwoStageRetriever(
             random_bank,
@@ -890,6 +927,7 @@ def run_retrieval_visualization(
             config.bank.level_temperature,
             config.bank.search_temperature,
             device,
+            profile_weight_override=profile_weight_override,
         )
 
         for batch_index, batch in enumerate(loader):
@@ -931,11 +969,15 @@ def run_retrieval_visualization(
                 pretrained_encoding.retrieval.node_keys,
                 pretrained_candidate_keys,
                 events.valid,
+                profile_dim=(config.model.profile_dim if profile_weight_override is not None else None),
+                profile_weight=profile_weight_override,
             )
             random_key_distance, random_key_valid = node_key_distances(
                 random_encoding.retrieval.node_keys,
                 random_candidate_keys,
                 events.valid,
+                profile_dim=(config.model.profile_dim if profile_weight_override is not None else None),
+                profile_weight=profile_weight_override,
             )
 
             event_future, event_future_valid = event_candidate_futures(
@@ -1285,6 +1327,13 @@ def run_retrieval_visualization(
                 "node_top_k": config.bank.node_top_k,
                 "level_weight": config.bank.level_weight,
                 "search_temperature": config.bank.search_temperature,
+                "profile_weight_manifest": config.model.profile_weight,
+                "profile_weight_override": profile_weight_override,
+                "profile_weight_effective": (
+                    config.model.profile_weight
+                    if profile_weight_override is None
+                    else profile_weight_override
+                ),
             },
             "elapsed_seconds": time.perf_counter() - started,
         }

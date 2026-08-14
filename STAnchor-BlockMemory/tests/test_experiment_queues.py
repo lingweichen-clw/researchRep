@@ -32,6 +32,24 @@ class ExperimentQueueContractTest(unittest.TestCase):
         self.assertIn("init_random_checkpoint.py", text)
         self.assertIn("diagnose_downstream.py", text)
 
+    def test_profile_weight_ablation_queue_is_zero_training_and_three_point_only(self) -> None:
+        path = PROJECT_ROOT / "scripts" / "run_profile_weight_ablation_queue.ps1"
+        self.assertTrue(path.exists())
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("metrla_e5_final_sym_profile_v1.yaml", text)
+        self.assertIn("pretrain_best_relation.pt", text)
+        self.assertIn("visualize_retrieval.py", text)
+        self.assertIn("--profile-weight-override", text)
+        self.assertIn("exact_calendar", text)
+        self.assertIn("--level-weight", text)
+        self.assertIn('"0"', text)
+        self.assertIn('Gamma = "0"', text)
+        self.assertIn('Gamma = "0.25"', text)
+        self.assertIn('Gamma = "1"', text)
+        self.assertNotIn("build_bank.py", text)
+        self.assertNotIn("train_pretrain.py", text)
+        self.assertNotIn("train_downstream.py", text)
+
 
 if __name__ == "__main__":
     unittest.main()

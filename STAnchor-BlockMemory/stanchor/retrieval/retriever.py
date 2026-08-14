@@ -49,17 +49,24 @@ class TwoStageRetriever:
         level_temperature: float,
         search_temperature: float,
         device: torch.device,
+        profile_weight_override: float | None = None,
     ) -> None:
         if event_top_r < node_top_k:
             raise ValueError("event_top_r must be >= node_top_k")
         if level_temperature <= 0 or search_temperature <= 0:
             raise ValueError("temperatures must be positive")
+        if profile_weight_override is not None:
+            if bank.manifest.schema_version != 2:
+                raise ValueError("profile_weight_override requires a v2 profile/latent Bank")
+            if not 0.0 <= profile_weight_override <= 1.0:
+                raise ValueError("profile_weight_override must be in [0, 1]")
         self.bank = bank
         self.event_top_r = event_top_r
         self.node_top_k = node_top_k
         self.level_weight = level_weight
         self.level_temperature = level_temperature
         self.search_temperature = search_temperature
+        self.profile_weight_override = profile_weight_override
         self.device = device
         self.event_keys = torch.from_numpy(bank.event_keys_memory).to(device)
 
@@ -135,6 +142,9 @@ class TwoStageRetriever:
             latent = torch.einsum(
                 "bnd,brnd->bnr", query_latent, candidate_latent
             )
+            if self.profile_weight_override is not None:
+                gamma = self.profile_weight_override
+                shape = gamma * profile + (1.0 - gamma) * latent
         level_distance = (query_levels[:, None, :, :] - candidate_levels).abs().mean(dim=-1).permute(0, 2, 1)
         total = shape + self.level_weight * torch.exp(-level_distance / self.level_temperature)
         event_valid = events.valid[:, None, :].expand(batch, nodes, -1)

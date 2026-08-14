@@ -201,6 +201,39 @@ class RetrievalVisualizationTest(unittest.TestCase):
         self.assertTrue(bool(valid.all()))
         self.assertTrue(torch.allclose(distance.flatten(), torch.tensor([0.0, 2.0])))
 
+    def test_node_key_distance_can_override_profile_weight_without_rebuilding_keys(self) -> None:
+        query = torch.tensor([[[1.0, 0.0, 1.0, 0.0]]])
+        candidates = torch.tensor(
+            [[[[1.0, 0.0, -1.0, 0.0]], [[-1.0, 0.0, 1.0, 0.0]]]]
+        )
+        event_valid = torch.tensor([[True, True]])
+
+        latent_distance, _ = node_key_distances(
+            query,
+            candidates,
+            event_valid,
+            profile_dim=2,
+            profile_weight=0.0,
+        )
+        mixed_distance, _ = node_key_distances(
+            query,
+            candidates,
+            event_valid,
+            profile_dim=2,
+            profile_weight=0.25,
+        )
+        profile_distance, _ = node_key_distances(
+            query,
+            candidates,
+            event_valid,
+            profile_dim=2,
+            profile_weight=1.0,
+        )
+
+        self.assertTrue(torch.allclose(latent_distance.flatten(), torch.tensor([2.0, 0.0])))
+        self.assertTrue(torch.allclose(mixed_distance.flatten(), torch.tensor([1.5, 0.5])))
+        self.assertTrue(torch.allclose(profile_distance.flatten(), torch.tensor([0.0, 2.0])))
+
     def test_memory_mae_by_anchor_reduces_horizon_and_channel_only(self) -> None:
         prediction = torch.tensor(
             [[[[1.0], [10.0]], [[5.0], [14.0]]]]
