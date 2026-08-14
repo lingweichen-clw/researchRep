@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader, Dataset, Subset
 from stanchor.config import ExperimentConfig, resolve_project_path
 from stanchor.data.graph import GraphData
 from stanchor.losses.pretraining import compute_pretraining_loss
+from stanchor.models.dynamics_adapter import summarize_adapter_output
 from stanchor.models.pretraining import STAnchorPretrainModel
 from stanchor.utils import (
     count_parameters,
@@ -44,6 +45,15 @@ class PretrainEpochResult:
     skipped_batches: int
     batches: int
     profile: float = 0.0
+    adapter_valid_fraction: float = 0.0
+    adapter_fusion_gate_mean: float = 0.0
+    adapter_spatial_gate_mean: float = 0.0
+    adapter_contribution_ratio: float = 0.0
+    adapter_modulation_abs_mean: float = 0.0
+    adapter_modulation_token_std: float = 0.0
+    adapter_group_gate_std: float = 0.0
+    adapter_low_rank_ratio: float = 0.0
+    adapter_direct_ratio: float = 0.0
 
 
 def early_stopping_metric(
@@ -107,6 +117,20 @@ def run_pretrain_epoch(
     relation_candidates = 0
     teacher_support = student_support = 0.0
     support_anchors = 0
+    adapter_totals = {
+        "valid_fraction": 0.0,
+        "fusion_gate_mean": 0.0,
+        "spatial_gate_mean": 0.0,
+        "contribution_ratio": 0.0,
+        "modulation_abs_mean": 0.0,
+        "modulation_token_std": 0.0,
+        "group_gate_mean": 0.0,
+        "group_gate_std": 0.0,
+        "low_rank_contribution_ratio": 0.0,
+        "direct_contribution_ratio": 0.0,
+        "total_contribution_ratio": 0.0,
+    }
+    adapter_batches = 0
     context = torch.enable_grad() if training else torch.no_grad()
     planned_batches = len(loader)
     if max_batches is not None:
@@ -193,6 +217,11 @@ def run_pretrain_epoch(
                     losses.student_effective_support * losses.valid_retrieval_anchors
                 )
                 support_anchors += losses.valid_retrieval_anchors
+            if output.clean.dynamics is not None:
+                adapter_metrics = summarize_adapter_output(output.clean.dynamics)
+                for name, value in adapter_metrics.items():
+                    adapter_totals[name] += value
+                adapter_batches += 1
             batches += 1
             emit_progress(batch_index + 1)
     if batches == 0:
@@ -209,6 +238,15 @@ def run_pretrain_epoch(
         teacher_effective_support=teacher_support / max(support_anchors, 1),
         student_effective_support=student_support / max(support_anchors, 1),
         profile=totals["profile"] / batches,
+        adapter_valid_fraction=adapter_totals["valid_fraction"] / max(adapter_batches, 1),
+        adapter_fusion_gate_mean=adapter_totals["fusion_gate_mean"] / max(adapter_batches, 1),
+        adapter_spatial_gate_mean=adapter_totals["spatial_gate_mean"] / max(adapter_batches, 1),
+        adapter_contribution_ratio=adapter_totals["contribution_ratio"] / max(adapter_batches, 1),
+        adapter_modulation_abs_mean=adapter_totals["modulation_abs_mean"] / max(adapter_batches, 1),
+        adapter_modulation_token_std=adapter_totals["modulation_token_std"] / max(adapter_batches, 1),
+        adapter_group_gate_std=adapter_totals["group_gate_std"] / max(adapter_batches, 1),
+        adapter_low_rank_ratio=adapter_totals["low_rank_contribution_ratio"] / max(adapter_batches, 1),
+        adapter_direct_ratio=adapter_totals["direct_contribution_ratio"] / max(adapter_batches, 1),
         skipped_batches=skipped_batches,
         batches=batches,
     )
@@ -253,6 +291,11 @@ def train_pretraining(
     parameter_counts = {
         "embedding": count_parameters(model.embedding),
         "encoder": count_parameters(model.encoder),
+        "dynamics_adapter": (
+            count_parameters(model.dynamics_adapter)
+            if model.dynamics_adapter is not None
+            else 0
+        ),
         "retrieval_head": count_parameters(model.retrieval_head),
         "reconstruction_head": count_parameters(model.reconstruction_head),
         "total_trainable": count_parameters(model),
@@ -298,11 +341,12 @@ def train_pretraining(
     )
     logger.info(
         "Parameters | total=%s | trainable=%s | embedding=%s | encoder=%s | "
-        "retrieval_head=%s | reconstruction_head=%s",
+        "dynamics_adapter=%s | retrieval_head=%s | reconstruction_head=%s",
         f"{parameter_counts['total']:,}",
         f"{parameter_counts['total_trainable']:,}",
         f"{parameter_counts['embedding']:,}",
         f"{parameter_counts['encoder']:,}",
+        f"{parameter_counts['dynamics_adapter']:,}",
         f"{parameter_counts['retrieval_head']:,}",
         f"{parameter_counts['reconstruction_head']:,}",
     )
@@ -311,7 +355,8 @@ def train_pretraining(
         "time_mask=%.3f | time_mask_block=%d steps | space_mask=%.3f | "
         "retrieval_loss=%s | teacher_mode=%s | distance_normalization=%s | "
         "future_increment_weight=%.3f | retrieval_weight=%.3f | "
-        "student_tau=%.3f | teacher_tau=%.3f | patience=%d",
+        "student_tau=%.3f | teacher_tau=%.3f | adapter=%s | "
+        "adapter_bottleneck=%d | patience=%d",
         config.pretrain.epochs,
         config.pretrain.batch_size,
         config.pretrain.learning_rate,
@@ -326,6 +371,8 @@ def train_pretraining(
         config.pretrain.retrieval_weight,
         config.pretrain.relation_student_temperature,
         config.pretrain.relation_teacher_temperature,
+        config.model.dynamics_adapter_mode,
+        config.model.dynamics_bottleneck_dim,
         config.pretrain.patience,
     )
     best_value = float("inf")
@@ -338,6 +385,7 @@ def train_pretraining(
         return {
             "model_state_dict": model.state_dict(),
             "encoder_state_dict": model.encoder.state_dict(),
+            "retrieval_encoder_state_dict": model.retrieval_state_dict(),
             "retrieval_state_dict": model.retrieval_state_dict(),
             "retrieval_fingerprint": model.retrieval_fingerprint(),
             "config": config.to_dict(),
@@ -410,6 +458,11 @@ def train_pretraining(
             "val_retrieval=%.6f | val_profile=%.6f | val_anchors=%d | val_positive_pairs=%d | "
             "val_hard_negatives=%d | val_relation_candidates=%d | "
             "val_teacher_keff=%.3f | val_student_keff=%.3f | "
+            "val_adapter_valid=%.3f | val_adapter_gate=%.3f | "
+            "val_adapter_spatial_gate=%.3f | val_adapter_ratio=%.6f | "
+            "val_adapter_modulation=%.6f | val_adapter_modulation_std=%.6f | "
+            "val_adapter_group_gate_std=%.6f | val_adapter_low_rank=%.6f | "
+            "val_adapter_direct=%.6f | "
             "val_masked_positions=%d | skipped(train/val)=%d/%d",
             epoch,
             train_result.total,
@@ -423,6 +476,15 @@ def train_pretraining(
             val_result.relation_candidate_pairs,
             val_result.teacher_effective_support,
             val_result.student_effective_support,
+            val_result.adapter_valid_fraction,
+            val_result.adapter_fusion_gate_mean,
+            val_result.adapter_spatial_gate_mean,
+            val_result.adapter_contribution_ratio,
+            val_result.adapter_modulation_abs_mean,
+            val_result.adapter_modulation_token_std,
+            val_result.adapter_group_gate_std,
+            val_result.adapter_low_rank_ratio,
+            val_result.adapter_direct_ratio,
             val_result.reconstruction_positions,
             train_result.skipped_batches,
             val_result.skipped_batches,

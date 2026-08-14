@@ -13,6 +13,7 @@ from stanchor.data.masking import MaskBatch, StructuredMaskSampler
 from stanchor.data.normalization import WindowStatistics, normalize_window
 from stanchor.utils import tensor_mapping_sha256
 
+from .dynamics_adapter import DynamicsAdapterOutput, HistoryDynamicsAdapter
 from .encoder import FactorizedSTEncoder
 from .patch_embedding import TemporalPatchEmbedding
 from .retrieval_head import RetrievalHead, RetrievalOutput
@@ -23,6 +24,7 @@ class CleanEncoding:
     hidden: torch.Tensor  # [B, P, N, D]
     retrieval: RetrievalOutput
     statistics: WindowStatistics
+    dynamics: DynamicsAdapterOutput | None = None
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,7 @@ class PretrainForwardOutput:
     reconstruction: torch.Tensor  # [B, T, N, C]
     reconstruction_target: torch.Tensor  # [B, T, N, C]
     mask: MaskBatch
+    masked_dynamics: DynamicsAdapterOutput | None = None
 
 
 class STAnchorPretrainModel(nn.Module):
@@ -71,6 +74,19 @@ class STAnchorPretrainModel(nn.Module):
             model_config.hidden_dim,
             model_config.patch_size * model_config.input_channels,
         )
+        self.dynamics_adapter = (
+            None
+            if model_config.dynamics_adapter_mode == "none"
+            else HistoryDynamicsAdapter(
+                input_channels=model_config.input_channels,
+                patch_size=model_config.patch_size,
+                hidden_dim=model_config.hidden_dim,
+                bottleneck_dim=model_config.dynamics_bottleneck_dim,
+                mode=model_config.dynamics_adapter_mode,
+                gate_bias=model_config.dynamics_gate_bias,
+                gate_groups=model_config.dynamics_gate_groups,
+            )
+        )
         self.mask_sampler = StructuredMaskSampler(
             context_length=context_length,
             patch_size=model_config.patch_size,
@@ -88,6 +104,13 @@ class STAnchorPretrainModel(nn.Module):
             ("retrieval_head", self.retrieval_head),
         ):
             state.update({f"{prefix}.{name}": value for name, value in module.state_dict().items()})
+        if self.dynamics_adapter is not None:
+            state.update(
+                {
+                    f"dynamics_adapter.{name}": value
+                    for name, value in self.dynamics_adapter.state_dict().items()
+                }
+            )
         return state
 
     def retrieval_fingerprint(self) -> str:
@@ -128,7 +151,21 @@ class STAnchorPretrainModel(nn.Module):
     ) -> CleanEncoding:
         tokens, statistics = self._embed_clean(x, observed, weekday, slot)
         hidden = self.encoder(tokens, graph)
-        return CleanEncoding(hidden, self.retrieval_head(hidden), statistics)
+        dynamics = None
+        if self.dynamics_adapter is not None:
+            dynamics = self.dynamics_adapter(
+                hidden,
+                statistics.normalized,
+                observed.bool(),
+                graph,
+            )
+            hidden = dynamics.hidden
+        return CleanEncoding(
+            hidden,
+            self.retrieval_head(hidden),
+            statistics,
+            dynamics,
+        )
 
     def forward_pretrain(
         self,
@@ -170,6 +207,22 @@ class STAnchorPretrainModel(nn.Module):
         )
         combined_hidden = self.encoder(torch.cat((clean_tokens, masked_tokens), dim=0), graph)
         clean_hidden, masked_hidden = combined_hidden[:batch], combined_hidden[batch:]
+        clean_dynamics = masked_dynamics = None
+        if self.dynamics_adapter is not None:
+            clean_dynamics = self.dynamics_adapter(
+                clean_hidden,
+                clean_statistics.normalized,
+                observed.bool(),
+                graph,
+            )
+            masked_dynamics = self.dynamics_adapter(
+                masked_hidden,
+                masked_statistics.normalized,
+                visible,
+                graph,
+            )
+            clean_hidden = clean_dynamics.hidden
+            masked_hidden = masked_dynamics.hidden
         retrieval = self.retrieval_head(clean_hidden)
         patch_values = self.reconstruction_head(masked_hidden)
         reconstruction = self._unpatchify(patch_values)
@@ -177,11 +230,17 @@ class STAnchorPretrainModel(nn.Module):
             x - masked_statistics.mean.unsqueeze(1)
         ) / (masked_statistics.std.unsqueeze(1) + 1.0e-6)
         return PretrainForwardOutput(
-            clean=CleanEncoding(clean_hidden, retrieval, clean_statistics),
+            clean=CleanEncoding(
+                clean_hidden,
+                retrieval,
+                clean_statistics,
+                clean_dynamics,
+            ),
             masked_hidden=masked_hidden,
             reconstruction=reconstruction,
             reconstruction_target=reconstruction_target,
             mask=mask,
+            masked_dynamics=masked_dynamics,
         )
 
     def _unpatchify(self, patch_values: torch.Tensor) -> torch.Tensor:

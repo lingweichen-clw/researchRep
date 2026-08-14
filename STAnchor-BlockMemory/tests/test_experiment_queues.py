@@ -50,6 +50,23 @@ class ExperimentQueueContractTest(unittest.TestCase):
         self.assertNotIn("train_pretrain.py", text)
         self.assertNotIn("train_downstream.py", text)
 
+    def test_cc_fgda_queue_runs_pure_latent_and_conditioned_pairs(self) -> None:
+        path = PROJECT_ROOT / "scripts" / "run_e5_latent48_cc_fgda_global288_queue.ps1"
+        self.assertTrue(path.exists())
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("metrla_e5_final_latent48_global288_v1.yaml", text)
+        self.assertIn("metrla_e5_final_latent48_cc_fgda_global288_v1.yaml", text)
+        self.assertIn('Stage = "pretrain"', text)
+        self.assertIn('ValidateSet("pretrain", "posttrain", "all")', text)
+        self.assertIn("cc_fgda", text)
+        self.assertIn("init_random_checkpoint.py", text)
+        self.assertIn("diagnose_retrieval.py", text)
+        self.assertIn("visualize_retrieval.py", text)
+        self.assertIn("train_downstream.py", text)
+        self.assertIn("learned_topk_offset_decay_horizon", text)
+        self.assertIn("exact_calendar", text)
+        self.assertIn("--level-weight", text)
+
 
 if __name__ == "__main__":
     unittest.main()

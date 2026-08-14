@@ -1,6 +1,6 @@
 # E5-Final：可泛化未来语义检索与风险感知校准统一优化方案
 
-> 文档状态：机制设计与第一版工程实现已完成，正式预训练与下游对比尚未开始。本文是 E5 的最后一次机制级大改方案。后续只允许进行由实验结果直接触发的小范围调整，不再并行增加趋势分解、频域分支、新 backbone 或第二套检索系统。
+> 文档状态：机制设计与第一版工程实现已完成，正式预训练与下游对比尚未开始。第 20 节是当前执行主线；第 1--19 节保留历史设计、诊断和被替代的 profile 方案，不能把其中的 CFDP profile 当作当前主模型。本文是 E5 的最后一次机制级大改方案。后续只允许进行由实验结果直接触发的小范围调整，不再并行增加趋势分解、频域分支、新 backbone 或第二套检索系统。
 
 ## 1. 核心判断
 
@@ -13,12 +13,12 @@
 1. **检索关系不够准确且 key 不可解释。** 当前 48 维 key 由 patch attention pooling 和普通 MLP 产生。虽然 pretrained key 相对 random 已学到弱但真实的 future relation，key 的每一维没有明确语义，跨数据集时也无法判断模型共享的是未来动力学还是源域数值分布。
 2. **confidence 只能粗略判断 memory 是否有帮助。** 当前 confidence 使用六个诊断特征，并通过 `horizon_limit x confidence` 双门控融合。三随机种子结果证明它能稳定改善预测，但 AUROC 约为 0.55，说明它对误差原因和最佳修正幅度的理解仍然较弱。
 
-因此最终大改只引入三个可独立关闭的机制：
+历史版本的最终大改曾计划引入三个可独立关闭的机制；其中 profile 经过固定权重消融后已从当前主线移除：
 
 | 机制 | 解决的问题 | 是否增加部署网络 | 是否读取 query future |
 |---|---|---:|---:|
 | `SymNormTeacher` | teacher 距离与对称 key 相似度的几何冲突 | 否 | 只在 source-train teacher 中读取 |
-| `CanonicalFutureDynamicsProfile` | key 缺乏可解释、可跨数据集共享的未来语义 | 一个小型线性 head | 只在 source-train 监督中读取 |
+| `CanonicalFutureDynamicsProfile` | 历史 profile 可解释性假设的离线诊断 | 仅保留 probe，不进入当前部署 key | 只在 source-train/离线诊断中读取 |
 | `ErrorAwareAdditiveFusion` | confidence 不理解基础预测风险，也没有直接学习修正幅度 | 一个轻量风险 head 和加性融合器 | 只在 target calibration 构造标签时读取 |
 
 未来引导检索是论文主创新。PIR-inspired 校准只负责使用检索结果，不能替代 future-guided pretraining，也不能用其收益掩盖 selector 失败。
@@ -1004,3 +1004,83 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run_global288_do
 ### 19.3 结果使用边界
 
 probe 的 future teacher 和 oracle 只用于 source-train/validation 诊断，不能进入部署检索；下游 formal 结果才用于判断 OffsetDecay 是否真正校准任意下游 backbone。smoke 目录只证明接口、梯度、Bank 指纹和日志流程，不能作为论文证据。只有当预训练 selector 相对 random 在 memory MAE 或下游 MAE 上产生超过 seed 波动的稳定收益，才保留 CFDP/selector 优化；否则回退到更简单的纯 latent 或原有 relation encoder。
+
+## 20. 最终 A 方案：Latent48 + FGDA（替代 profile 主线）
+
+### 20.1 本轮决策与证据
+
+`CFDP`（Canonical Future Dynamics Profile，规范化未来动力学轮廓）仍保留在历史 probe、oracle 和 profile-weight 消融中，用来证明 profile 是否可预测；它不再进入最终 Bank key，也不再产生 profile auxiliary loss。固定同一 encoder、候选集合和 Bank 的 profile-weight 结果如下：
+
+| key 组成 | OD relation Spearman | Recall@5 | memory MAE |
+|---|---:|---:|---:|
+| latent-only (`gamma=0`) | 0.35683 | 0.72970 | 3.54105 |
+| mixed (`gamma=0.25`) | 0.36819 | 0.73250 | 3.53834 |
+| profile-only (`gamma=1`) | 0.24382 | 0.70733 | 3.73425 |
+
+`gamma` 是 profile 分量在总 key 相似度中的固定权重。`gamma=0.25` 的 memory MAE 仅改善约 `0.077%`，不足以支撑 profile 进入主线；profile-only 反而破坏关系排序。因此最终 key 统一为纯 48 维 latent key，检索核心仍然是 future-guided relation pretraining 和 OffsetDecay payload。
+
+### 20.2 FGDA 的目的和边界
+
+`FGDA`（Future-Guided Dynamics Adapter，未来关系引导的动态适配器）是一个只处理历史动态的小型适配器。它不把 future 向量拼进 key，也不读取 query future；“future-guided”只表示既有 source-train `OffsetDecay relation` teacher 对 encoder 的梯度会训练这个历史动态分支。部署时输入仍只有 query history、已有历史 Bank 和图。
+
+对历史输入 `X in R^[B,T,N,C]`，相邻变化定义为：
+
+\[
+\Delta X_t = X_t-X_{t-1},\qquad
+v_t = 1[\text{obs}_t\land\text{obs}_{t-1}].
+\]
+
+`v_t` 是可见性掩码；无效变化被置零。按 patch 聚合并线性投影：
+
+\[
+D=W_\Delta\operatorname{Patch}(\Delta X)
+\in\mathbb{R}^{B\times P\times N\times96}.
+\]
+
+`Local-FGDA` 只使用 `D`。`LocalGraph-FGDA` 额外使用同一静态道路图的有效非自环邻居：
+
+\[
+D^G_{b,p,n}=\frac{\sum_{m\in\mathcal N(n)}A_{nm}v_{b,p,m}D_{b,p,m}}
+{\sum_{m\in\mathcal N(n)}A_{nm}v_{b,p,m}+\epsilon}.
+\]
+
+图门控和瓶颈残差为：
+
+\[
+a=\sigma(W_a[D;D^G]),\quad
+R=W_{up}\operatorname{GELU}(W_{down}(D+aD^G)),
+\]
+
+其中 `a in R^[B,P,N,1]`，`W_down:96->16`，`W_up:16->96`。最后用一个标量融合门控：
+
+\[
+g=\sigma(W_g[Z;R]),\qquad Z'=Z+gR,
+\]
+
+其中 `Z` 是原 FactorizedSTEncoder 的输出，`g in R^[B,P,N,1]`。`W_up` 与门控权重零初始化、门控偏置为 `-2`，所以初始 `Z'=Z`；FGDA 必须从 relation/reconstruction 的真实梯度中逐渐学习，而不是以随机残差破坏旧模型。
+
+### 20.3 掩码与 future-information 边界
+
+- clean 分支：`D` 只由完整历史观测生成，供 retrieval key 使用。
+- masked 分支：先用 `observed AND NOT value_mask` 重算窗口归一化和相邻变化。
+- 若一个时间 patch 完全被遮挡，该 patch 的局部变化和有效邻居聚合均不能恢复原值，FGDA residual 被强制置零。
+- 空间 mask 可以从仍可见的图邻居获得传播信息；这与原有空间重建任务一致，不读取 future。
+- source-train future 只在 no-grad 的 `OffsetDecay relation teacher` 中构造；query future 只用于离线 teacher/MAE 诊断，不进入 query key、候选排序、Bank key 或部署聚合。
+
+### 20.4 复杂度与可解释性
+
+Global288 主配置为 `P=24、D=96、bottleneck=16`。Local-FGDA 仅增加 `delta projection + 96->16->96 + 两个标量 gate`；LocalGraph-FGDA 只增加一次已有图上的有效加权聚合。实测单元契约要求参数增量小于 `2%`；日志额外记录：动态有效位置比例、融合门控均值、空间门控均值和 `||gR||/||Z||` 相对贡献。若贡献长期接近零，说明 FGDA 被主干忽略，应删除；若贡献异常大而 retrieval/downstream 不改善，也应删除。
+
+### 20.5 三个正式模型
+
+1. **Latent48**：原 encoder + 纯 48 维 latent key，`dynamics_adapter_mode=none`，作为 profile 删除后的基线。
+2. **Local-FGDA**：在 Latent48 上只加入历史局部差分，`dynamics_adapter_mode=local`。
+3. **LocalGraph-FGDA**：在 Local-FGDA 上加入已有静态图的有效邻居差分，`dynamics_adapter_mode=local_graph`。
+
+三者保持同一 `OffsetDecay` teacher、SymNorm distance、mask 比例、候选协议、Bank payload、seed 和下游设置；不重新引入趋势分解、FFT/DWT、动态图或新的 profile head。
+
+### 20.6 Keep/Remove/Stop 规则
+
+在 seed 42 上，FGDA 只有同时满足以下门槛才进入多 seed 和跨数据集：OD Spearman 至少 `+0.02`、Recall@5 至少 `+1` 个百分点、无 confidence memory MAE 至少下降 `0.5%`、无 confidence 下游 MAE 至少下降 `0.5%`、参数增量不超过 `2%`、推理延迟增量不超过 `5%`。Local 有效而 LocalGraph 无额外收益时只保留 Local；LocalGraph 进一步有效时保留完整 FGDA；两者均不达标时删除 FGDA，最终主线为纯 Latent48。
+
+旧的 `metrla_e5_final_sym_profile_*` 配置和 profile 下游半程产物只作为可追溯消融证据，不得与本节三个模型混写成同一主线结果。

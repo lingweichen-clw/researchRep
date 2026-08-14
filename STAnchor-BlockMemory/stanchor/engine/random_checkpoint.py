@@ -41,6 +41,7 @@ def build_random_checkpoint_payload(
     return {
         "model_state_dict": _cpu_state_dict(dict(model.state_dict())),
         "encoder_state_dict": _cpu_state_dict(dict(model.encoder.state_dict())),
+        "retrieval_encoder_state_dict": _cpu_state_dict(model.retrieval_state_dict()),
         "retrieval_state_dict": _cpu_state_dict(model.retrieval_state_dict()),
         "retrieval_fingerprint": retrieval_fingerprint,
         "config": config.to_dict(),
@@ -52,6 +53,11 @@ def build_random_checkpoint_payload(
         },
         "parameter_counts": {
             "total": count_parameters(model, trainable_only=False),
+            "dynamics_adapter": (
+                count_parameters(model.dynamics_adapter, trainable_only=False)
+                if model.dynamics_adapter is not None
+                else 0
+            ),
             "retrieval_path": sum(
                 tensor.numel() for tensor in model.retrieval_state_dict().values()
             ),

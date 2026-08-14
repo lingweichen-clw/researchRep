@@ -1,5 +1,10 @@
 """Neural modules for STAnchor pretraining and downstream fusion."""
 
+from .dynamics_adapter import (
+    DynamicsAdapterOutput,
+    HistoryDynamicsAdapter,
+    summarize_adapter_output,
+)
 from .encoder import FactorizedSTEncoder
 from .downstream import (
     ConfidenceHead,
@@ -16,6 +21,9 @@ from .retrieval_head import RetrievalHead, RetrievalOutput
 
 __all__ = [
     "FactorizedSTEncoder",
+    "DynamicsAdapterOutput",
+    "HistoryDynamicsAdapter",
+    "summarize_adapter_output",
     "ConfidenceHead",
     "DownstreamOutput",
     "LightweightForecastBackbone",

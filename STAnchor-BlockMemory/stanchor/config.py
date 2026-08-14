@@ -49,6 +49,10 @@ class ModelConfig:
     profile_dim: int = 0
     latent_dim: int = 0
     profile_weight: float = 0.25
+    dynamics_adapter_mode: str = "none"
+    dynamics_bottleneck_dim: int = 16
+    dynamics_gate_bias: float = -2.0
+    dynamics_gate_groups: int = 8
 
 
 @dataclass(frozen=True)
@@ -148,6 +152,29 @@ class ExperimentConfig:
             raise ValueError("time_mask_block_size must be divisible by patch_size")
         if self.model.hidden_dim % self.model.num_heads != 0:
             raise ValueError("hidden_dim must be divisible by num_heads")
+        if self.model.dynamics_adapter_mode not in {
+            "none",
+            "local",
+            "local_graph",
+            "context_conditioned",
+        }:
+            raise ValueError(
+                "dynamics_adapter_mode must be none, local, local_graph, "
+                "or context_conditioned"
+            )
+        if not 0 < self.model.dynamics_bottleneck_dim <= self.model.hidden_dim:
+            raise ValueError(
+                "dynamics_bottleneck_dim must be in [1, hidden_dim]"
+            )
+        if self.model.dynamics_gate_bias >= 0.0:
+            raise ValueError("dynamics_gate_bias must be negative")
+        if self.model.dynamics_adapter_mode == "context_conditioned" and (
+            self.model.dynamics_gate_groups <= 0
+            or self.model.hidden_dim % self.model.dynamics_gate_groups != 0
+        ):
+            raise ValueError(
+                "dynamics_gate_groups must be positive and divide hidden_dim"
+            )
         if self.model.input_channels != self.model.output_channels:
             raise ValueError("v1 requires input_channels == output_channels")
         if self.model.profile_dim < 0 or self.model.latent_dim < 0:
