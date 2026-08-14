@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "split": "val",
+  "checkpoint": "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\metrla_e5_final_sym_profile_seed42\\pretrain_best_relation.pt",
+  "checkpoint_epoch": 18,
+  "batches": 188,
+  "metrics": {
+    "profile_mae": 1.3010859286198884,
+    "profile_cosine": 0.06656594907088112,
+    "profile_relation_spearman": 0.15308447910146436,
+    "profile_relation_recall_at_k": 0.48599569618658267,
+    "total_od_relation_spearman": 0.6769968297294949,
+    "total_od_relation_recall_at_k": 0.6416272924106329
+  },
+  "counts": {
+    "profile_points": 7141582,
+    "profile_vectors": 604624,
+    "profile_relation_pairs": 7268864,
+    "profile_relation_anchors": 603186,
+    "od_relation_pairs": 7268864,
+    "od_relation_anchors": 603186
+  },
+  "top_k": 5,
+  "future_information_boundary": "query future is used only for offline val diagnostics and never for ranking",
+  "elapsed_seconds": 587.9705360000953
+}
