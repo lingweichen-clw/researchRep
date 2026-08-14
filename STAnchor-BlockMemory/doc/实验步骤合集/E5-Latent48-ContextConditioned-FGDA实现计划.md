@@ -174,11 +174,12 @@ Verify finite losses, finite gradients, checkpoint creation, and new diagnostics
 
 Files:
 - Create: STAnchor-BlockMemory/scripts/run_e5_latent48_cc_fgda_global288_queue.ps1
+- Create: STAnchor-BlockMemory/scripts/run_e5_latent48_cc_fgda_global288_local_queue.ps1
 - Modify: this plan with final output paths and commands
 
 - [x] Step 1: Add an isolated PowerShell queue.
 
-Run in order: CC-FGDA pretraining, pure Latent48 pretraining or checkpoint verification, Bank construction, retrieval diagnostic, visualization, and downstream attribution. Each formal step writes .started and .completed markers under a unique log root and refuses to overwrite existing output directories.
+Split the workflow by machine responsibility. The experiment-machine queue runs only pure Latent48 and CC-FGDA pretraining and contains no Bank, diagnosis, visualization, or downstream command. After the two relation checkpoints are copied back, the local queue constructs Banks and runs retrieval diagnosis, visualization, and lightweight MLP downstream attribution. Each queue writes `.started` and `.completed` markers under an isolated log root and refuses to overwrite existing output directories.
 
 - [x] Step 2: Validate queue syntax without training.
 
@@ -192,15 +193,15 @@ $python = (Get-Command python).Source
 $proc = Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Resolve-Path 'scripts/run_e5_latent48_cc_fgda_global288_queue.ps1').Path,'-Python',$python) -WorkingDirectory (Get-Location).Path -WindowStyle Hidden -PassThru
 $proc.Id
 
-The handoff must include exact config, checkpoint, Bank, and log paths and must state that query future is never used by the encoder or retrieval stage.
+The handoff must include exact config, checkpoint, Bank, and log paths and must state that query future is never used by the encoder or retrieval stage. The experiment-machine handoff contains checkpoints and logs only; no Bank is created there.
 
 ## Verification Result
 
 - Stage: implementation and local verification completed
-- Production changes: CC-FGDA mode, 48-dimensional conditioned branch, 96-dimensional diagonal skip, 8-group gate, diagnostics, isolated YAML, and two-stage queue
-- Full regression: 177 tests passed in the research environment
+- Production changes: CC-FGDA mode, 48-dimensional conditioned branch, 96-dimensional diagonal skip, 8-group gate, diagnostics, isolated YAML, one pretraining-only experiment-machine queue, and one local post-training queue
+- Full regression: 178 tests passed in the research environment
 - Static verification: python -m compileall -q stanchor scripts tests passed
-- Queue verification: PowerShell parser returned syntax-ok
+- Queue verification: both the pretraining-only and local post-training PowerShell parsers returned syntax-ok
 - One-batch verification: CUDA forward/backward completed; total parameters 414,021, adapter parameters 22,185, adapter increase about 5.66%
 - Future boundary: query future is not accepted by the adapter, key encoder, Bank construction, or candidate ranking
 
@@ -208,7 +209,7 @@ The handoff must include exact config, checkpoint, Bank, and log paths and must 
 
 Run from the repository root in the environment that contains PyTorch.
 
-1. Start both pure Latent48 and CC-FGDA Global288 pretraining:
+1. On the experiment machine, start both pure Latent48 and CC-FGDA Global288 pretraining:
 
 ~~~powershell
 $python = (Get-Command python).Source
@@ -229,18 +230,28 @@ This trains:
 
 Both configurations use the same OffsetDecay teacher, symmetric geometric-mean distance normalization, exact-calendar candidate protocol, and the same static graph.
 
-2. After both relation checkpoints exist, run Bank, retrieval diagnosis, visualization, and downstream attribution:
+The experiment-machine queue is pretraining-only. Its source contains no `build_bank.py`, `diagnose_retrieval.py`, `visualize_retrieval.py`, or `train_downstream.py` call. It produces only the two pretraining artifact directories and queue logs.
+
+2. Copy these two files from the experiment machine to the same relative locations on the local machine:
+
+~~~text
+artifacts/metrla_e5_final_latent48_global288_seed42/pretrain_best_relation.pt
+artifacts/metrla_e5_final_latent48_cc_fgda_global288_seed42/pretrain_best_relation.pt
+~~~
+
+Only the two `pretrain_best_relation.pt` files are required for the local workflow; the experiment-machine Banks do not exist and do not need to be transferred.
+
+3. On the local machine, build Banks and run retrieval diagnosis, visualization, and lightweight MLP downstream attribution:
 
 ~~~powershell
 $python = (Get-Command python).Source
 $proc = Start-Process powershell.exe -ArgumentList @(
   '-NoProfile',
   '-ExecutionPolicy', 'Bypass',
-  '-File', (Resolve-Path 'scripts/run_e5_latent48_cc_fgda_global288_queue.ps1').Path,
-  '-Python', $python,
-  '-Stage', 'posttrain'
+  '-File', (Resolve-Path 'scripts/run_e5_latent48_cc_fgda_global288_local_queue.ps1').Path,
+  '-Python', $python
 ) -WorkingDirectory (Get-Location).Path -WindowStyle Hidden -PassThru
 $proc.Id
 ~~~
 
-The post-training stage compares base_only, pretrained_offset_decay, and random_offset_decay for each encoder version, then exports retrieval diagnostics and figures. Formal output roots are protected against accidental overwrite.
+The local queue first verifies both relation checkpoint paths, then creates pretrained/random Banks, retrieval diagnostics, figures, and the `base_only`, `pretrained_offset_decay`, and `random_offset_decay` lightweight downstream branches for each encoder version. Formal output roots are protected against accidental overwrite.

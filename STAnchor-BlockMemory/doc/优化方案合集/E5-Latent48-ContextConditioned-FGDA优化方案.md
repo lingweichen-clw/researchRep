@@ -415,9 +415,10 @@ R=0,\qquad Z'=Z.
 - `stanchor/models/dynamics_adapter.py`：CC-FGDA 分支、输出诊断和参数初始化；
 - `stanchor/config.py`、`stanchor/models/pretraining.py`、`stanchor/engine/pretrainer.py`：配置、模型接入和 epoch 级诊断日志；
 - `configs/metrla_e5_final_latent48_cc_fgda_global288_v1.yaml`：Global288、纯 Latent48、静态图、OffsetDecay + SymmetricNorm 的唯一新配置；
-- `scripts/run_e5_latent48_cc_fgda_global288_queue.ps1`：预训练与后处理队列，使用独立产物目录并拒绝覆盖已有结果；
+- `scripts/run_e5_latent48_cc_fgda_global288_queue.ps1`：实验机预训练专用队列，只训练纯 Latent48 与 CC-FGDA，不包含 Bank、诊断、可视化或下游步骤；
+- `scripts/run_e5_latent48_cc_fgda_global288_local_queue.ps1`：本机后处理队列，接收复制回来的两个 relation checkpoint，构建 Bank 并执行诊断、可视化和轻量 MLP 下游验证；
 - `tests/test_dynamics_adapter.py`、`tests/test_experiment_queues.py`：形状、恒等初始化、梯度、参数预算、配置单变量和队列契约测试。
 
 ### 12.2 当前验证结论
 
-在 `research` 环境中，全仓库 `177` 个 unittest 通过；`python -m compileall -q stanchor scripts tests` 通过；PowerShell 队列解析通过。Global288 CC-FGDA 总参数为 `414,021`，adapter 参数为 `22,185`，相对纯 Latent48 增量约 `5.66%`。这些是实现验证结果，不是模型效果结论；关系排序、Bank、可视化和下游指标必须等待实验机正式预训练完成后再评估。
+在 `research` 环境中，全仓库 `178` 个 unittest 通过；`python -m compileall -q stanchor scripts tests` 通过；实验机预训练队列和本机后处理队列的 PowerShell 解析均通过。Global288 CC-FGDA 总参数为 `414,021`，adapter 参数为 `22,185`，相对纯 Latent48 增量约 `5.66%`。这些是实现验证结果，不是模型效果结论；关系排序、Bank、可视化和下游指标必须等待实验机正式预训练完成并将两个 relation checkpoint 复制回本机后再评估。

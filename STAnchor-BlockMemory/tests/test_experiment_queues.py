@@ -57,9 +57,19 @@ class ExperimentQueueContractTest(unittest.TestCase):
         self.assertIn("metrla_e5_final_latent48_global288_v1.yaml", text)
         self.assertIn("metrla_e5_final_latent48_cc_fgda_global288_v1.yaml", text)
         self.assertIn('Stage = "pretrain"', text)
-        self.assertIn('ValidateSet("pretrain", "posttrain", "all")', text)
+        self.assertIn('ValidateSet("pretrain")', text)
         self.assertIn("cc_fgda", text)
-        self.assertIn("init_random_checkpoint.py", text)
+        self.assertNotIn("build_bank.py", text)
+        self.assertNotIn("diagnose_retrieval.py", text)
+        self.assertNotIn("train_downstream.py", text)
+
+    def test_cc_fgda_local_queue_consumes_checkpoints_and_runs_posttrain(self) -> None:
+        path = PROJECT_ROOT / "scripts" / "run_e5_latent48_cc_fgda_global288_local_queue.ps1"
+        self.assertTrue(path.exists())
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("Latent48Checkpoint", text)
+        self.assertIn("CcFgdaCheckpoint", text)
+        self.assertIn("build_bank.py", text)
         self.assertIn("diagnose_retrieval.py", text)
         self.assertIn("visualize_retrieval.py", text)
         self.assertIn("train_downstream.py", text)
