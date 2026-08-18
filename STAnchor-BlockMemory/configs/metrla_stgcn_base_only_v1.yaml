@@ -11,8 +11,7 @@ data:
   num_workers: 0
 
 model:
-  # These fields must match the Latent48 pretraining checkpoint used to load
-  # the frozen retrieval encoder, even though base_only does not retrieve.
+  # base_only uses these dimensions directly and does not load a retrieval encoder.
   input_channels: 1
   output_channels: 1
   patch_size: 12
@@ -60,11 +59,16 @@ pretrain:
 target:
   downstream_mode: base_only
   training_protocol: staged_joint
+  training_data_scope: full_train
   candidate_protocol: exact_calendar
-  batch_size: 32
-  epochs: 50
+  batch_size: 16
+  epochs: 100
   learning_rate: 0.001
-  weight_decay: 0.0001
+  weight_decay: 0.0005
+  optimizer_name: adam
+  scheduler_name: step_lr
+  scheduler_step_size: 10
+  scheduler_gamma: 0.95
   confidence_hidden_dim: 32
   confidence_weight: 1.0
   confidence_level_temperature: 1.0

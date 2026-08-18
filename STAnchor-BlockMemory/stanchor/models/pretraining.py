@@ -62,6 +62,13 @@ class STAnchorPretrainModel(nn.Module):
             ffn_multiplier=model_config.ffn_multiplier,
             dropout=model_config.dropout,
             graph_bias=model_config.graph_bias,
+            route_enabled=model_config.route_enabled,
+            route_dim=model_config.route_dim,
+            route_top_k=model_config.route_top_k,
+            route_local_quota=model_config.route_local_quota,
+            route_prior_weight=model_config.route_prior_weight,
+            route_temperature=model_config.route_temperature,
+            route_gate_bias=model_config.route_gate_bias,
         )
         self.retrieval_head = RetrievalHead(
             model_config.hidden_dim,

@@ -71,6 +71,30 @@ q_{b,n}
 
 这里的 48 维向量不分解为 profile 与 latent 子空间。它的语义由 future-relation teacher 监督，而不是由某一维对应某个未来预测步。事件 key 是节点 key 的平均后再归一化，用于 event-level 粗筛。
 
+### 3.1 v2 编码器的非局部空间扩展（待验证）
+
+当前已完成的 v1 结果仍以静态图空间注意力为准。v2 在保留该局部分支的同时，增加历史条件的非局部稀疏路由，用于处理多跳传播或物理图未显式连接但历史变化一致的节点。
+
+对时间编码状态 (Zinmathbb R^{B	imes24	imes N	imes D})，先构造每个节点的历史状态和趋势摘要：
+
+\[
+s_{b,n}=\left[\operatorname{Mean}_{p}Z_{b,p,n};Z_{b,24,n}-Z_{b,1,n}\right].
+\]
+
+通过共享的低维目标/源投影得到 (q_{b,n},k_{b,m})，并计算：
+
+\[
+r_{b,n,m}=\frac{q_{b,n}^{\top}k_{b,m}}{\sqrt{d_r}}
++\lambda_{\mathrm{diff}}\log\left(1+(A_{\mathrm{rw}}^2+A_{\mathrm{rw}}^3)_{n,m}\right),
+\qquad A_{\mathrm{rw}}=D^{-1}\bar A,
+\]
+
+其中 \(\bar A\) 是移除 self-loop 后的静态邻接，矩阵平方和立方分别累计二跳、三跳路径权重；它只是固定图先验，不是可学习的节点关系矩阵。
+
+路由候选只排除自身，每个节点默认保留 Top-10 混合范围节点，其中 4 个来自一阶邻居、6 个来自多阶/远端集合；选中的消息通过负偏置门控注入局部图表示。该分支只读取当前 query 的历史，不读取 query future，不使用节点 ID 专属参数，也不改变 Latent48、Bank 或因果候选协议。完整公式、参数预算和消融见 [E5-Latent48-TGGE-Structured-Error-Corrector-v2优化方案.md](E5-Latent48-TGGE-Structured-Error-Corrector-v2优化方案.md)。
+
+当前实现配置 `hidden_dim=80`、`route_dim=16`、3 个编码块；3 个路由分支实测 25,827 个参数，完整 retrieval state 实测 302,755 个参数。时间分支仍沿用 v1 的因子化时间注意力，后续时间卷积替换必须作为独立消融，不与本次空间路由结果混报。
+
 ## 4. SymNorm future-relation 预训练
 
 ### 4.1 OffsetDecay 关系对象
@@ -175,6 +199,8 @@ p^{S}_{ij,n}
 3. 节点 key 余弦相似度对每个节点独立排序；
 4. 每个节点取 `node_top_k=5`；
 5. `search_temperature=0.10` 对 Top-5 分数做 softmax 聚合。
+
+这里的 `node_top_k=5` 是 Bank 检索阶段的历史事件候选数，与 v2 编码器空间分支中的混合范围路由候选数相互独立；后者默认 `K_g=10`，配额为 4 个一阶加 6 个多阶/远端节点。
 
 主线 `level_weight=0`，因此候选排序不混入手工 level 距离。level 只在 PostHoc 诊断特征和 OffsetDecay payload 对齐中使用。
 

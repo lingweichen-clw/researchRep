@@ -10,6 +10,22 @@ from stanchor.config import load_config
 
 
 class PretrainingCliTest(unittest.TestCase):
+    def test_tgge_v2_config_enables_mixed_range_route(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        config = load_config(project_root / "configs/metrla_e5_tgge_latent48_v2.yaml")
+
+        self.assertEqual(config.model.hidden_dim, 80)
+        self.assertEqual(config.model.retrieval_dim, 48)
+        self.assertTrue(config.model.route_enabled)
+        self.assertEqual(config.model.route_top_k, 10)
+        self.assertEqual(config.model.route_local_quota, 4)
+        self.assertEqual(config.pretrain.relation_teacher_mode, "offset_decay")
+        self.assertEqual(
+            config.pretrain.relation_distance_normalization,
+            "symmetric_geometric_mean",
+        )
+        self.assertIn("tgge_latent48_v2", config.runtime.run_name)
+
     def test_pretrain_help_exposes_seed_override(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         result = subprocess.run(

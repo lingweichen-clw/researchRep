@@ -51,6 +51,29 @@ class GraphData:
             neighbors.fill_diagonal_(False)
         return neighbors
 
+    def random_walk_diffusion_prior(self) -> torch.Tensor:
+        """Return a fixed two/three-hop prior without self-loop paths.
+
+        The returned matrix is ``A_rw @ A_rw + A_rw @ A_rw @ A_rw`` where
+        ``A_rw`` is the row-normalized adjacency after removing self-loops.
+        It is a graph-only prior and contains no trainable parameters.
+        """
+        adjacency = torch.zeros(
+            (self.num_nodes, self.num_nodes),
+            dtype=self.edge_weight.dtype,
+            device=self.edge_weight.device,
+        )
+        target, source = self.edge_index
+        non_self = target != source
+        adjacency[target[non_self], source[non_self]] = self.edge_weight[non_self]
+        degree = adjacency.sum(dim=1, keepdim=True)
+        random_walk = adjacency / degree.clamp_min(1.0e-8)
+        two_hop = random_walk @ random_walk
+        three_hop = two_hop @ random_walk
+        prior = two_hop + three_hop
+        prior.fill_diagonal_(0.0)
+        return prior
+
 
 def _loads_pickle(payload: bytes):
     try:

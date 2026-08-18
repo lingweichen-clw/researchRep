@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import time
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -14,6 +15,7 @@ from torch.utils.data import DataLoader, Dataset, Subset
 
 from stanchor.bank.storage import MemoryBank
 from stanchor.config import (
+    FULL_TRAIN,
     POSTHOC_FROZEN_BASE,
     ExperimentConfig,
     resolve_project_path,
@@ -261,6 +263,49 @@ def configure_downstream_trainable(
     if mode == LEARNED_TOPK_ERROR_AWARE:
         for parameter in downstream.fusion.parameters():
             parameter.requires_grad_(False)
+
+
+def select_downstream_training_dataset(
+    train_dataset: Dataset,
+    config: ExperimentConfig,
+) -> tuple[Dataset, int]:
+    """Select the full baseline data or the retrieval calibration partition."""
+    memory_events = int(len(train_dataset) * config.bank.memory_fraction)
+    if config.target.training_data_scope == FULL_TRAIN:
+        return train_dataset, memory_events
+    return (
+        Subset(train_dataset, range(memory_events, len(train_dataset))),
+        memory_events,
+    )
+
+
+def build_target_optimizer(
+    config: ExperimentConfig,
+    parameter_groups: list[dict],
+) -> torch.optim.Optimizer:
+    optimizer_class = (
+        torch.optim.Adam
+        if config.target.optimizer_name == "adam"
+        else torch.optim.AdamW
+    )
+    return optimizer_class(
+        parameter_groups,
+        lr=config.target.learning_rate,
+        weight_decay=config.target.weight_decay,
+    )
+
+
+def build_target_scheduler(
+    config: ExperimentConfig,
+    optimizer: torch.optim.Optimizer,
+):
+    if config.target.scheduler_name == "none":
+        return None
+    return torch.optim.lr_scheduler.StepLR(
+        optimizer,
+        step_size=config.target.scheduler_step_size,
+        gamma=config.target.scheduler_gamma,
+    )
 
 
 def configure_error_aware_stage(
@@ -627,10 +672,11 @@ def train_downstream(
             )
         else:
             retriever = None
-        memory_events = int(len(data.train) * config.bank.memory_fraction)
-        calibration = Subset(data.train, range(memory_events, len(data.train)))
+        training_dataset, memory_events = select_downstream_training_dataset(
+            data.train, config
+        )
         train_loader = DataLoader(
-            calibration,
+            training_dataset,
             batch_size=config.target.batch_size,
             shuffle=True,
             num_workers=config.data.num_workers,
@@ -706,12 +752,15 @@ def train_downstream(
                 base_provenance["fingerprint"],
             )
         logger.info(
-            "Data | steps=%d | nodes=%d | channels=%d | memory/calibration/val/test=%d/%d/%d/%d",
+            "Data | steps=%d | nodes=%d | channels=%d | training_scope=%s | "
+            "memory/post_memory/train_selected/val/test=%d/%d/%d/%d/%d",
             data.series.num_steps,
             data.series.num_nodes,
             data.series.num_channels,
+            config.target.training_data_scope,
             memory_events,
-            len(calibration),
+            len(data.train) - memory_events,
+            len(training_dataset),
             len(data.val),
             len(data.test),
         )
@@ -740,12 +789,17 @@ def train_downstream(
             f"{parameter_counts['frozen_pretrained']:,}",
         )
         logger.info(
-            "Optimization | epochs=%d | batch_size=%d | lr=%.3g | weight_decay=%.3g | "
+            "Optimization | epochs=%d | batch_size=%d | optimizer=%s | lr=%.3g | "
+            "weight_decay=%.3g | scheduler=%s | step_size=%d | gamma=%.3f | "
             "confidence_weight=%.3f | patience=%d",
             config.target.epochs,
             config.target.batch_size,
+            config.target.optimizer_name,
             config.target.learning_rate,
             config.target.weight_decay,
+            config.target.scheduler_name,
+            config.target.scheduler_step_size,
+            config.target.scheduler_gamma,
             config.target.confidence_weight,
             config.target.patience,
         )
@@ -789,10 +843,8 @@ def train_downstream(
                     stage_config = config
             if not parameter_groups or not any(group["params"] for group in parameter_groups):
                 raise ValueError(f"downstream stage {stage} has no trainable parameters")
-            optimizer = torch.optim.AdamW(
-                parameter_groups,
-                weight_decay=config.target.weight_decay,
-            )
+            optimizer = build_target_optimizer(config, parameter_groups)
+            scheduler = build_target_scheduler(config, optimizer)
             logger.info(
                 "Stage start | stage=%s | epochs=%d | optimizer_lrs=%s",
                 stage,
@@ -803,6 +855,13 @@ def train_downstream(
             for stage_epoch in range(1, stage_epochs + 1):
                 global_epoch += 1
                 epoch = global_epoch
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+                    torch.cuda.reset_peak_memory_stats(device)
+                epoch_started = time.perf_counter()
+                epoch_learning_rate = [
+                    group["lr"] for group in optimizer.param_groups
+                ]
                 train_result = run_target_epoch(
                     pretrained, downstream, retriever, bank, data, train_loader, graph,
                     stage_config, data.scaler, device, optimizer, max_batches
@@ -819,6 +878,14 @@ def train_downstream(
                     pretrained, downstream, retriever, bank, data, val_loader, graph,
                     stage_config, data.scaler, device, None, max_batches
                 )
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+                    cuda_peak_mb = torch.cuda.max_memory_allocated(device) / (1024.0 ** 2)
+                else:
+                    cuda_peak_mb = 0.0
+                epoch_seconds = time.perf_counter() - epoch_started
+                if scheduler is not None:
+                    scheduler.step()
                 record = {
                     "epoch": epoch,
                     "stage": stage,
@@ -826,6 +893,9 @@ def train_downstream(
                     "train": train_result.__dict__,
                     "val": val_result.__dict__,
                     "parameter_counts": parameter_counts,
+                    "epoch_seconds": epoch_seconds,
+                    "learning_rates": epoch_learning_rate,
+                    "cuda_peak_allocated_mb": cuda_peak_mb,
                 }
                 with metrics_path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -833,7 +903,8 @@ def train_downstream(
                     "Epoch %03d | stage=%s | train_total=%.6f | train_forecast=%.6f | "
                     "train_confidence=%.6f | train_risk=%.6f | train_blend=%.6f | "
                     "val_total=%.6f | val_mae=%.6f | val_rmse=%.6f | val_mape=%.6f | "
-                    "val_confidence=%.6f | val_risk=%.6f | val_blend=%.6f",
+                    "val_confidence=%.6f | val_risk=%.6f | val_blend=%.6f | "
+                    "batches=%d/%d | seconds=%.2f | lr=%s | cuda_peak_mb=%.1f",
                     epoch,
                     stage,
                     train_result.total_loss,
@@ -848,6 +919,11 @@ def train_downstream(
                     val_result.confidence_loss,
                     val_result.risk_loss,
                     val_result.blend_loss,
+                    train_result.batches,
+                    val_result.batches,
+                    epoch_seconds,
+                    epoch_learning_rate,
+                    cuda_peak_mb,
                 )
                 horizon_metrics = select_common_horizon_metrics(
                     val_result.metrics,

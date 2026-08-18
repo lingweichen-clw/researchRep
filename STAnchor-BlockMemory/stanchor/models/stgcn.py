@@ -208,7 +208,6 @@ class _OutputBlock(nn.Module):
         hidden_channels: int,
         output_channels: int,
         node_count: int,
-        dropout: float,
     ) -> None:
         super().__init__()
         self.temporal = _TemporalConvLayer(
@@ -218,13 +217,11 @@ class _OutputBlock(nn.Module):
         self.fc1 = nn.Linear(hidden_channels, hidden_channels)
         self.fc2 = nn.Linear(hidden_channels, output_channels)
         self.activation = nn.ReLU()
-        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.temporal(x)
         x = self.normalization(x.permute(0, 2, 3, 1))
         x = self.activation(self.fc1(x))
-        x = self.dropout(x)
         x = self.fc2(x)
         # The output temporal length is one: [B, 1, N, H*C].
         return x[:, 0]
@@ -306,7 +303,6 @@ class STGCNForecastBackbone(nn.Module):
             output_hidden_channels,
             horizon * output_channels,
             graph.num_nodes,
-            dropout,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

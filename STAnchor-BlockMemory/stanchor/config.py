@@ -19,6 +19,11 @@ from stanchor.retrieval.strategies import validate_candidate_protocol
 STAGED_JOINT = "staged_joint"
 POSTHOC_FROZEN_BASE = "posthoc_frozen_base"
 TARGET_TRAINING_PROTOCOLS = (STAGED_JOINT, POSTHOC_FROZEN_BASE)
+POST_MEMORY_CALIBRATION = "post_memory_calibration"
+FULL_TRAIN = "full_train"
+TARGET_TRAINING_DATA_SCOPES = (POST_MEMORY_CALIBRATION, FULL_TRAIN)
+TARGET_OPTIMIZERS = ("adamw", "adam")
+TARGET_SCHEDULERS = ("none", "step_lr")
 
 
 @dataclass(frozen=True)
@@ -55,6 +60,13 @@ class ModelConfig:
     ffn_multiplier: int = 2
     dropout: float = 0.1
     graph_bias: float = 1.0
+    route_enabled: bool = False
+    route_dim: int = 16
+    route_top_k: int = 10
+    route_local_quota: int = 4
+    route_prior_weight: float = 0.25
+    route_temperature: float = 0.1
+    route_gate_bias: float = -2.0
     profile_dim: int = 0
     latent_dim: int = 0
     profile_weight: float = 0.25
@@ -108,11 +120,16 @@ class BankConfig:
 class TargetConfig:
     downstream_mode: str = LEARNED_TOPK_CONFIDENCE
     training_protocol: str = STAGED_JOINT
+    training_data_scope: str = POST_MEMORY_CALIBRATION
     candidate_protocol: str = "exact_calendar"
     batch_size: int = 32
     epochs: int = 50
     learning_rate: float = 1.0e-3
     weight_decay: float = 1.0e-4
+    optimizer_name: str = "adamw"
+    scheduler_name: str = "none"
+    scheduler_step_size: int = 10
+    scheduler_gamma: float = 0.95
     confidence_hidden_dim: int = 32
     confidence_weight: float = 1.0
     confidence_level_temperature: float = 1.0
@@ -161,6 +178,19 @@ class ExperimentConfig:
         if self.target.training_protocol not in TARGET_TRAINING_PROTOCOLS:
             choices = ", ".join(TARGET_TRAINING_PROTOCOLS)
             raise ValueError(f"training_protocol must be one of: {choices}")
+        if self.target.training_data_scope not in TARGET_TRAINING_DATA_SCOPES:
+            choices = ", ".join(TARGET_TRAINING_DATA_SCOPES)
+            raise ValueError(f"training_data_scope must be one of: {choices}")
+        if self.target.optimizer_name not in TARGET_OPTIMIZERS:
+            choices = ", ".join(TARGET_OPTIMIZERS)
+            raise ValueError(f"optimizer_name must be one of: {choices}")
+        if self.target.scheduler_name not in TARGET_SCHEDULERS:
+            choices = ", ".join(TARGET_SCHEDULERS)
+            raise ValueError(f"scheduler_name must be one of: {choices}")
+        if self.target.scheduler_step_size <= 0:
+            raise ValueError("scheduler_step_size must be positive")
+        if not 0.0 < self.target.scheduler_gamma <= 1.0:
+            raise ValueError("scheduler_gamma must be in (0,1]")
         if (
             self.target.training_protocol == POSTHOC_FROZEN_BASE
             and self.target.downstream_mode != LEARNED_TOPK_ERROR_AWARE
@@ -182,6 +212,18 @@ class ExperimentConfig:
             raise ValueError("time_mask_block_size must be divisible by patch_size")
         if self.model.hidden_dim % self.model.num_heads != 0:
             raise ValueError("hidden_dim must be divisible by num_heads")
+        if self.model.route_dim <= 0 or self.model.route_dim > 2 * self.model.hidden_dim:
+            raise ValueError("route_dim must be positive and no larger than 2 * hidden_dim")
+        if self.model.route_top_k <= 0:
+            raise ValueError("route_top_k must be positive")
+        if not 0 <= self.model.route_local_quota <= self.model.route_top_k:
+            raise ValueError("route_local_quota must be in [0, route_top_k]")
+        if self.model.route_prior_weight < 0.0:
+            raise ValueError("route_prior_weight must be non-negative")
+        if self.model.route_temperature <= 0.0:
+            raise ValueError("route_temperature must be positive")
+        if self.model.route_gate_bias >= 0.0:
+            raise ValueError("route_gate_bias must be negative")
         if self.model.dynamics_adapter_mode not in {
             "none",
             "local",

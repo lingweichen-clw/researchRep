@@ -291,6 +291,11 @@ def train_pretraining(
     parameter_counts = {
         "embedding": count_parameters(model.embedding),
         "encoder": count_parameters(model.encoder),
+        "route_attention": sum(
+            count_parameters(block.route_attention)
+            for block in model.encoder.blocks
+            if block.route_attention is not None
+        ),
         "dynamics_adapter": (
             count_parameters(model.dynamics_adapter)
             if model.dynamics_adapter is not None
@@ -341,14 +346,28 @@ def train_pretraining(
     )
     logger.info(
         "Parameters | total=%s | trainable=%s | embedding=%s | encoder=%s | "
-        "dynamics_adapter=%s | retrieval_head=%s | reconstruction_head=%s",
+        "route_attention=%s | dynamics_adapter=%s | retrieval_head=%s | "
+        "reconstruction_head=%s",
         f"{parameter_counts['total']:,}",
         f"{parameter_counts['total_trainable']:,}",
         f"{parameter_counts['embedding']:,}",
         f"{parameter_counts['encoder']:,}",
+        f"{parameter_counts['route_attention']:,}",
         f"{parameter_counts['dynamics_adapter']:,}",
         f"{parameter_counts['retrieval_head']:,}",
         f"{parameter_counts['reconstruction_head']:,}",
+    )
+    logger.info(
+        "Route | enabled=%s | top_k=%d | local_quota=%d | route_dim=%d | "
+        "prior_weight=%.3f | temperature=%.3f | gate_bias=%.3f | parameters=%s",
+        config.model.route_enabled,
+        config.model.route_top_k,
+        config.model.route_local_quota,
+        config.model.route_dim,
+        config.model.route_prior_weight,
+        config.model.route_temperature,
+        config.model.route_gate_bias,
+        f"{parameter_counts['route_attention']:,}",
     )
     logger.info(
         "Optimization | epochs=%d | batch_size=%d | lr=%.3g | weight_decay=%.3g | "
