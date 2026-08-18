@@ -145,6 +145,21 @@ def validate_downstream_bank_path(
     return resolve_project_path(bank_path)
 
 
+def validate_downstream_pretrained_checkpoint(
+    mode: str,
+    checkpoint_path: str | Path | None,
+) -> Path | None:
+    """Require the retrieval encoder checkpoint only when retrieval is used."""
+    mode = validate_downstream_mode(mode)
+    if mode == BASE_ONLY:
+        return None
+    if checkpoint_path is None:
+        raise ValueError(
+            f"downstream mode {mode!r} requires --pretrained-checkpoint"
+        )
+    return resolve_project_path(checkpoint_path)
+
+
 def _state_dict_fingerprint(module: torch.nn.Module) -> str:
     """Return a stable short hash for an initialized module state."""
     digest = hashlib.sha256()
@@ -313,7 +328,7 @@ def build_downstream_training_stages(
 @torch.no_grad()
 def retrieve_for_downstream_mode(
     mode: str,
-    pretrained: STAnchorPretrainModel,
+    pretrained: STAnchorPretrainModel | None,
     retriever: TwoStageRetriever | None,
     bank: MemoryBank | None,
     data,
@@ -328,6 +343,8 @@ def retrieve_for_downstream_mode(
     candidate_protocol = validate_candidate_protocol(candidate_protocol)
     if mode == BASE_ONLY:
         return None, None
+    if pretrained is None or retriever is None or bank is None:
+        raise ValueError(f"downstream mode {mode!r} requires retrieval assets")
     if mode in {LEARNED_TOPK_CONFIDENCE, LEARNED_TOPK_ERROR_AWARE}:
         encoding = pretrained.encode_clean(
             batch["retrieval_x"].to(device),
@@ -463,7 +480,7 @@ def _validate_bank(
 
 
 def run_target_epoch(
-    pretrained: STAnchorPretrainModel,
+    pretrained: STAnchorPretrainModel | None,
     downstream: STAnchorDownstreamModel,
     retriever: TwoStageRetriever | None,
     bank: MemoryBank | None,
@@ -478,7 +495,8 @@ def run_target_epoch(
 ) -> TargetEpochResult:
     training = optimizer is not None
     downstream.train(training)
-    pretrained.eval()
+    if pretrained is not None:
+        pretrained.eval()
     total = forecast = confidence = risk = blend = 0.0
     batches = 0
     metrics = ForecastMetricAccumulator(config.data.horizon)
@@ -552,7 +570,7 @@ def run_target_epoch(
 
 def train_downstream(
     config: ExperimentConfig,
-    pretrained_checkpoint: str | Path,
+    pretrained_checkpoint: str | Path | None = None,
     bank_path: str | Path | None = None,
     base_checkpoint_path: str | Path | None = None,
     max_batches: int | None = None,
@@ -561,11 +579,21 @@ def train_downstream(
     device = resolve_device(config.runtime.device)
     data, graph_cpu = build_data_and_graph(config)
     graph = graph_cpu.to(device)
-    pretrained, _ = load_pretrained_model(
-        config, pretrained_checkpoint, data.series.slots_per_day, device
+    resolved_pretrained_checkpoint = validate_downstream_pretrained_checkpoint(
+        config.target.downstream_mode,
+        pretrained_checkpoint,
     )
-    for parameter in pretrained.parameters():
-        parameter.requires_grad_(False)
+    if resolved_pretrained_checkpoint is None:
+        pretrained = None
+    else:
+        pretrained, _ = load_pretrained_model(
+            config,
+            resolved_pretrained_checkpoint,
+            data.series.slots_per_day,
+            device,
+        )
+        for parameter in pretrained.parameters():
+            parameter.requires_grad_(False)
     resolved_bank_path = validate_downstream_bank_path(
         config.target.downstream_mode,
         bank_path,
@@ -573,13 +601,20 @@ def train_downstream(
     bank_context = (
         MemoryBank(
             resolved_bank_path,
-            expected_schema_version=(2 if pretrained.model_config.profile_dim > 0 else 1),
+            expected_schema_version=(
+                2
+                if pretrained is not None
+                and pretrained.model_config.profile_dim > 0
+                else 1
+            ),
         )
         if resolved_bank_path is not None
         else nullcontext(None)
     )
     with bank_context as bank:
         if bank is not None:
+            if pretrained is None:
+                raise ValueError("Bank retrieval requires a pretrained encoder")
             _validate_bank(bank, pretrained, graph_cpu, data.scaler.state_dict())
             retriever: TwoStageRetriever | None = TwoStageRetriever(
                 bank,
@@ -628,7 +663,11 @@ def train_downstream(
             run_dir / "downstream.log",
         )
         parameter_counts = {
-            "frozen_pretrained": count_parameters(pretrained, trainable_only=False),
+            "frozen_pretrained": (
+                count_parameters(pretrained, trainable_only=False)
+                if pretrained is not None
+                else 0
+            ),
             "backbone": count_parameters(downstream.backbone),
             "confidence_head": count_parameters(downstream.confidence_head),
             "fusion": count_parameters(downstream.fusion),
@@ -842,7 +881,11 @@ def train_downstream(
                             "bank_manifest": (
                                 bank.manifest.to_dict() if bank is not None else None
                             ),
-                            "pretrained_fingerprint": pretrained.retrieval_fingerprint(),
+                            "pretrained_fingerprint": (
+                                pretrained.retrieval_fingerprint()
+                                if pretrained is not None
+                                else None
+                            ),
                             "metrics": record,
                             "epoch": epoch,
                             "seed": config.runtime.seed,

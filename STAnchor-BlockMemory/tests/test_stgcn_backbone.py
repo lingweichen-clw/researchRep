@@ -10,6 +10,7 @@ from stanchor.data.graph import graph_from_dense
 from stanchor.engine.target import (
     build_downstream_model,
     validate_downstream_bank_path,
+    validate_downstream_pretrained_checkpoint,
 )
 from stanchor.modes import BASE_ONLY, LEARNED_TOPK_CONFIDENCE
 from stanchor.models.stgcn import STGCNForecastBackbone, build_stgcn_gso
@@ -69,6 +70,18 @@ class STGCNBackboneTest(unittest.TestCase):
     def test_retrieval_mode_requires_a_bank(self) -> None:
         with self.assertRaisesRegex(ValueError, "requires --bank"):
             validate_downstream_bank_path(LEARNED_TOPK_CONFIDENCE, None)
+
+    def test_base_only_does_not_require_a_pretrained_checkpoint(self) -> None:
+        self.assertIsNone(
+            validate_downstream_pretrained_checkpoint(BASE_ONLY, None)
+        )
+
+    def test_retrieval_mode_requires_a_pretrained_checkpoint(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires --pretrained-checkpoint"):
+            validate_downstream_pretrained_checkpoint(
+                LEARNED_TOPK_CONFIDENCE,
+                None,
+            )
 
 
 if __name__ == "__main__":

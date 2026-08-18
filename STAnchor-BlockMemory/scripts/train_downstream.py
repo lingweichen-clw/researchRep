@@ -18,7 +18,11 @@ from stanchor.retrieval.strategies import CANDIDATE_PROTOCOLS
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train target backbone, confidence, and safe fusion.")
     parser.add_argument("--config", required=True)
-    parser.add_argument("--pretrained-checkpoint", required=True)
+    parser.add_argument(
+        "--pretrained-checkpoint",
+        default=None,
+        help="Required for retrieval modes and unused by base_only.",
+    )
     parser.add_argument(
         "--bank",
         default=None,
