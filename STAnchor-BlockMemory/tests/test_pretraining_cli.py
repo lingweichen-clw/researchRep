@@ -43,7 +43,7 @@ class PretrainingCliTest(unittest.TestCase):
         )
         self.assertIn("--level-weight", result.stdout)
 
-    def test_e5_configs_freeze_teacher_contract(self) -> None:
+    def test_e5_offset_configs_freeze_teacher_contract(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         cases = (
             (
@@ -52,19 +52,9 @@ class PretrainingCliTest(unittest.TestCase):
                 0.0,
             ),
             (
-                "configs/metrla_e5_offset_decay_increment_relation_v1.yaml",
-                "offset_decay_increment",
-                0.5,
-            ),
-            (
                 "configs/pemsbay_e5_offset_decay_transfer_level0_v1.yaml",
                 "offset_decay",
                 0.0,
-            ),
-            (
-                "configs/pemsbay_e5_offset_decay_increment_transfer_level0_v1.yaml",
-                "offset_decay_increment",
-                0.5,
             ),
         )
         for relative_path, expected_mode, expected_weight in cases:

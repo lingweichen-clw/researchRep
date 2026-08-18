@@ -16,14 +16,17 @@ model:
   patch_size: 12
   hidden_dim: 96
   retrieval_dim: 48
-  profile_dim: 12
-  latent_dim: 36
-  profile_weight: 0.25
+  profile_dim: 0
+  latent_dim: 0
+  profile_weight: 0.0
   num_heads: 4
   encoder_layers: 3
   ffn_multiplier: 2
   dropout: 0.1
   graph_bias: 1.0
+  dynamics_adapter_mode: none
+  dynamics_bottleneck_dim: 16
+  dynamics_gate_bias: -2.0
 
 pretrain:
   batch_size: 16
@@ -42,7 +45,7 @@ pretrain:
   relation_teacher_mode: offset_decay
   relation_distance_normalization: symmetric_geometric_mean
   future_increment_weight: 0.0
-  profile_loss_weight: 0.1
+  profile_loss_weight: 0.0
   profile_scale_floor: 0.1
   hard_negative_weight: 2.0
   positive_quantile: 0.1
@@ -52,17 +55,18 @@ pretrain:
   progress_interval: 10
 
 bank:
-  output_dir: artifacts/metrla_bank_e5_final_sym_profile_seed42
+  output_dir: artifacts/metrla_bank_e5_final_latent48_global288_local_seed42
   memory_fraction: 0.7
   event_top_r: 32
   node_top_k: 5
-  level_weight: 0.25
+  level_weight: 0.0
   level_temperature: 1.0
   search_temperature: 0.1
   key_dtype: float16
 
 target:
   downstream_mode: learned_topk_error_aware
+  training_protocol: posthoc_frozen_base
   candidate_protocol: exact_calendar
   batch_size: 32
   epochs: 50
@@ -75,17 +79,18 @@ target:
   help_temperature: 0.1
   backbone_hidden_dim: 64
   patience: 10
-  risk_hidden_dim: 32
-  fusion_feature_hidden_dim: 8
+  risk_hidden_dim: 64
+  fusion_feature_hidden_dim: 16
   risk_weight: 0.1
   blend_weight: 0.1
   blend_minimum_direction_norm: 0.0001
-  base_warmup_epochs: 5
-  calibrator_warmup_epochs: 5
+  base_warmup_epochs: 0
+  calibrator_warmup_epochs: 0
   backbone_learning_rate_scale: 0.1
 
 runtime:
   seed: 42
   device: cuda:0
   output_dir: artifacts
-  run_name: metrla_e5_final_calibrator_seed42
+  run_name: metrla_e5_final_latent48_posthoc_error_aware_wide_seed42
+

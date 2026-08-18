@@ -24,7 +24,7 @@ model:
   ffn_multiplier: 2
   dropout: 0.1
   graph_bias: 1.0
-  dynamics_adapter_mode: local_graph
+  dynamics_adapter_mode: none
   dynamics_bottleneck_dim: 16
   dynamics_gate_bias: -2.0
 
@@ -55,7 +55,7 @@ pretrain:
   progress_interval: 10
 
 bank:
-  output_dir: artifacts/metrla_bank_e5_final_latent48_local_graph_fgda_global288_seed42
+  output_dir: artifacts/metrla_bank_e5_final_latent48_global288_local_seed42
   memory_fraction: 0.7
   event_top_r: 32
   node_top_k: 5
@@ -65,22 +65,32 @@ bank:
   key_dtype: float16
 
 target:
-  downstream_mode: learned_topk_offset_decay_horizon
+  downstream_mode: learned_topk_error_aware
+  training_protocol: posthoc_frozen_base
   candidate_protocol: exact_calendar
   batch_size: 32
   epochs: 50
   learning_rate: 0.001
   weight_decay: 0.0001
   confidence_hidden_dim: 32
-  confidence_weight: 1.0
+  confidence_weight: 0.0
   confidence_level_temperature: 1.0
   help_margin: 0.0
   help_temperature: 0.1
   backbone_hidden_dim: 64
   patience: 10
+  risk_hidden_dim: 32
+  fusion_feature_hidden_dim: 8
+  risk_weight: 0.1
+  blend_weight: 0.1
+  blend_minimum_direction_norm: 0.0001
+  base_warmup_epochs: 0
+  calibrator_warmup_epochs: 0
+  backbone_learning_rate_scale: 0.1
 
 runtime:
   seed: 42
   device: cuda:0
   output_dir: artifacts
-  run_name: metrla_e5_final_latent48_local_graph_fgda_global288_seed42
+  run_name: metrla_e5_final_latent48_posthoc_error_aware_seed42
+

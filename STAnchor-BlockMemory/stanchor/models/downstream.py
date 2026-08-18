@@ -194,7 +194,12 @@ def build_error_aware_features(
     predicted_base_risk: torch.Tensor,
     level_temperature: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Build ten deployment-available retrieval and correction diagnostics."""
+    """Build nine non-redundant deployment-available diagnostics.
+
+    Latent48 Banks expose one retrieval similarity.  Profile and latent
+    sub-scores are absent in this mainline, so using both fallback values
+    would duplicate the same ``shape_scores`` signal.
+    """
     if level_temperature <= 0:
         raise ValueError("level_temperature must be positive")
     if aggregation.prediction.shape != base_prediction.shape:
@@ -217,8 +222,7 @@ def build_error_aware_features(
             values = candidates.shape_scores
         return (normalized_weights * torch.where(valid_candidates, values, torch.zeros_like(values))).sum(dim=-1)
 
-    profile_similarity = weighted_node_score(candidates.profile_scores)
-    latent_similarity = weighted_node_score(candidates.latent_scores)
+    retrieval_similarity = weighted_node_score(candidates.shape_scores)
     top1 = candidates.total_scores[..., 0]
     if candidates.total_scores.shape[-1] > 1:
         top2 = candidates.total_scores[..., 1]
@@ -252,8 +256,7 @@ def build_error_aware_features(
     features = torch.cat(
         (
             predicted_base_risk,
-            expand_node(profile_similarity),
-            expand_node(latent_similarity),
+            expand_node(retrieval_similarity),
             expand_node(margin),
             expand_node(effective_support),
             payload_dispersion.unsqueeze(-1),
@@ -266,7 +269,7 @@ def build_error_aware_features(
     )
     memory_valid = aggregation.valid.all(dim=-1, keepdim=True)
     features = torch.where(memory_valid.expand_as(features), features, torch.zeros_like(features))
-    if features.shape != (batch, horizon, nodes, 10):
+    if features.shape != (batch, horizon, nodes, 9):
         raise RuntimeError("error-aware feature construction produced an invalid shape")
     return features, memory_valid
 
@@ -276,7 +279,7 @@ class ErrorAwareAdditiveFusion(nn.Module):
 
     def __init__(
         self,
-        num_features: int = 10,
+        num_features: int = 9,
         hidden_dim: int = 8,
         initial_weight: float = 0.1,
     ) -> None:

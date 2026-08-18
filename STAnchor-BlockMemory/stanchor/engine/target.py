@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -11,7 +12,11 @@ import torch
 from torch.utils.data import DataLoader, Dataset, Subset
 
 from stanchor.bank.storage import MemoryBank
-from stanchor.config import ExperimentConfig, resolve_project_path
+from stanchor.config import (
+    POSTHOC_FROZEN_BASE,
+    ExperimentConfig,
+    resolve_project_path,
+)
 from stanchor.data.graph import GraphData
 from stanchor.data.normalization import NodeStandardScaler
 from stanchor.losses.downstream import compute_downstream_loss
@@ -86,7 +91,7 @@ def build_downstream_model(config: ExperimentConfig) -> STAnchorDownstreamModel:
         ),
         error_aware_fusion=(
             ErrorAwareAdditiveFusion(
-                num_features=10,
+                num_features=9,
                 hidden_dim=config.target.fusion_feature_hidden_dim,
                 initial_weight=0.1,
             )
@@ -94,6 +99,15 @@ def build_downstream_model(config: ExperimentConfig) -> STAnchorDownstreamModel:
             else None
         ),
     )
+
+
+def _state_dict_fingerprint(module: torch.nn.Module) -> str:
+    """Return a stable short hash for an initialized module state."""
+    digest = hashlib.sha256()
+    for name, value in module.state_dict().items():
+        digest.update(name.encode("utf-8"))
+        digest.update(value.detach().cpu().contiguous().numpy().tobytes())
+    return digest.hexdigest()[:16]
 
 
 def checkpoint_downstream_mode(checkpoint: dict) -> str:
@@ -130,6 +144,41 @@ def checkpoint_bank_level_weight(checkpoint: dict, default: float) -> float:
     return value
 
 
+def load_frozen_base_backbone(
+    downstream: STAnchorDownstreamModel,
+    checkpoint_path: str | Path,
+    device: torch.device,
+) -> dict[str, str]:
+    """Load only a verified base-only backbone and freeze it."""
+    resolved_path = resolve_project_path(checkpoint_path).resolve()
+    if not resolved_path.is_file():
+        raise FileNotFoundError(f"base checkpoint does not exist: {resolved_path}")
+    checkpoint = load_checkpoint(resolved_path, device)
+    if checkpoint_downstream_mode(checkpoint) != BASE_ONLY:
+        raise ValueError("posthoc base checkpoint must use base_only mode")
+    state = checkpoint.get("downstream_state_dict")
+    if not isinstance(state, dict):
+        raise ValueError("base checkpoint has no downstream_state_dict")
+    prefix = "backbone."
+    backbone_state = {
+        name[len(prefix) :]: value
+        for name, value in state.items()
+        if name.startswith(prefix)
+    }
+    if not backbone_state:
+        raise ValueError("base checkpoint has no backbone parameters")
+    try:
+        downstream.backbone.load_state_dict(backbone_state, strict=True)
+    except RuntimeError as error:
+        raise ValueError("base checkpoint has an incompatible backbone") from error
+    for parameter in downstream.backbone.parameters():
+        parameter.requires_grad_(False)
+    return {
+        "path": str(resolved_path),
+        "fingerprint": _state_dict_fingerprint(downstream.backbone),
+    }
+
+
 def configure_downstream_trainable(
     downstream: STAnchorDownstreamModel,
     mode: str,
@@ -160,14 +209,16 @@ def configure_error_aware_stage(
     stage: str,
 ) -> list[dict]:
     """Configure base/calibrator/joint trainability and optimizer groups."""
-    if stage not in {"base", "calibrator", "joint"}:
-        raise ValueError("error-aware stage must be base, calibrator, or joint")
+    if stage not in {"base", "calibrator", "posthoc_calibrator", "joint"}:
+        raise ValueError(
+            "error-aware stage must be base, calibrator, posthoc_calibrator, or joint"
+        )
     for parameter in downstream.parameters():
         parameter.requires_grad_(False)
     if stage in {"base", "joint"}:
         for parameter in downstream.backbone.parameters():
             parameter.requires_grad_(True)
-    if stage in {"calibrator", "joint"}:
+    if stage in {"calibrator", "posthoc_calibrator", "joint"}:
         if downstream.risk_head is None or downstream.error_aware_fusion is None:
             raise ValueError("error-aware stages require risk and fusion modules")
         for module in (downstream.risk_head, downstream.error_aware_fusion):
@@ -189,6 +240,30 @@ def configure_error_aware_stage(
     if calibrator_parameters:
         groups.append({"params": calibrator_parameters, "role": "calibrator"})
     return groups
+
+
+def build_downstream_training_stages(
+    config: ExperimentConfig,
+    base_checkpoint_path: str | Path | None,
+) -> list[tuple[str, int]]:
+    """Return an explicit stage schedule for the selected target protocol."""
+    if config.target.training_protocol == POSTHOC_FROZEN_BASE:
+        if base_checkpoint_path is None:
+            raise ValueError("posthoc_frozen_base requires a base checkpoint")
+        return [("posthoc_calibrator", config.target.epochs)]
+    if base_checkpoint_path is not None:
+        raise ValueError(
+            "a base checkpoint can only be used with posthoc_frozen_base"
+        )
+    if config.target.downstream_mode == LEARNED_TOPK_ERROR_AWARE:
+        stages: list[tuple[str, int]] = []
+        if config.target.base_warmup_epochs > 0:
+            stages.append(("base", config.target.base_warmup_epochs))
+        if config.target.calibrator_warmup_epochs > 0:
+            stages.append(("calibrator", config.target.calibrator_warmup_epochs))
+        stages.append(("joint", config.target.epochs))
+        return stages
+    return [("standard", config.target.epochs)]
 
 
 @torch.no_grad()
@@ -435,6 +510,7 @@ def train_downstream(
     config: ExperimentConfig,
     pretrained_checkpoint: str | Path,
     bank_path: str | Path,
+    base_checkpoint_path: str | Path | None = None,
     max_batches: int | None = None,
 ) -> Path:
     set_seed(config.runtime.seed)
@@ -474,8 +550,19 @@ def train_downstream(
             shuffle=False,
             num_workers=config.data.num_workers,
         )
+        # Loading a frozen encoder consumes RNG state. Reset before constructing
+        # the downstream model so encoder variants share identical initialization.
+        set_seed(config.runtime.seed)
         downstream = build_downstream_model(config).to(device)
         configure_downstream_trainable(downstream, config.target.downstream_mode)
+        base_provenance = None
+        if config.target.training_protocol == POSTHOC_FROZEN_BASE:
+            if base_checkpoint_path is None:
+                raise ValueError("posthoc_frozen_base requires a base checkpoint")
+            base_provenance = load_frozen_base_backbone(
+                downstream, base_checkpoint_path, device
+            )
+        downstream_init_hash = _state_dict_fingerprint(downstream)
         run_dir = resolve_project_path(config.runtime.output_dir) / config.runtime.run_name
         run_dir.mkdir(parents=True, exist_ok=True)
         best_path = run_dir / "downstream_best.pt"
@@ -507,10 +594,22 @@ def train_downstream(
             run_dir,
         )
         logger.info(
-            "Mode | downstream_mode=%s | candidate_protocol=%s",
+            "Mode | downstream_mode=%s | training_protocol=%s | candidate_protocol=%s",
             config.target.downstream_mode,
+            config.target.training_protocol,
             config.target.candidate_protocol,
         )
+        logger.info(
+            "Downstream initialization | seed=%d | state_hash=%s",
+            config.runtime.seed,
+            downstream_init_hash,
+        )
+        if base_provenance is not None:
+            logger.info(
+                "Frozen base | checkpoint=%s | fingerprint=%s",
+                base_provenance["path"],
+                base_provenance["fingerprint"],
+            )
         logger.info(
             "Data | steps=%d | nodes=%d | channels=%d | memory/calibration/val/test=%d/%d/%d/%d",
             data.series.num_steps,
@@ -552,15 +651,7 @@ def train_downstream(
             config.target.confidence_weight,
             config.target.patience,
         )
-        if config.target.downstream_mode == LEARNED_TOPK_ERROR_AWARE:
-            stages = []
-            if config.target.base_warmup_epochs > 0:
-                stages.append(("base", config.target.base_warmup_epochs))
-            if config.target.calibrator_warmup_epochs > 0:
-                stages.append(("calibrator", config.target.calibrator_warmup_epochs))
-            stages.append(("joint", config.target.epochs))
-        else:
-            stages = [("standard", config.target.epochs)]
+        stages = build_downstream_training_stages(config, base_checkpoint_path)
 
         best_mae = float("inf")
         global_epoch = 0
@@ -618,6 +709,14 @@ def train_downstream(
                     pretrained, downstream, retriever, bank, data, train_loader, graph,
                     stage_config, data.scaler, device, optimizer, max_batches
                 )
+                if base_provenance is not None:
+                    current_base_fingerprint = _state_dict_fingerprint(
+                        downstream.backbone
+                    )
+                    if current_base_fingerprint != base_provenance["fingerprint"]:
+                        raise RuntimeError(
+                            "posthoc frozen base backbone changed during training"
+                        )
                 val_result = run_target_epoch(
                     pretrained, downstream, retriever, bank, data, val_loader, graph,
                     stage_config, data.scaler, device, None, max_batches
@@ -675,8 +774,10 @@ def train_downstream(
                         {
                             "downstream_state_dict": downstream.state_dict(),
                             "downstream_mode": config.target.downstream_mode,
+                            "training_protocol": config.target.training_protocol,
                             "candidate_protocol": config.target.candidate_protocol,
                             "training_stage": stage,
+                            "base_checkpoint_provenance": base_provenance,
                             "config": config.to_dict(),
                             "normalizer": data.scaler.state_dict(),
                             "bank_manifest": bank.manifest.to_dict(),

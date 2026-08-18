@@ -20,6 +20,11 @@ def main() -> None:
     parser.add_argument("--config", required=True)
     parser.add_argument("--pretrained-checkpoint", required=True)
     parser.add_argument("--bank", required=True)
+    parser.add_argument(
+        "--base-checkpoint",
+        default=None,
+        help="Required base-only downstream checkpoint for posthoc_frozen_base.",
+    )
     parser.add_argument("--max-batches", type=int, default=None)
     parser.add_argument("--epochs", type=int, default=None, help="Temporary debug override.")
     parser.add_argument("--base-warmup-epochs", type=int, default=None)
@@ -87,6 +92,7 @@ def main() -> None:
         config,
         pretrained_checkpoint=args.pretrained_checkpoint,
         bank_path=args.bank,
+        base_checkpoint_path=args.base_checkpoint,
         max_batches=args.max_batches,
     )
     print(f"downstream checkpoint: {checkpoint}")

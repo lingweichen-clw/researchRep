@@ -8,8 +8,17 @@ from typing import Any, Mapping, TypeVar
 
 import yaml
 
-from stanchor.modes import LEARNED_TOPK_CONFIDENCE, validate_downstream_mode
+from stanchor.modes import (
+    LEARNED_TOPK_CONFIDENCE,
+    LEARNED_TOPK_ERROR_AWARE,
+    validate_downstream_mode,
+)
 from stanchor.retrieval.strategies import validate_candidate_protocol
+
+
+STAGED_JOINT = "staged_joint"
+POSTHOC_FROZEN_BASE = "posthoc_frozen_base"
+TARGET_TRAINING_PROTOCOLS = (STAGED_JOINT, POSTHOC_FROZEN_BASE)
 
 
 @dataclass(frozen=True)
@@ -98,6 +107,7 @@ class BankConfig:
 @dataclass(frozen=True)
 class TargetConfig:
     downstream_mode: str = LEARNED_TOPK_CONFIDENCE
+    training_protocol: str = STAGED_JOINT
     candidate_protocol: str = "exact_calendar"
     batch_size: int = 32
     epochs: int = 50
@@ -140,6 +150,16 @@ class ExperimentConfig:
     def validate(self) -> None:
         validate_downstream_mode(self.target.downstream_mode)
         validate_candidate_protocol(self.target.candidate_protocol)
+        if self.target.training_protocol not in TARGET_TRAINING_PROTOCOLS:
+            choices = ", ".join(TARGET_TRAINING_PROTOCOLS)
+            raise ValueError(f"training_protocol must be one of: {choices}")
+        if (
+            self.target.training_protocol == POSTHOC_FROZEN_BASE
+            and self.target.downstream_mode != LEARNED_TOPK_ERROR_AWARE
+        ):
+            raise ValueError(
+                "posthoc_frozen_base requires learned_topk_error_aware mode"
+            )
         if self.data.context_length <= 0 or self.data.horizon <= 0:
             raise ValueError("context_length and horizon must be positive")
         if self.data.encoder_context_length < self.data.context_length:
@@ -317,6 +337,11 @@ class ExperimentConfig:
             raise ValueError("blend_minimum_direction_norm must be positive")
         if self.target.base_warmup_epochs < 0 or self.target.calibrator_warmup_epochs < 0:
             raise ValueError("downstream warmup epochs must be non-negative")
+        if self.target.training_protocol == POSTHOC_FROZEN_BASE and (
+            self.target.base_warmup_epochs != 0
+            or self.target.calibrator_warmup_epochs != 0
+        ):
+            raise ValueError("posthoc_frozen_base requires zero warmup epochs")
         if not 0.0 < self.target.backbone_learning_rate_scale <= 1.0:
             raise ValueError("backbone_learning_rate_scale must be in (0,1]")
 

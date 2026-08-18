@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 import torch
 
-from stanchor.config import DataConfig, ExperimentConfig, TargetConfig
+from stanchor.config import DataConfig, ExperimentConfig, TargetConfig, load_config
+from stanchor.engine import target as target_engine
 from stanchor.engine.target import configure_error_aware_stage
 from stanchor.losses.downstream import (
     build_blend_target,
@@ -24,6 +27,33 @@ from stanchor.retrieval.retriever import AggregationOutput, NodeCandidates
 
 
 class ErrorAwareFusionTest(unittest.TestCase):
+    @staticmethod
+    def _model(
+        mode: str = "learned_topk_error_aware",
+        backbone_hidden_dim: int = 16,
+        risk_hidden_dim: int = 8,
+        fusion_hidden_dim: int = 8,
+    ) -> STAnchorDownstreamModel:
+        return STAnchorDownstreamModel(
+            LightweightForecastBackbone(
+                12, 3, 1, 1, backbone_hidden_dim, dropout=0.0
+            ),
+            ConfidenceHead(8),
+            SafeResidualFusion(3),
+            1.0,
+            mode=mode,
+            risk_head=(
+                PredictedBaseRisk(12, 3, 1, risk_hidden_dim)
+                if mode == "learned_topk_error_aware"
+                else None
+            ),
+            error_aware_fusion=(
+                ErrorAwareAdditiveFusion(9, fusion_hidden_dim)
+                if mode == "learned_topk_error_aware"
+                else None
+            ),
+        )
+
     def _inputs(self, valid: bool = True):
         batch, time, horizon, nodes, channels, top_k = 2, 12, 3, 4, 1, 2
         x = torch.randn(batch, time, nodes, channels)
@@ -36,8 +66,6 @@ class ErrorAwareFusionTest(unittest.TestCase):
             level_distances=torch.tensor([0.1, 0.2]).view(1, 1, 2).expand(batch, nodes, -1),
             weights=torch.tensor([0.7, 0.3]).view(1, 1, 2).expand(batch, nodes, -1),
             valid=candidate_valid,
-            profile_scores=torch.tensor([0.75, 0.55]).view(1, 1, 2).expand(batch, nodes, -1),
-            latent_scores=torch.tensor([0.82, 0.61]).view(1, 1, 2).expand(batch, nodes, -1),
         )
         memory_valid = torch.full((batch, horizon, nodes, channels), valid, dtype=torch.bool)
         candidate_futures = torch.stack((base + 0.5, base + 0.2), dim=3)
@@ -50,7 +78,7 @@ class ErrorAwareFusionTest(unittest.TestCase):
         )
         return x, base, candidates, aggregation
 
-    def test_risk_head_and_ten_features_have_expected_shapes(self) -> None:
+    def test_latent48_error_aware_features_have_nine_nonredundant_shapes(self) -> None:
         x, base, candidates, aggregation = self._inputs()
         risk_head = PredictedBaseRisk(12, 3, 1, hidden_dim=8)
         risk = risk_head(x, base)
@@ -58,7 +86,7 @@ class ErrorAwareFusionTest(unittest.TestCase):
             candidates, aggregation, base, risk, level_temperature=1.0
         )
         self.assertEqual(tuple(risk.shape), (2, 3, 4, 1))
-        self.assertEqual(tuple(features.shape), (2, 3, 4, 10))
+        self.assertEqual(tuple(features.shape), (2, 3, 4, 9))
         self.assertTrue(bool(memory_valid.all()))
         self.assertTrue(bool(torch.isfinite(features).all()))
 
@@ -68,12 +96,12 @@ class ErrorAwareFusionTest(unittest.TestCase):
         features, memory_valid = build_error_aware_features(
             candidates, aggregation, base, risk, level_temperature=1.0
         )
-        fusion = ErrorAwareAdditiveFusion(num_features=10, hidden_dim=8, initial_weight=0.1)
+        fusion = ErrorAwareAdditiveFusion(num_features=9, hidden_dim=8, initial_weight=0.1)
         final, weight, contributions = fusion(
             base, aggregation.prediction, features, memory_valid
         )
         self.assertTrue(torch.allclose(weight, torch.full_like(weight, 0.1), atol=1.0e-6))
-        self.assertEqual(tuple(contributions.shape), (2, 3, 4, 10))
+        self.assertEqual(tuple(contributions.shape), (2, 3, 4, 9))
         self.assertTrue(torch.allclose(final, base + 0.1 * (aggregation.prediction - base)))
 
     def test_no_memory_is_exact_base_fallback(self) -> None:
@@ -82,7 +110,7 @@ class ErrorAwareFusionTest(unittest.TestCase):
         features, memory_valid = build_error_aware_features(
             candidates, aggregation, base, risk, level_temperature=1.0
         )
-        final, weight, _ = ErrorAwareAdditiveFusion(10, 8)(
+        final, weight, _ = ErrorAwareAdditiveFusion(9, 8)(
             base, aggregation.prediction, features, memory_valid
         )
         self.assertTrue(torch.equal(final, base))
@@ -116,7 +144,7 @@ class ErrorAwareFusionTest(unittest.TestCase):
             confidence_level_temperature=1.0,
             mode="learned_topk_error_aware",
             risk_head=PredictedBaseRisk(12, 3, 1, hidden_dim=8),
-            error_aware_fusion=ErrorAwareAdditiveFusion(10, 8),
+            error_aware_fusion=ErrorAwareAdditiveFusion(9, 8),
         )
         output = model(x, candidates, aggregation)
         target = torch.randn_like(output.final_prediction)
@@ -148,7 +176,7 @@ class ErrorAwareFusionTest(unittest.TestCase):
             1.0,
             mode="learned_topk_error_aware",
             risk_head=PredictedBaseRisk(12, 3, 1, 8),
-            error_aware_fusion=ErrorAwareAdditiveFusion(10, 8),
+            error_aware_fusion=ErrorAwareAdditiveFusion(9, 8),
         )
         base_groups = configure_error_aware_stage(model, "base")
         self.assertEqual([group["role"] for group in base_groups], ["backbone"])
@@ -169,6 +197,154 @@ class ErrorAwareFusionTest(unittest.TestCase):
         )
         self.assertTrue(model.backbone.training)
 
+    def test_posthoc_protocol_requires_error_aware_mode_and_zero_warmups(self) -> None:
+        valid = ExperimentConfig(
+            data=DataConfig(raw_path="data.h5", adjacency_path="adj.pkl"),
+            target=TargetConfig(
+                downstream_mode="learned_topk_error_aware",
+                training_protocol="posthoc_frozen_base",
+                base_warmup_epochs=0,
+                calibrator_warmup_epochs=0,
+            ),
+        )
+        valid.validate()
+        with self.assertRaisesRegex(ValueError, "training_protocol"):
+            ExperimentConfig(
+                data=DataConfig(raw_path="data.h5", adjacency_path="adj.pkl"),
+                target=TargetConfig(training_protocol="unknown"),
+            ).validate()
+        with self.assertRaisesRegex(ValueError, "learned_topk_error_aware"):
+            ExperimentConfig(
+                data=DataConfig(raw_path="data.h5", adjacency_path="adj.pkl"),
+                target=TargetConfig(
+                    downstream_mode="base_only",
+                    training_protocol="posthoc_frozen_base",
+                    calibrator_warmup_epochs=0,
+                ),
+            ).validate()
+        with self.assertRaisesRegex(ValueError, "warmup"):
+            ExperimentConfig(
+                data=DataConfig(raw_path="data.h5", adjacency_path="adj.pkl"),
+                target=TargetConfig(
+                    downstream_mode="learned_topk_error_aware",
+                    training_protocol="posthoc_frozen_base",
+                    base_warmup_epochs=1,
+                    calibrator_warmup_epochs=0,
+                ),
+            ).validate()
+
+    def test_posthoc_protocol_selects_only_calibrator_stage(self) -> None:
+        config = ExperimentConfig(
+            data=DataConfig(raw_path="data.h5", adjacency_path="adj.pkl"),
+            target=TargetConfig(
+                downstream_mode="learned_topk_error_aware",
+                training_protocol="posthoc_frozen_base",
+                epochs=17,
+                base_warmup_epochs=0,
+                calibrator_warmup_epochs=0,
+            ),
+        )
+        self.assertEqual(
+            target_engine.build_downstream_training_stages(
+                config, base_checkpoint_path=Path("base.pt")
+            ),
+            [("posthoc_calibrator", 17)],
+        )
+        with self.assertRaisesRegex(ValueError, "base checkpoint"):
+            target_engine.build_downstream_training_stages(
+                config, base_checkpoint_path=None
+            )
+        model = self._model()
+        groups = configure_error_aware_stage(model, "posthoc_calibrator")
+        self.assertEqual([group["role"] for group in groups], ["calibrator"])
+        self.assertFalse(
+            any(parameter.requires_grad for parameter in model.backbone.parameters())
+        )
+
+    def test_frozen_base_checkpoint_loads_only_matching_base_backbone(self) -> None:
+        source = self._model(mode="base_only")
+        destination = self._model()
+        with torch.no_grad():
+            for parameter in source.backbone.parameters():
+                parameter.fill_(0.25)
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint_path = Path(directory) / "base.pt"
+            torch.save(
+                {
+                    "downstream_mode": "base_only",
+                    "downstream_state_dict": source.state_dict(),
+                },
+                checkpoint_path,
+            )
+            provenance = target_engine.load_frozen_base_backbone(
+                destination, checkpoint_path, torch.device("cpu")
+            )
+        for expected, actual in zip(
+            source.backbone.parameters(), destination.backbone.parameters()
+        ):
+            self.assertTrue(torch.equal(expected, actual))
+        self.assertEqual(provenance["fingerprint"], target_engine._state_dict_fingerprint(destination.backbone))
+        self.assertTrue(provenance["path"].endswith("base.pt"))
+        self.assertFalse(
+            any(parameter.requires_grad for parameter in destination.backbone.parameters())
+        )
+
+    def test_frozen_base_checkpoint_rejects_wrong_mode_and_shape(self) -> None:
+        destination = self._model()
+        with tempfile.TemporaryDirectory() as directory:
+            directory_path = Path(directory)
+            wrong_mode_path = directory_path / "wrong_mode.pt"
+            torch.save(
+                {
+                    "downstream_mode": "learned_topk_error_aware",
+                    "downstream_state_dict": destination.state_dict(),
+                },
+                wrong_mode_path,
+            )
+            with self.assertRaisesRegex(ValueError, "base_only"):
+                target_engine.load_frozen_base_backbone(
+                    destination, wrong_mode_path, torch.device("cpu")
+                )
+
+            wrong_shape_path = directory_path / "wrong_shape.pt"
+            wrong_shape = self._model(
+                mode="base_only", backbone_hidden_dim=8
+            )
+            torch.save(
+                {
+                    "downstream_mode": "base_only",
+                    "downstream_state_dict": wrong_shape.state_dict(),
+                },
+                wrong_shape_path,
+            )
+            with self.assertRaisesRegex(ValueError, "incompatible backbone"):
+                target_engine.load_frozen_base_backbone(
+                    destination, wrong_shape_path, torch.device("cpu")
+                )
+
+    def test_posthoc_capacity_configs_have_exact_calibrator_parameters(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        expected = {
+            "metrla_e5_final_latent48_posthoc_error_aware_v1.yaml": 1422,
+            "metrla_e5_final_latent48_posthoc_error_aware_wide_v1.yaml": 2822,
+        }
+        for config_name, expected_parameters in expected.items():
+            config = load_config(project_root / "configs" / config_name)
+            self.assertEqual(
+                config.target.training_protocol, "posthoc_frozen_base"
+            )
+            self.assertEqual(
+                config.target.downstream_mode, "learned_topk_error_aware"
+            )
+            model = target_engine.build_downstream_model(config)
+            calibrator_parameters = sum(
+                parameter.numel()
+                for module in (model.risk_head, model.error_aware_fusion)
+                if module is not None
+                for parameter in module.parameters()
+            )
+            self.assertEqual(calibrator_parameters, expected_parameters)
+
     def test_base_risk_is_supervised_even_when_memory_is_missing(self) -> None:
         x, _, candidates, aggregation = self._inputs(valid=False)
         model = STAnchorDownstreamModel(
@@ -178,7 +354,7 @@ class ErrorAwareFusionTest(unittest.TestCase):
             1.0,
             mode="learned_topk_error_aware",
             risk_head=PredictedBaseRisk(12, 3, 1, 8),
-            error_aware_fusion=ErrorAwareAdditiveFusion(10, 8),
+            error_aware_fusion=ErrorAwareAdditiveFusion(9, 8),
         )
         output = model(x, candidates, aggregation)
         target = torch.randn_like(output.final_prediction)

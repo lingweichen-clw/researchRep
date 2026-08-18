@@ -191,13 +191,13 @@ class DownstreamDiagnosticsTest(unittest.TestCase):
             fusion_weight=np.asarray([0.1, 0.3, 0.7, 0.9]),
             blend_target=np.asarray([0.0, 0.2, 0.8, 1.0]),
             blend_valid=np.asarray([True, True, True, True]),
-            contributions=np.tile(np.arange(10, dtype=np.float64), (4, 1)),
+            contributions=np.tile(np.arange(9, dtype=np.float64), (4, 1)),
         )
         self.assertAlmostEqual(result["risk_mae"], 0.0)
         self.assertAlmostEqual(result["risk_spearman"], 1.0)
         self.assertAlmostEqual(result["risk_r2"], 1.0)
         self.assertAlmostEqual(result["blend_target_mae"], 0.1)
-        self.assertEqual(len(result["contribution_distributions"]), 10)
+        self.assertEqual(len(result["contribution_distributions"]), 9)
         self.assertNotIn("brier", result)
 
     def test_error_aware_accumulator_does_not_claim_probability_calibration(self) -> None:
@@ -224,7 +224,7 @@ class DownstreamDiagnosticsTest(unittest.TestCase):
             true_risk=torch.tensor([[[[0.5]]], [[[0.5]]]]),
             blend_target=torch.tensor([[[[0.5]]], [[[0.0]]]]),
             blend_valid=valid,
-            additive_contributions=torch.zeros(2, 1, 1, 10),
+            additive_contributions=torch.zeros(2, 1, 1, 9),
         )
         result = accumulator.compute()
         self.assertIsNone(result["confidence_quality"])
@@ -252,7 +252,7 @@ class DownstreamDiagnosticsTest(unittest.TestCase):
             true_risk=torch.tensor([[[[0.5]]], [[[1.5]]]]),
             blend_target=torch.zeros_like(target),
             blend_valid=no_memory,
-            additive_contributions=torch.zeros(2, 1, 1, 10),
+            additive_contributions=torch.zeros(2, 1, 1, 9),
         )
         result = accumulator.compute()
         self.assertAlmostEqual(result["error_aware_quality"]["risk_mae"], 0.0)
