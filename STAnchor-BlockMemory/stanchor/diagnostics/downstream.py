@@ -478,7 +478,7 @@ def diagnose_downstream_checkpoint(
             candidate_protocol=candidate_protocol,
         ),
     )
-    downstream = build_downstream_model(config).to(device)
+    downstream = build_downstream_model(config, graph).to(device)
     downstream.load_state_dict(checkpoint["downstream_state_dict"], strict=True)
     pretrained.eval()
     downstream.eval()

@@ -389,7 +389,7 @@ class DownstreamOutput:
 class STAnchorDownstreamModel(nn.Module):
     def __init__(
         self,
-        backbone: LightweightForecastBackbone,
+        backbone: nn.Module,
         confidence_head: ConfidenceHead,
         fusion: SafeResidualFusion,
         confidence_level_temperature: float,

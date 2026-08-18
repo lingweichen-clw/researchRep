@@ -118,7 +118,15 @@ class TargetConfig:
     confidence_level_temperature: float = 1.0
     help_margin: float = 0.0
     help_temperature: float = 0.1
+    backbone_name: str = "lightweight"
     backbone_hidden_dim: int = 64
+    stgcn_temporal_kernel: int = 3
+    stgcn_graph_kernel: int = 3
+    stgcn_block_num: int = 2
+    stgcn_hidden_channels: int = 64
+    stgcn_bottleneck_channels: int = 16
+    stgcn_output_hidden_channels: int = 128
+    stgcn_dropout: float = 0.5
     patience: int = 10
     risk_hidden_dim: int = 32
     fusion_feature_hidden_dim: int = 8
@@ -160,6 +168,8 @@ class ExperimentConfig:
             raise ValueError(
                 "posthoc_frozen_base requires learned_topk_error_aware mode"
             )
+        if self.target.backbone_name not in {"lightweight", "stgcn"}:
+            raise ValueError("backbone_name must be lightweight or stgcn")
         if self.data.context_length <= 0 or self.data.horizon <= 0:
             raise ValueError("context_length and horizon must be positive")
         if self.data.encoder_context_length < self.data.context_length:
@@ -335,6 +345,27 @@ class ExperimentConfig:
                 raise ValueError(f"{name} must be non-negative")
         if self.target.blend_minimum_direction_norm <= 0:
             raise ValueError("blend_minimum_direction_norm must be positive")
+        if self.target.backbone_name == "stgcn":
+            if self.target.stgcn_temporal_kernel < 2:
+                raise ValueError("stgcn_temporal_kernel must be at least 2")
+            if self.target.stgcn_graph_kernel <= 0 or self.target.stgcn_block_num <= 0:
+                raise ValueError("stgcn graph kernel and block_num must be positive")
+            for name, value in (
+                ("stgcn_hidden_channels", self.target.stgcn_hidden_channels),
+                ("stgcn_bottleneck_channels", self.target.stgcn_bottleneck_channels),
+                ("stgcn_output_hidden_channels", self.target.stgcn_output_hidden_channels),
+            ):
+                if value <= 0:
+                    raise ValueError(f"{name} must be positive")
+            if not 0.0 <= self.target.stgcn_dropout < 1.0:
+                raise ValueError("stgcn_dropout must be in [0,1)")
+            stgcn_output_length = self.data.context_length - 2 * (
+                self.target.stgcn_temporal_kernel - 1
+            ) * self.target.stgcn_block_num
+            if stgcn_output_length < 1:
+                raise ValueError(
+                    "context_length is too short for the requested STGCN blocks"
+                )
         if self.target.base_warmup_epochs < 0 or self.target.calibrator_warmup_epochs < 0:
             raise ValueError("downstream warmup epochs must be non-negative")
         if self.target.training_protocol == POSTHOC_FROZEN_BASE and (

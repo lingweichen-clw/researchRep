@@ -19,7 +19,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train target backbone, confidence, and safe fusion.")
     parser.add_argument("--config", required=True)
     parser.add_argument("--pretrained-checkpoint", required=True)
-    parser.add_argument("--bank", required=True)
+    parser.add_argument(
+        "--bank",
+        default=None,
+        help="Memory Bank path; required for retrieval modes and unused by base_only.",
+    )
     parser.add_argument(
         "--base-checkpoint",
         default=None,

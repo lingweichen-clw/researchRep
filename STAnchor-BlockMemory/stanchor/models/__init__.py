@@ -18,6 +18,7 @@ from .downstream import (
 from .patch_embedding import TemporalPatchEmbedding
 from .pretraining import PretrainForwardOutput, STAnchorPretrainModel
 from .retrieval_head import RetrievalHead, RetrievalOutput
+from .stgcn import STGCNForecastBackbone, build_stgcn_gso
 
 __all__ = [
     "FactorizedSTEncoder",
@@ -36,4 +37,6 @@ __all__ = [
     "TemporalPatchEmbedding",
     "build_confidence_features",
     "confidence_soft_target",
+    "STGCNForecastBackbone",
+    "build_stgcn_gso",
 ]

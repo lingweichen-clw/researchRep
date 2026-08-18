@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -40,6 +41,7 @@ from stanchor.models.downstream import (
     STAnchorDownstreamModel,
 )
 from stanchor.models.pretraining import STAnchorPretrainModel
+from stanchor.models.stgcn import STGCNForecastBackbone
 from stanchor.retrieval.retriever import AggregationOutput, NodeCandidates, TwoStageRetriever
 from stanchor.retrieval.strategies import (
     calendar_event_candidates,
@@ -64,17 +66,41 @@ class TargetEpochResult:
     blend_loss: float = 0.0
 
 
-def build_downstream_model(config: ExperimentConfig) -> STAnchorDownstreamModel:
+def build_downstream_model(
+    config: ExperimentConfig,
+    graph: GraphData | None = None,
+) -> STAnchorDownstreamModel:
     error_aware = config.target.downstream_mode == LEARNED_TOPK_ERROR_AWARE
-    return STAnchorDownstreamModel(
-        backbone=LightweightForecastBackbone(
+    if config.target.backbone_name == "lightweight":
+        backbone = LightweightForecastBackbone(
             context_length=config.data.context_length,
             horizon=config.data.horizon,
             input_channels=config.model.input_channels,
             output_channels=config.model.output_channels,
             hidden_dim=config.target.backbone_hidden_dim,
             dropout=config.model.dropout,
-        ),
+        )
+    elif config.target.backbone_name == "stgcn":
+        if graph is None:
+            raise ValueError("stgcn backbone construction requires graph data")
+        backbone = STGCNForecastBackbone(
+            context_length=config.data.context_length,
+            horizon=config.data.horizon,
+            input_channels=config.model.input_channels,
+            output_channels=config.model.output_channels,
+            graph=graph,
+            temporal_kernel=config.target.stgcn_temporal_kernel,
+            graph_kernel=config.target.stgcn_graph_kernel,
+            block_num=config.target.stgcn_block_num,
+            hidden_channels=config.target.stgcn_hidden_channels,
+            bottleneck_channels=config.target.stgcn_bottleneck_channels,
+            output_hidden_channels=config.target.stgcn_output_hidden_channels,
+            dropout=config.target.stgcn_dropout,
+        )
+    else:
+        raise ValueError(f"unsupported downstream backbone: {config.target.backbone_name}")
+    return STAnchorDownstreamModel(
+        backbone=backbone,
         confidence_head=ConfidenceHead(config.target.confidence_hidden_dim),
         fusion=SafeResidualFusion(config.data.horizon),
         confidence_level_temperature=config.target.confidence_level_temperature,
@@ -99,6 +125,24 @@ def build_downstream_model(config: ExperimentConfig) -> STAnchorDownstreamModel:
             else None
         ),
     )
+
+
+def validate_downstream_bank_path(
+    mode: str,
+    bank_path: str | Path | None,
+) -> Path | None:
+    """Return the Bank path for retrieval modes, or ``None`` for base-only.
+
+    A base-only backbone does not execute retrieval and therefore must remain
+    runnable on machines where the large historical Bank is unavailable.
+    Retrieval modes keep the existing explicit ``--bank`` requirement.
+    """
+    mode = validate_downstream_mode(mode)
+    if mode == BASE_ONLY:
+        return None
+    if bank_path is None:
+        raise ValueError(f"downstream mode {mode!r} requires --bank")
+    return resolve_project_path(bank_path)
 
 
 def _state_dict_fingerprint(module: torch.nn.Module) -> str:
@@ -270,8 +314,8 @@ def build_downstream_training_stages(
 def retrieve_for_downstream_mode(
     mode: str,
     pretrained: STAnchorPretrainModel,
-    retriever: TwoStageRetriever,
-    bank: MemoryBank,
+    retriever: TwoStageRetriever | None,
+    bank: MemoryBank | None,
     data,
     graph: GraphData,
     batch: dict[str, torch.Tensor],
@@ -421,8 +465,8 @@ def _validate_bank(
 def run_target_epoch(
     pretrained: STAnchorPretrainModel,
     downstream: STAnchorDownstreamModel,
-    retriever: TwoStageRetriever,
-    bank: MemoryBank,
+    retriever: TwoStageRetriever | None,
+    bank: MemoryBank | None,
     data,
     loader: DataLoader,
     graph: GraphData,
@@ -509,7 +553,7 @@ def run_target_epoch(
 def train_downstream(
     config: ExperimentConfig,
     pretrained_checkpoint: str | Path,
-    bank_path: str | Path,
+    bank_path: str | Path | None = None,
     base_checkpoint_path: str | Path | None = None,
     max_batches: int | None = None,
 ) -> Path:
@@ -522,20 +566,32 @@ def train_downstream(
     )
     for parameter in pretrained.parameters():
         parameter.requires_grad_(False)
-    with MemoryBank(
+    resolved_bank_path = validate_downstream_bank_path(
+        config.target.downstream_mode,
         bank_path,
-        expected_schema_version=(2 if pretrained.model_config.profile_dim > 0 else 1),
-    ) as bank:
-        _validate_bank(bank, pretrained, graph_cpu, data.scaler.state_dict())
-        retriever = TwoStageRetriever(
-            bank,
-            config.bank.event_top_r,
-            config.bank.node_top_k,
-            config.bank.level_weight,
-            config.bank.level_temperature,
-            config.bank.search_temperature,
-            device,
+    )
+    bank_context = (
+        MemoryBank(
+            resolved_bank_path,
+            expected_schema_version=(2 if pretrained.model_config.profile_dim > 0 else 1),
         )
+        if resolved_bank_path is not None
+        else nullcontext(None)
+    )
+    with bank_context as bank:
+        if bank is not None:
+            _validate_bank(bank, pretrained, graph_cpu, data.scaler.state_dict())
+            retriever: TwoStageRetriever | None = TwoStageRetriever(
+                bank,
+                config.bank.event_top_r,
+                config.bank.node_top_k,
+                config.bank.level_weight,
+                config.bank.level_temperature,
+                config.bank.search_temperature,
+                device,
+            )
+        else:
+            retriever = None
         memory_events = int(len(data.train) * config.bank.memory_fraction)
         calibration = Subset(data.train, range(memory_events, len(data.train)))
         train_loader = DataLoader(
@@ -553,7 +609,7 @@ def train_downstream(
         # Loading a frozen encoder consumes RNG state. Reset before constructing
         # the downstream model so encoder variants share identical initialization.
         set_seed(config.runtime.seed)
-        downstream = build_downstream_model(config).to(device)
+        downstream = build_downstream_model(config, graph).to(device)
         configure_downstream_trainable(downstream, config.target.downstream_mode)
         base_provenance = None
         if config.target.training_protocol == POSTHOC_FROZEN_BASE:
@@ -620,17 +676,20 @@ def train_downstream(
             len(data.val),
             len(data.test),
         )
-        logger.info(
-            "Bank/retrieval | dataset=%s | events=%d | nodes=%d | retrieval_dim=%d | "
-            "event_top_r=%d | node_top_k=%d | key_dtype=%s",
-            bank.manifest.dataset_name,
-            bank.manifest.num_events,
-            bank.manifest.num_nodes,
-            bank.manifest.retrieval_dim,
-            config.bank.event_top_r,
-            config.bank.node_top_k,
-            bank.manifest.key_dtype,
-        )
+        if bank is None:
+            logger.info("Bank/retrieval | disabled (base_only)")
+        else:
+            logger.info(
+                "Bank/retrieval | dataset=%s | events=%d | nodes=%d | retrieval_dim=%d | "
+                "event_top_r=%d | node_top_k=%d | key_dtype=%s",
+                bank.manifest.dataset_name,
+                bank.manifest.num_events,
+                bank.manifest.num_nodes,
+                bank.manifest.retrieval_dim,
+                config.bank.event_top_r,
+                config.bank.node_top_k,
+                bank.manifest.key_dtype,
+            )
         logger.info(
             "Parameters | downstream_total=%s | downstream_trainable=%s | backbone=%s | "
             "confidence_head=%s | fusion=%s | frozen_pretrained=%s",
@@ -780,7 +839,9 @@ def train_downstream(
                             "base_checkpoint_provenance": base_provenance,
                             "config": config.to_dict(),
                             "normalizer": data.scaler.state_dict(),
-                            "bank_manifest": bank.manifest.to_dict(),
+                            "bank_manifest": (
+                                bank.manifest.to_dict() if bank is not None else None
+                            ),
                             "pretrained_fingerprint": pretrained.retrieval_fingerprint(),
                             "metrics": record,
                             "epoch": epoch,
@@ -849,7 +910,7 @@ def evaluate_downstream(
             candidate_protocol=candidate_protocol,
         ),
     )
-    downstream = build_downstream_model(config).to(device)
+    downstream = build_downstream_model(config, graph).to(device)
     downstream.load_state_dict(checkpoint["downstream_state_dict"], strict=True)
     dataset: Dataset = getattr(data, split)
     loader = DataLoader(dataset, batch_size=config.target.batch_size, shuffle=False)
