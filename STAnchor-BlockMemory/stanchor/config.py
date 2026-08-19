@@ -147,6 +147,16 @@ class TargetConfig:
     stgcn_bottleneck_channels: int = 16
     stgcn_output_hidden_channels: int = 128
     stgcn_dropout: float = 0.5
+    graph_wavenet_residual_channels: int = 32
+    graph_wavenet_dilation_channels: int = 32
+    graph_wavenet_skip_channels: int = 256
+    graph_wavenet_end_channels: int = 512
+    graph_wavenet_kernel_size: int = 2
+    graph_wavenet_blocks: int = 4
+    graph_wavenet_layers: int = 2
+    graph_wavenet_dropout: float = 0.3
+    graph_wavenet_adaptive_dim: int = 10
+    graph_wavenet_adaptive_adj: bool = True
     patience: int = 10
     risk_hidden_dim: int = 32
     fusion_feature_hidden_dim: int = 8
@@ -201,8 +211,8 @@ class ExperimentConfig:
             raise ValueError(
                 "posthoc_frozen_base requires learned_topk_error_aware mode"
             )
-        if self.target.backbone_name not in {"lightweight", "stgcn"}:
-            raise ValueError("backbone_name must be lightweight or stgcn")
+        if self.target.backbone_name not in {"lightweight", "stgcn", "graph_wavenet"}:
+            raise ValueError("backbone_name must be lightweight, stgcn, or graph_wavenet")
         if self.data.context_length <= 0 or self.data.horizon <= 0:
             raise ValueError("context_length and horizon must be positive")
         if self.data.encoder_context_length < self.data.context_length:
@@ -438,6 +448,22 @@ class ExperimentConfig:
                 raise ValueError(
                     "context_length is too short for the requested STGCN blocks"
                 )
+        if self.target.backbone_name == "graph_wavenet":
+            for name, value in (
+                ("graph_wavenet_residual_channels", self.target.graph_wavenet_residual_channels),
+                ("graph_wavenet_dilation_channels", self.target.graph_wavenet_dilation_channels),
+                ("graph_wavenet_skip_channels", self.target.graph_wavenet_skip_channels),
+                ("graph_wavenet_end_channels", self.target.graph_wavenet_end_channels),
+                ("graph_wavenet_blocks", self.target.graph_wavenet_blocks),
+                ("graph_wavenet_layers", self.target.graph_wavenet_layers),
+                ("graph_wavenet_adaptive_dim", self.target.graph_wavenet_adaptive_dim),
+            ):
+                if value <= 0:
+                    raise ValueError(f"{name} must be positive")
+            if self.target.graph_wavenet_kernel_size <= 1:
+                raise ValueError("graph_wavenet_kernel_size must be at least 2")
+            if not 0.0 <= self.target.graph_wavenet_dropout < 1.0:
+                raise ValueError("graph_wavenet_dropout must be in [0,1)")
         if self.target.base_warmup_epochs < 0 or self.target.calibrator_warmup_epochs < 0:
             raise ValueError("downstream warmup epochs must be non-negative")
         if self.target.training_protocol == POSTHOC_FROZEN_BASE and (

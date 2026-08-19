@@ -19,6 +19,7 @@ from .patch_embedding import TemporalPatchEmbedding
 from .pretraining import PretrainForwardOutput, STAnchorPretrainModel
 from .retrieval_head import RetrievalHead, RetrievalOutput
 from .stgcn import STGCNForecastBackbone, build_stgcn_gso
+from .graph_wavenet import GraphWaveNetForecastBackbone, build_graph_wavenet_supports
 
 __all__ = [
     "FactorizedSTEncoder",
@@ -39,4 +40,6 @@ __all__ = [
     "confidence_soft_target",
     "STGCNForecastBackbone",
     "build_stgcn_gso",
+    "GraphWaveNetForecastBackbone",
+    "build_graph_wavenet_supports",
 ]

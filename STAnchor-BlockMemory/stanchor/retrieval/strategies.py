@@ -46,13 +46,50 @@ def calendar_event_candidates(
     ids = torch.full((batch, max_candidates), -1, dtype=torch.long, device=device)
     scores = torch.full((batch, max_candidates), -torch.inf, dtype=torch.float32, device=device)
     valid = torch.zeros((batch, max_candidates), dtype=torch.bool, device=device)
+    slots_per_day = int(
+        getattr(getattr(bank, "manifest", None), "slots_per_day", 24 * 60 // 5)
+    )
+    if candidate_protocol == "exact_calendar" and hasattr(
+        bank, "calendar_event_ids_padded"
+    ):
+        padded_ids = torch.from_numpy(bank.calendar_event_ids_padded).to(device)
+        padded_future_end = torch.from_numpy(bank.calendar_future_end_padded).to(device)
+        bucket = weekday.to(device=device, dtype=torch.long) * slots_per_day + slot.to(
+            device=device, dtype=torch.long
+        )
+        row_ids = padded_ids.index_select(0, bucket)
+        row_future_end = padded_future_end.index_select(0, bucket)
+        legal_mask = (row_ids >= 0) & (
+            row_future_end < context_start.to(device=device, dtype=torch.long).unsqueeze(1)
+        )
+        if bool((legal_mask.sum(dim=1) > max_candidates).any()):
+            raise ValueError(
+                "event_top_r truncates the legal calendar pool; increase it for a fair ablation"
+            )
+        width = row_ids.shape[1]
+        if width:
+            positions = torch.arange(width, device=device).view(1, width)
+            compact_key = torch.where(legal_mask, positions, positions + width)
+            order = torch.argsort(compact_key, dim=1)
+            compact_ids = row_ids.gather(1, order)
+            compact_valid = legal_mask.gather(1, order)
+            count = min(max_candidates, width)
+            ids[:, :count] = torch.where(
+                compact_valid[:, :count],
+                compact_ids[:, :count],
+                torch.full_like(compact_ids[:, :count], -1),
+            )
+            valid[:, :count] = compact_valid[:, :count]
+            scores[:, :count] = torch.where(
+                compact_valid[:, :count],
+                torch.zeros_like(compact_ids[:, :count], dtype=torch.float32),
+                torch.full_like(compact_ids[:, :count], -torch.inf, dtype=torch.float32),
+            )
+        return EventCandidates(ids, scores, valid)
     future_end = np.asarray(bank.future_end)
     for batch_index in range(batch):
         query_weekday = int(weekday[batch_index].item())
         query_slot = int(slot[batch_index].item())
-        slots_per_day = int(
-            getattr(getattr(bank, "manifest", None), "slots_per_day", 24 * 60 // 5)
-        )
         radius = 1 if candidate_protocol == "relaxed_calendar" else 0
         collected: list[int] = []
         seen: set[int] = set()
@@ -191,6 +228,35 @@ def candidate_contexts(
     return torch.from_numpy(model_values).to(device), torch.from_numpy(observed).to(device)
 
 
+def candidate_contexts_for_nodes(
+    bank: Any,
+    event_ids: torch.Tensor,
+    node_ids: torch.Tensor,
+    series: Any,
+    scaler: Any,
+    context_length: int,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Load only target-node contexts as ``[B,N,T,K,C]``."""
+    if event_ids.shape != node_ids.shape or event_ids.ndim != 3:
+        raise ValueError("event_ids and node_ids must be [B,N,K]")
+    safe_ids = event_ids.clamp_min(0).cpu().numpy()
+    target_nodes = node_ids.cpu().numpy().astype(np.int64, copy=False)
+    ends = np.asarray(bank.context_end)[safe_ids]
+    starts = ends - int(context_length) + 1
+    indices = starts[..., None] + np.arange(context_length, dtype=np.int64)
+    raw = np.asarray(series.values[indices, target_nodes[..., None], :], dtype=np.float32)
+    observed = np.asarray(series.observed[indices, target_nodes[..., None], :], dtype=bool)
+    mean = np.asarray(scaler.mean, dtype=np.float32)[target_nodes][..., None, :]
+    std = np.asarray(scaler.std, dtype=np.float32)[target_nodes][..., None, :]
+    model_values = (raw - mean) / (std + scaler.eps)
+    model_values = np.where(observed, model_values, 0.0).astype(np.float32)
+    return (
+        torch.from_numpy(model_values.transpose(0, 1, 3, 2, 4)).to(device),
+        torch.from_numpy(observed.transpose(0, 1, 3, 2, 4)).to(device),
+    )
+
+
 def event_candidate_futures(
     bank: Any,
     event_ids: torch.Tensor,
@@ -206,6 +272,28 @@ def event_candidate_futures(
     future = torch.from_numpy(values).to(device)
     valid = torch.from_numpy(observed).to(device)
     valid = valid & event_valid[:, None, None, :, None]
+    return future, valid
+
+
+def event_candidate_futures_for_nodes(
+    bank: Any,
+    event_ids: torch.Tensor,
+    event_valid: torch.Tensor,
+    node_ids: torch.Tensor,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Load target-node futures as ``[B,H,N,K,C]`` without all-node expansion."""
+    if event_ids.shape != event_valid.shape or event_ids.shape != node_ids.shape:
+        raise ValueError("event_ids, event_valid, and node_ids must be [B,N,K]")
+    safe_ids = event_ids.clamp_min(0).cpu().numpy()
+    target_nodes = node_ids.cpu().numpy().astype(np.int64, copy=False)
+    values = np.asarray(bank.future_values[safe_ids, :, target_nodes, :], dtype=np.float32)
+    observed = np.asarray(
+        bank.future_masks[safe_ids, :, target_nodes, :], dtype=np.uint8
+    ).astype(bool)
+    future = torch.from_numpy(values.transpose(0, 3, 1, 2, 4)).to(device)
+    valid = torch.from_numpy(observed.transpose(0, 3, 1, 2, 4)).to(device)
+    valid = valid & event_valid[:, None, :, :, None].to(device=device)
     return future, valid
 
 
@@ -237,73 +325,35 @@ def offset_decay_aggregation(
         context_length,
         mode="offset",
     )
-    flat_ids = candidates.event_ids.reshape(batch * nodes, top_k)
-    flat_valid = candidates.valid.reshape(batch * nodes, top_k)
-    flat_contexts, flat_context_observed = candidate_contexts(
+    node_ids = torch.arange(nodes, device=device).view(1, nodes, 1).expand(
+        batch, nodes, top_k
+    )
+    candidate_context, candidate_context_observed = candidate_contexts_for_nodes(
         bank,
-        flat_ids,
+        candidates.event_ids,
+        node_ids,
         series,
         scaler,
         context_length,
         device,
     )
     candidate_statistics = estimate_local_trend(
-        flat_contexts,
-        flat_context_observed,
+        candidate_context,
+        candidate_context_observed,
         context_length,
         mode="offset",
     )
-    candidate_levels_all = candidate_statistics.level.view(
-        batch,
-        nodes,
-        top_k,
-        nodes,
-        channels,
-    )
-    candidate_level_valid_all = candidate_statistics.valid.view(
-        batch,
-        nodes,
-        top_k,
-        nodes,
-        channels,
-    )
-    level_index = torch.arange(nodes, device=device).view(1, nodes, 1, 1, 1)
-    level_index = level_index.expand(batch, nodes, top_k, 1, channels)
-    candidate_levels = candidate_levels_all.gather(3, level_index).squeeze(3)
-    candidate_level_valid = (
-        candidate_level_valid_all.gather(3, level_index).squeeze(3)
-        & candidates.valid.unsqueeze(-1)
-    )
+    candidate_levels = candidate_statistics.level
+    candidate_level_valid = candidate_statistics.valid & candidates.valid.unsqueeze(-1)
 
-    flat_future, flat_future_valid = event_candidate_futures(
+    selected_future, selected_future_valid = event_candidate_futures_for_nodes(
         bank,
-        flat_ids,
-        flat_valid,
+        candidates.event_ids,
+        candidates.valid,
+        node_ids,
         device,
     )
-    horizon = flat_future.shape[1]
-    future_all = flat_future.view(
-        batch,
-        nodes,
-        horizon,
-        nodes,
-        top_k,
-        channels,
-    )
-    future_valid_all = flat_future_valid.view_as(future_all)
-    future_index = torch.arange(nodes, device=device).view(1, nodes, 1, 1, 1, 1)
-    future_index = future_index.expand(
-        batch,
-        nodes,
-        horizon,
-        1,
-        top_k,
-        channels,
-    )
-    selected_future = future_all.gather(3, future_index).squeeze(3)
-    selected_future_valid = future_valid_all.gather(3, future_index).squeeze(3)
-    selected_future = selected_future.permute(0, 2, 1, 3, 4).contiguous()
-    selected_future_valid = selected_future_valid.permute(0, 2, 1, 3, 4).contiguous()
+    horizon = selected_future.shape[1]
 
     query_level = query_statistics.level[:, None, :, None, :]
     candidate_level = candidate_levels[:, None, :, :, :]

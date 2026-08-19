@@ -69,6 +69,19 @@ class TwoStageRetriever:
         self.profile_weight_override = profile_weight_override
         self.device = device
         self.event_keys = torch.from_numpy(bank.event_keys_memory).to(device)
+        calendar_event_ids = getattr(bank, "calendar_event_ids_padded", None)
+        if calendar_event_ids is None:
+            calendar_event_ids = bank.calendar.padded_event_ids()
+        calendar_future_end = getattr(bank, "calendar_future_end_padded", None)
+        if calendar_future_end is None:
+            calendar_future_end = np.full_like(calendar_event_ids, -1, dtype=np.int64)
+            valid_calendar = calendar_event_ids >= 0
+            if bool(valid_calendar.any()):
+                calendar_future_end[valid_calendar] = np.asarray(bank.future_end)[
+                    calendar_event_ids[valid_calendar]
+                ]
+        self._calendar_event_ids = torch.from_numpy(calendar_event_ids).to(device)
+        self._calendar_future_end = torch.from_numpy(calendar_future_end).to(device)
 
     @torch.no_grad()
     def search_events(
@@ -84,19 +97,43 @@ class TwoStageRetriever:
         ids = torch.full((batch, self.event_top_r), -1, dtype=torch.long, device=self.device)
         scores = torch.full((batch, self.event_top_r), -torch.inf, device=self.device)
         valid = torch.zeros((batch, self.event_top_r), dtype=torch.bool, device=self.device)
-        future_end = np.asarray(self.bank.future_end)
-        for batch_index in range(batch):
-            calendar_ids = self.bank.calendar.lookup(int(weekday[batch_index]), int(slot[batch_index]))
-            legal = calendar_ids[future_end[calendar_ids] < int(context_start[batch_index])]
-            if legal.size == 0:
-                continue
-            legal_tensor = torch.from_numpy(np.asarray(legal, dtype=np.int64)).to(self.device)
-            candidate_scores = query_event_keys[batch_index] @ self.event_keys.index_select(0, legal_tensor).T
-            count = min(self.event_top_r, legal_tensor.numel())
-            top_scores, local_ids = torch.topk(candidate_scores, count)
-            ids[batch_index, :count] = legal_tensor.index_select(0, local_ids)
-            scores[batch_index, :count] = top_scores
-            valid[batch_index, :count] = True
+        bucket = weekday.to(device=self.device, dtype=torch.long) * int(
+            self.bank.manifest.slots_per_day
+        ) + slot.to(device=self.device, dtype=torch.long)
+        bucket_ids = self._calendar_event_ids.index_select(0, bucket)
+        bucket_valid = bucket_ids >= 0
+        causal = self._calendar_future_end.index_select(0, bucket) < context_start.to(
+            device=self.device, dtype=torch.long
+        ).unsqueeze(1)
+        legal_mask = bucket_valid & causal
+        safe_ids = bucket_ids.clamp_min(0)
+        candidate_keys = self.event_keys.index_select(0, safe_ids.reshape(-1)).reshape(
+            safe_ids.shape[0], safe_ids.shape[1], -1
+        )
+        candidate_scores = torch.einsum(
+            "bd,brd->br", query_event_keys, candidate_keys
+        ).masked_fill(~legal_mask, -torch.inf)
+        count = min(self.event_top_r, candidate_scores.shape[1])
+        ids = torch.full(
+            (batch, self.event_top_r), -1, dtype=torch.long, device=self.device
+        )
+        scores = torch.full(
+            (batch, self.event_top_r), -torch.inf, dtype=torch.float32, device=self.device
+        )
+        valid = torch.zeros(
+            (batch, self.event_top_r), dtype=torch.bool, device=self.device
+        )
+        if count:
+            top_scores, local_ids = torch.topk(candidate_scores, count, dim=1)
+            top_ids = safe_ids.gather(1, local_ids)
+            top_valid = legal_mask.gather(1, local_ids) & torch.isfinite(top_scores)
+            ids[:, :count] = torch.where(
+                top_valid, top_ids, torch.full_like(top_ids, -1)
+            )
+            scores[:, :count] = torch.where(
+                top_valid, top_scores, torch.full_like(top_scores, -torch.inf)
+            )
+            valid[:, :count] = top_valid
         return EventCandidates(ids, scores, valid)
 
     @torch.no_grad()

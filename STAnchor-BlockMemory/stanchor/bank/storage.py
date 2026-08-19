@@ -56,6 +56,17 @@ class CalendarIndex:
         bucket = weekday * self.slots_per_day + slot
         return self.event_ids[self.offsets[bucket] : self.offsets[bucket + 1]]
 
+    def padded_event_ids(self) -> np.ndarray:
+        """Return calendar buckets as a padded matrix preserving lookup order."""
+        counts = np.diff(np.asarray(self.offsets, dtype=np.int64))
+        width = int(counts.max(initial=0))
+        result = np.full((counts.size, width), -1, dtype=np.int64)
+        for bucket, count in enumerate(counts.tolist()):
+            if count:
+                start = int(self.offsets[bucket])
+                result[bucket, :count] = self.event_ids[start : start + count]
+        return result
+
 
 class BankWriter:
     """Write every array on the shared event axis; manifest is committed last."""
@@ -163,6 +174,15 @@ class MemoryBank:
             event_ids=np.load(self.path / "calendar_event_ids.npy", mmap_mode="r"),
             slots_per_day=self.manifest.slots_per_day,
         )
+        self.calendar_event_ids_padded = self.calendar.padded_event_ids()
+        self.calendar_future_end_padded = np.full_like(
+            self.calendar_event_ids_padded, -1, dtype=np.int64
+        )
+        valid_calendar = self.calendar_event_ids_padded >= 0
+        if bool(valid_calendar.any()):
+            self.calendar_future_end_padded[valid_calendar] = np.asarray(
+                self.arrays["future_end"]
+            )[self.calendar_event_ids_padded[valid_calendar]]
         # Event keys are small enough to keep resident for exact coarse search.
         self.event_keys_memory = np.array(self.arrays["event_keys"], dtype=np.float32, copy=True)
 

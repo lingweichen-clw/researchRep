@@ -44,6 +44,7 @@ from stanchor.models.downstream import (
 )
 from stanchor.models.pretraining import STAnchorPretrainModel
 from stanchor.models.stgcn import STGCNForecastBackbone
+from stanchor.models.graph_wavenet import GraphWaveNetForecastBackbone
 from stanchor.retrieval.retriever import AggregationOutput, NodeCandidates, TwoStageRetriever
 from stanchor.retrieval.strategies import (
     calendar_event_candidates,
@@ -98,6 +99,26 @@ def build_downstream_model(
             bottleneck_channels=config.target.stgcn_bottleneck_channels,
             output_hidden_channels=config.target.stgcn_output_hidden_channels,
             dropout=config.target.stgcn_dropout,
+        )
+    elif config.target.backbone_name == "graph_wavenet":
+        if graph is None:
+            raise ValueError("graph_wavenet backbone construction requires graph data")
+        backbone = GraphWaveNetForecastBackbone(
+            context_length=config.data.context_length,
+            horizon=config.data.horizon,
+            input_channels=config.model.input_channels,
+            output_channels=config.model.output_channels,
+            graph=graph,
+            residual_channels=config.target.graph_wavenet_residual_channels,
+            dilation_channels=config.target.graph_wavenet_dilation_channels,
+            skip_channels=config.target.graph_wavenet_skip_channels,
+            end_channels=config.target.graph_wavenet_end_channels,
+            kernel_size=config.target.graph_wavenet_kernel_size,
+            blocks=config.target.graph_wavenet_blocks,
+            layers=config.target.graph_wavenet_layers,
+            dropout=config.target.graph_wavenet_dropout,
+            adaptive_adj=config.target.graph_wavenet_adaptive_adj,
+            adaptive_dim=config.target.graph_wavenet_adaptive_dim,
         )
     else:
         raise ValueError(f"unsupported downstream backbone: {config.target.backbone_name}")
