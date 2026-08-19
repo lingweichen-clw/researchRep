@@ -38,6 +38,18 @@ class PretrainingCliTest(unittest.TestCase):
         )
         self.assertIn("tgge_latent48_v2", config.runtime.run_name)
 
+    def test_single_view_v3_config_uses_high_order_route_and_masked_relation(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        config = load_config(
+            project_root / "configs/metrla_e5_tgge_single_view_masked_relation_v3.yaml"
+        )
+
+        self.assertEqual(config.pretrain.objective, "masked_relation_single_view")
+        self.assertEqual(config.pretrain.retrieval_weight, 1.0)
+        self.assertEqual(config.pretrain.reconstruction_weight, 0.1)
+        self.assertEqual(config.model.route_top_k, 6)
+        self.assertEqual(config.model.route_local_quota, 0)
+
     def test_pretrain_help_exposes_seed_override(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         result = subprocess.run(
@@ -59,6 +71,17 @@ class PretrainingCliTest(unittest.TestCase):
             text=True,
         )
         self.assertIn("--level-weight", result.stdout)
+
+    def test_visualization_help_exposes_event_pool_override(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        result = subprocess.run(
+            [sys.executable, "scripts/visualize_retrieval.py", "--help"],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("--event-top-r", result.stdout)
 
     def test_downstream_help_exposes_level_weight_override(self) -> None:
         project_root = Path(__file__).resolve().parents[1]

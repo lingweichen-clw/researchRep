@@ -265,6 +265,78 @@ class STAnchorPretrainModel(nn.Module):
             masked_dynamics=masked_dynamics,
         )
 
+    def forward_pretrain_single_view(
+        self,
+        x: torch.Tensor,
+        observed: torch.Tensor,
+        weekday: torch.Tensor,
+        slot: torch.Tensor,
+        graph: GraphData,
+        neighbors: torch.Tensor,
+        mask_task: str | None = None,
+        generator: torch.Generator | None = None,
+    ) -> PretrainForwardOutput:
+        """Run masked reconstruction and retrieval relation on one masked view.
+
+        Unlike :meth:`forward_pretrain`, this path does not build a clean view
+        and a masked view in a concatenated batch.  The masked representation
+        is used for both the retrieval key and the reconstruction head, so the
+        encoder is evaluated exactly once per input batch.
+        """
+        if x.ndim != 4 or observed.shape != x.shape:
+            raise ValueError("x and observed must be [B, T, N, C]")
+        batch, time, nodes, channels = x.shape
+        if time != self.context_length or channels != self.model_config.input_channels:
+            raise ValueError("input does not match model context/channel configuration")
+
+        mask = self.mask_sampler.sample(
+            batch_size=batch,
+            num_nodes=nodes,
+            num_channels=channels,
+            neighbors=neighbors,
+            device=x.device,
+            observed=observed,
+            task=mask_task,
+            generator=generator,
+        )
+        visible = observed.bool() & ~mask.value_mask
+        masked_statistics = normalize_window(x, visible)
+        masked_tokens = self.embedding(
+            masked_statistics.normalized,
+            masked_statistics.level_features,
+            masked_statistics.level_valid,
+            weekday,
+            slot,
+            patch_mask=mask.patch_mask,
+            mask_task=mask.task,
+        )
+        hidden = self.encoder(masked_tokens, graph)
+        dynamics = None
+        if self.dynamics_adapter is not None:
+            dynamics = self.dynamics_adapter(
+                hidden,
+                masked_statistics.normalized,
+                visible,
+                graph,
+            )
+            hidden = dynamics.hidden
+        retrieval = self.retrieval_head(hidden)
+        patch_values = self.reconstruction_head(hidden)
+        reconstruction = self._unpatchify(patch_values)
+        reconstruction_target = (
+            x - masked_statistics.mean.unsqueeze(1)
+        ) / (masked_statistics.std.unsqueeze(1) + 1.0e-6)
+        # ``clean`` is retained in the output contract so the existing loss
+        # code can consume this single-view encoding without a second API.
+        return PretrainForwardOutput(
+            clean=CleanEncoding(hidden, retrieval, masked_statistics, dynamics),
+            masked_hidden=hidden,
+            reconstruction=reconstruction,
+            reconstruction_target=reconstruction_target,
+            mask=mask,
+            masked_dynamics=dynamics,
+        )
+
     def _unpatchify(self, patch_values: torch.Tensor) -> torch.Tensor:
         batch, patches, nodes, patch_channels = patch_values.shape
         channels = self.model_config.input_channels

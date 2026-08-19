@@ -25,6 +25,21 @@ class GraphLoadingTest(unittest.TestCase):
         self.assertGreater(float(prior[0, 2]), 0.0)
         self.assertGreater(float(prior[2, 0]), 0.0)
 
+    def test_higher_order_candidates_prefer_positive_two_three_hop_paths(self) -> None:
+        adjacency = np.eye(5, dtype=np.float32)
+        for node in range(4):
+            adjacency[node, node + 1] = 1.0
+            adjacency[node + 1, node] = 1.0
+        graph = graph_from_dense(adjacency)
+
+        _, _, remote_ids, remote_valid = graph.higher_order_candidate_indices()
+
+        self.assertTrue(bool(remote_valid[0].any()))
+        selected = remote_ids[0][remote_valid[0]].tolist()
+        self.assertIn(2, selected)
+        self.assertIn(3, selected)
+        self.assertNotIn(1, selected)
+
     def test_protocol_zero_pickle_recovers_from_crlf_conversion(self) -> None:
         adjacency = np.array([[0.0, 0.5], [0.25, 0.0]], dtype=np.float32)
         payload = pickle.dumps(
