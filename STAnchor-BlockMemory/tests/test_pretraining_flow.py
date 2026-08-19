@@ -20,8 +20,9 @@ from stanchor.engine.pretrainer import (
     build_validation_loader,
     early_stopping_metric,
     run_pretrain_epoch,
+    should_validate_epoch,
 )
-from stanchor.losses.pretraining import compute_pretraining_loss
+from stanchor.losses.pretraining import compute_pretraining_loss, compute_relation_only_loss
 from stanchor.losses.pretraining import masked_reconstruction_loss
 from stanchor.models.pretraining import STAnchorPretrainModel
 
@@ -113,6 +114,82 @@ class PretrainingFlowTest(unittest.TestCase):
         self.assertGreater(encoder_grad, 0.0)
         self.assertGreater(retrieval_grad, 0.0)
         self.assertGreater(reconstruction_grad, 0.0)
+
+    def test_validation_interval_keeps_final_epoch_evaluation(self) -> None:
+        self.assertFalse(should_validate_epoch(1, 4, 2))
+        self.assertTrue(should_validate_epoch(2, 4, 2))
+        self.assertFalse(should_validate_epoch(3, 4, 2))
+        self.assertTrue(should_validate_epoch(4, 4, 2))
+
+    def test_relation_only_flow_skips_reconstruction_and_trains_clean_key(self) -> None:
+        clean = self.model.forward_relation(
+            self.x,
+            self.observed,
+            self.weekday,
+            self.slot,
+            self.graph,
+        )
+        self.assertEqual(tuple(clean.retrieval.node_keys.shape), (self.batch, self.nodes, 8))
+        losses = compute_relation_only_loss(
+            clean=clean,
+            future_model=self.y,
+            observed_future=torch.ones_like(self.y, dtype=torch.bool),
+            context_start=self.context_start,
+            future_end=self.future_end,
+            retrieval_weight=1.0,
+            relation_teacher_temperature=0.1,
+            relation_student_temperature=0.1,
+            forecast_context=self.x,
+            forecast_context_observed=self.observed,
+            relation_teacher_mode="offset_decay",
+            relation_distance_normalization="anchor_mean",
+        )
+
+        self.assertEqual(float(losses.reconstruction.detach()), 0.0)
+        self.assertGreater(losses.valid_retrieval_anchors, 0)
+        self.assertTrue(bool(torch.isfinite(losses.total)))
+        losses.total.backward()
+        self.assertTrue(
+            any(
+                parameter.grad is not None and float(parameter.grad.abs().sum()) > 0.0
+                for parameter in self.model.encoder.parameters()
+            )
+        )
+        self.assertFalse(any(parameter.grad is not None for parameter in self.model.reconstruction_head.parameters()))
+
+    def test_reconstruction_weight_controls_joint_total(self) -> None:
+        output = self.model.forward_pretrain(
+            self.x,
+            self.observed,
+            self.weekday,
+            self.slot,
+            self.graph,
+            self.neighbors,
+            mask_task="time",
+        )
+        common = dict(
+            output=output,
+            future_model=self.y,
+            observed_context=self.observed,
+            observed_future=torch.ones_like(self.y, dtype=torch.bool),
+            context_start=self.context_start,
+            future_end=self.future_end,
+            retrieval_weight=0.0,
+            retrieval_temperature=0.1,
+            positive_quantile=0.2,
+            context_quantile=0.3,
+            negative_quantile=0.7,
+            hard_negative_weight=2.0,
+        )
+        full = compute_pretraining_loss(**common, reconstruction_weight=1.0)
+        without_reconstruction = compute_pretraining_loss(
+            **common,
+            reconstruction_weight=0.0,
+        )
+
+        self.assertGreater(float(full.reconstruction.detach()), 0.0)
+        self.assertTrue(torch.allclose(full.total, full.reconstruction))
+        self.assertEqual(float(without_reconstruction.total.detach()), 0.0)
 
     def test_time_mask_pretraining_flow(self) -> None:
         self._run_task("time")

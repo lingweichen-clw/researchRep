@@ -174,6 +174,21 @@ class STAnchorPretrainModel(nn.Module):
             dynamics,
         )
 
+    def forward_relation(
+        self,
+        x: torch.Tensor,
+        observed: torch.Tensor,
+        weekday: torch.Tensor,
+        slot: torch.Tensor,
+        graph: GraphData,
+    ) -> CleanEncoding:
+        """Encode one clean history for relation-only pretraining.
+
+        No mask sampler or reconstruction head is touched in this path; the
+        returned key is trained only by the future-relation objective.
+        """
+        return self.encode_clean(x, observed, weekday, slot, graph)
+
     def forward_pretrain(
         self,
         x: torch.Tensor,

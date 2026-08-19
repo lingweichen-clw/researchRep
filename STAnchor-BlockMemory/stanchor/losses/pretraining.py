@@ -10,7 +10,7 @@ import torch.nn.functional as functional
 from stanchor.data.normalization import normalize_future_with_context
 from stanchor.retrieval.semantic_profile import symmetric_geometric_mean_normalize
 from stanchor.retrieval.semantic_profile import build_cfdp_teacher
-from stanchor.models.pretraining import PretrainForwardOutput
+from stanchor.models.pretraining import CleanEncoding, PretrainForwardOutput
 
 
 @dataclass(frozen=True)
@@ -488,6 +488,60 @@ def future_relation_retrieval_loss(
     )
 
 
+def compute_relation_only_loss(
+    clean: CleanEncoding,
+    future_model: torch.Tensor,
+    observed_future: torch.Tensor,
+    context_start: torch.Tensor,
+    future_end: torch.Tensor,
+    retrieval_weight: float,
+    relation_teacher_temperature: float,
+    relation_student_temperature: float,
+    forecast_context: torch.Tensor,
+    forecast_context_observed: torch.Tensor,
+    relation_teacher_mode: str,
+    relation_distance_normalization: str,
+    future_increment_weight: float = 0.0,
+) -> PretrainingLoss:
+    """Compute a clean-key-only future relation objective.
+
+    The zero reconstruction term is connected to the clean key so callers can
+    reuse the common loss record without constructing a masked view.
+    """
+    if retrieval_weight < 0.0:
+        raise ValueError("retrieval_weight must be non-negative")
+    retrieval_output = future_relation_retrieval_loss(
+        node_keys=clean.retrieval.node_keys,
+        future_model=future_model,
+        context_statistics=clean.statistics,
+        future_observed=observed_future,
+        context_start=context_start,
+        future_end=future_end,
+        teacher_temperature=relation_teacher_temperature,
+        student_temperature=relation_student_temperature,
+        relation_teacher_mode=relation_teacher_mode,
+        forecast_context=forecast_context,
+        forecast_context_observed=forecast_context_observed,
+        relation_distance_normalization=relation_distance_normalization,
+        future_increment_weight=future_increment_weight,
+    )
+    reconstruction = clean.retrieval.node_keys.sum() * 0.0
+    total = reconstruction + retrieval_weight * retrieval_output.loss
+    return PretrainingLoss(
+        total=total,
+        reconstruction=reconstruction,
+        retrieval=retrieval_output.loss,
+        valid_retrieval_anchors=retrieval_output.valid_anchors,
+        positive_pairs=retrieval_output.positive_pairs,
+        hard_negative_pairs=retrieval_output.hard_negative_pairs,
+        reconstruction_positions=0,
+        relation_candidate_pairs=retrieval_output.candidate_pairs,
+        teacher_effective_support=retrieval_output.teacher_effective_support,
+        student_effective_support=retrieval_output.student_effective_support,
+        profile=None,
+    )
+
+
 def compute_pretraining_loss(
     output: PretrainForwardOutput,
     future_model: torch.Tensor,
@@ -511,7 +565,10 @@ def compute_pretraining_loss(
     future_increment_weight: float = 0.0,
     profile_loss_weight: float = 0.0,
     profile_scale_floor: float = 0.1,
+    reconstruction_weight: float = 1.0,
 ) -> PretrainingLoss:
+    if reconstruction_weight < 0.0:
+        raise ValueError("reconstruction_weight must be non-negative")
     reconstruction = masked_reconstruction_loss(
         output.reconstruction,
         output.reconstruction_target,
@@ -584,7 +641,11 @@ def compute_pretraining_loss(
             if bool(target_valid.any())
             else profile_prediction.sum() * 0.0
         )
-    total = reconstruction + retrieval_weight * retrieval_output.loss + profile_loss_weight * profile_loss
+    total = (
+        reconstruction_weight * reconstruction
+        + retrieval_weight * retrieval_output.loss
+        + profile_loss_weight * profile_loss
+    )
     reconstruction_positions = int(
         (output.mask.value_mask.bool() & observed_context.bool()).sum().item()
     )

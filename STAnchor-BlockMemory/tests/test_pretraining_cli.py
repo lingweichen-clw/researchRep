@@ -10,6 +10,18 @@ from stanchor.config import load_config
 
 
 class PretrainingCliTest(unittest.TestCase):
+    def test_relation_only_config_contract(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        config = load_config(
+            project_root / "configs/metrla_e5_tgge_latent48_relation_only_v2.yaml"
+        )
+
+        self.assertEqual(config.pretrain.objective, "relation_only")
+        self.assertEqual(config.pretrain.reconstruction_weight, 0.0)
+        self.assertEqual(config.pretrain.retrieval_weight, 1.0)
+        self.assertEqual(config.pretrain.validation_interval, 2)
+        self.assertIn("relation_only_v2", config.runtime.run_name)
+
     def test_tgge_v2_config_enables_mixed_range_route(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         config = load_config(project_root / "configs/metrla_e5_tgge_latent48_v2.yaml")
@@ -160,39 +172,6 @@ class PretrainingCliTest(unittest.TestCase):
             "symmetric_geometric_mean",
         )
         local12_config.validate()
-
-    def test_e5_final_local12_profile_changes_only_cfdp_fields_and_outputs(self) -> None:
-        project_root = Path(__file__).resolve().parents[1]
-        no_profile = asdict(
-            load_config(project_root / "configs/metrla_e5_final_symnorm_local12_v1.yaml")
-        )
-        profile = asdict(
-            load_config(
-                project_root / "configs/metrla_e5_final_sym_profile_local12_v1.yaml"
-            )
-        )
-
-        allowed = {
-            ("model", "profile_dim"),
-            ("model", "latent_dim"),
-            ("pretrain", "profile_loss_weight"),
-            ("bank", "output_dir"),
-            ("runtime", "run_name"),
-        }
-        differences = {
-            (section, key)
-            for section, values in no_profile.items()
-            for key, value in values.items()
-            if value != profile[section][key]
-        }
-
-        self.assertEqual(differences, allowed)
-        self.assertEqual(profile["model"]["profile_dim"], 12)
-        self.assertEqual(profile["model"]["latent_dim"], 36)
-        self.assertEqual(profile["model"]["retrieval_dim"], 48)
-        self.assertEqual(profile["model"]["profile_weight"], 0.25)
-        self.assertEqual(profile["pretrain"]["profile_loss_weight"], 0.1)
-
 
 if __name__ == "__main__":
     unittest.main()

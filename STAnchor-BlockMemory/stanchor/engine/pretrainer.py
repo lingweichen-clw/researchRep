@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader, Dataset, Subset
 
 from stanchor.config import ExperimentConfig, resolve_project_path
 from stanchor.data.graph import GraphData
-from stanchor.losses.pretraining import compute_pretraining_loss
+from stanchor.losses.pretraining import compute_pretraining_loss, compute_relation_only_loss
 from stanchor.models.dynamics_adapter import summarize_adapter_output
 from stanchor.models.pretraining import STAnchorPretrainModel
 from stanchor.utils import (
@@ -64,6 +64,13 @@ def early_stopping_metric(
     if retrieval_loss_mode == "relation":
         return "val_retrieval", float(result.retrieval)
     return "val_total", float(result.total)
+
+
+def should_validate_epoch(epoch: int, total_epochs: int, interval: int) -> bool:
+    """Return whether this epoch should run validation, always including the final one."""
+    if epoch <= 0 or total_epochs <= 0 or interval <= 0:
+        raise ValueError("epoch, total_epochs, and interval must be positive")
+    return epoch % interval == 0 or epoch == total_epochs
 
 
 def build_validation_loader(
@@ -156,41 +163,79 @@ def run_pretrain_epoch(
             # Training follows the configured categorical sampler. Validation
             # alternates deterministically so both proxy tasks remain comparable.
             mask_task = None if training else ("time" if batch_index % 2 == 0 else "space")
-            output = model.forward_pretrain(
-                x=batch["retrieval_x"].to(device),
-                observed=batch["retrieval_observed"].to(device),
-                weekday=batch["retrieval_weekday"].to(device),
-                slot=batch["retrieval_slot"].to(device),
-                graph=graph,
-                neighbors=neighbors,
-                mask_task=mask_task,
-            )
-            losses = compute_pretraining_loss(
-                output=output,
-                future_model=batch["y"].to(device),
-                observed_context=batch["retrieval_observed"].to(device),
-                observed_future=batch["y_observed"].to(device),
-                context_start=batch["context_start"].to(device),
-                future_end=batch["future_end"].to(device),
-                retrieval_weight=config.pretrain.retrieval_weight,
-                retrieval_temperature=config.pretrain.retrieval_temperature,
-                positive_quantile=config.pretrain.positive_quantile,
-                context_quantile=config.pretrain.context_quantile,
-                negative_quantile=config.pretrain.negative_quantile,
-                hard_negative_weight=config.pretrain.hard_negative_weight,
-                retrieval_loss_mode=config.pretrain.retrieval_loss_mode,
-                relation_teacher_temperature=config.pretrain.relation_teacher_temperature,
-                relation_student_temperature=config.pretrain.relation_student_temperature,
-                forecast_context=batch["x"].to(device),
-                forecast_context_observed=batch["x_observed"].to(device),
-                relation_teacher_mode=config.pretrain.relation_teacher_mode,
-                relation_distance_normalization=(
-                    config.pretrain.relation_distance_normalization
-                ),
-                future_increment_weight=config.pretrain.future_increment_weight,
-                profile_loss_weight=config.pretrain.profile_loss_weight,
-                profile_scale_floor=config.pretrain.profile_scale_floor,
-            )
+            retrieval_x = batch["retrieval_x"].to(device)
+            retrieval_observed = batch["retrieval_observed"].to(device)
+            retrieval_weekday = batch["retrieval_weekday"].to(device)
+            retrieval_slot = batch["retrieval_slot"].to(device)
+            future_model = batch["y"].to(device)
+            observed_future = batch["y_observed"].to(device)
+            context_start = batch["context_start"].to(device)
+            future_end = batch["future_end"].to(device)
+            forecast_context = batch["x"].to(device)
+            forecast_context_observed = batch["x_observed"].to(device)
+            if config.pretrain.objective == "relation_only":
+                clean = model.forward_relation(
+                    retrieval_x,
+                    retrieval_observed,
+                    retrieval_weekday,
+                    retrieval_slot,
+                    graph,
+                )
+                losses = compute_relation_only_loss(
+                    clean=clean,
+                    future_model=future_model,
+                    observed_future=observed_future,
+                    context_start=context_start,
+                    future_end=future_end,
+                    retrieval_weight=config.pretrain.retrieval_weight,
+                    relation_teacher_temperature=config.pretrain.relation_teacher_temperature,
+                    relation_student_temperature=config.pretrain.relation_student_temperature,
+                    forecast_context=forecast_context,
+                    forecast_context_observed=forecast_context_observed,
+                    relation_teacher_mode=config.pretrain.relation_teacher_mode,
+                    relation_distance_normalization=(
+                        config.pretrain.relation_distance_normalization
+                    ),
+                    future_increment_weight=config.pretrain.future_increment_weight,
+                )
+                output = None
+            else:
+                output = model.forward_pretrain(
+                    x=retrieval_x,
+                    observed=retrieval_observed,
+                    weekday=retrieval_weekday,
+                    slot=retrieval_slot,
+                    graph=graph,
+                    neighbors=neighbors,
+                    mask_task=mask_task,
+                )
+                losses = compute_pretraining_loss(
+                    output=output,
+                    future_model=future_model,
+                    observed_context=retrieval_observed,
+                    observed_future=observed_future,
+                    context_start=context_start,
+                    future_end=future_end,
+                    retrieval_weight=config.pretrain.retrieval_weight,
+                    retrieval_temperature=config.pretrain.retrieval_temperature,
+                    positive_quantile=config.pretrain.positive_quantile,
+                    context_quantile=config.pretrain.context_quantile,
+                    negative_quantile=config.pretrain.negative_quantile,
+                    hard_negative_weight=config.pretrain.hard_negative_weight,
+                    retrieval_loss_mode=config.pretrain.retrieval_loss_mode,
+                    relation_teacher_temperature=config.pretrain.relation_teacher_temperature,
+                    relation_student_temperature=config.pretrain.relation_student_temperature,
+                    forecast_context=forecast_context,
+                    forecast_context_observed=forecast_context_observed,
+                    relation_teacher_mode=config.pretrain.relation_teacher_mode,
+                    relation_distance_normalization=(
+                        config.pretrain.relation_distance_normalization
+                    ),
+                    future_increment_weight=config.pretrain.future_increment_weight,
+                    profile_loss_weight=config.pretrain.profile_loss_weight,
+                    profile_scale_floor=config.pretrain.profile_scale_floor,
+                    reconstruction_weight=config.pretrain.reconstruction_weight,
+                )
             if losses.reconstruction_positions == 0 and losses.valid_retrieval_anchors == 0:
                 skipped_batches += 1
                 emit_progress(batch_index + 1)
@@ -217,7 +262,7 @@ def run_pretrain_epoch(
                     losses.student_effective_support * losses.valid_retrieval_anchors
                 )
                 support_anchors += losses.valid_retrieval_anchors
-            if output.clean.dynamics is not None:
+            if output is not None and output.clean.dynamics is not None:
                 adapter_metrics = summarize_adapter_output(output.clean.dynamics)
                 for name, value in adapter_metrics.items():
                     adapter_totals[name] += value
@@ -371,6 +416,7 @@ def train_pretraining(
     )
     logger.info(
         "Optimization | epochs=%d | batch_size=%d | lr=%.3g | weight_decay=%.3g | "
+        "objective=%s | reconstruction_weight=%.3f | validation_interval=%d | "
         "time_mask=%.3f | time_mask_block=%d steps | space_mask=%.3f | "
         "retrieval_loss=%s | teacher_mode=%s | distance_normalization=%s | "
         "future_increment_weight=%.3f | retrieval_weight=%.3f | "
@@ -380,6 +426,9 @@ def train_pretraining(
         config.pretrain.batch_size,
         config.pretrain.learning_rate,
         config.pretrain.weight_decay,
+        config.pretrain.objective,
+        config.pretrain.reconstruction_weight,
+        config.pretrain.validation_interval,
         config.pretrain.time_mask_ratio,
         config.pretrain.time_mask_block_size,
         config.pretrain.space_mask_ratio,
@@ -443,37 +492,54 @@ def train_pretraining(
             progress_interval=config.pretrain.progress_interval,
             progress_callback=train_progress,
         )
-        val_progress = lambda completed, total, elapsed, eta: logger.info(
-            "Epoch %03d | val batch=%d/%d | elapsed=%.1f min | eta=%.1f min",
+        val_evaluated = should_validate_epoch(
             epoch,
-            completed,
-            total,
-            elapsed / 60.0,
-            eta / 60.0,
+            config.pretrain.epochs,
+            config.pretrain.validation_interval,
         )
-        val_result = run_pretrain_epoch(
-            model,
-            val_loader,
-            graph,
-            neighbors,
-            config,
-            device,
-            None,
-            max_batches,
-            progress_interval=config.pretrain.progress_interval,
-            progress_callback=val_progress,
-        )
+        val_result = None
+        if val_evaluated:
+            val_progress = lambda completed, total, elapsed, eta: logger.info(
+                "Epoch %03d | val batch=%d/%d | elapsed=%.1f min | eta=%.1f min",
+                epoch,
+                completed,
+                total,
+                elapsed / 60.0,
+                eta / 60.0,
+            )
+            val_result = run_pretrain_epoch(
+                model,
+                val_loader,
+                graph,
+                neighbors,
+                config,
+                device,
+                None,
+                max_batches,
+                progress_interval=config.pretrain.progress_interval,
+                progress_callback=val_progress,
+            )
         record = {
             "epoch": epoch,
             "train": train_result.__dict__,
-            "val": val_result.__dict__,
+            "val": val_result.__dict__ if val_result is not None else None,
+            "val_evaluated": val_evaluated,
             "parameters": count_parameters(model),
             "parameter_counts": parameter_counts,
         }
         with metrics_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        if val_result is None:
+            logger.info(
+                "Epoch %03d | train_total=%.6f | val_evaluated=false | "
+                "skipped(train)=%d",
+                epoch,
+                train_result.total,
+                train_result.skipped_batches,
+            )
+            continue
         logger.info(
-            "Epoch %03d | train_total=%.6f | val_total=%.6f | val_mask=%.6f | "
+            "Epoch %03d | train_total=%.6f | val_evaluated=true | val_total=%.6f | val_mask=%.6f | "
             "val_retrieval=%.6f | val_profile=%.6f | val_anchors=%d | val_positive_pairs=%d | "
             "val_hard_negatives=%d | val_relation_candidates=%d | "
             "val_teacher_keff=%.3f | val_student_keff=%.3f | "

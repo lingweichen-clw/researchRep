@@ -96,7 +96,7 @@ $$
 
 ### 2.4 预训练目标与未来信息用途
 
-TGGE 仍采用两个既有预训练目标。
+TGGE 保留两个可独立切换的预训练目标。当前新增 Relation-only 主实验，用来检验检索 key 是否确实由 future relation 学到，而不是主要依赖历史重建正则。
 
 第一个是 masked reconstruction：只在 288 步历史窗口内部遮蔽一部分时间 patch 或节点观测，并重建被遮蔽的历史值。目标值仍然属于 query 时刻之前的可见历史范围，不涉及下游预测未来。
 
@@ -115,6 +115,28 @@ D^{\mathrm{OD}}_{ij}
 $$
 
 $M_{ijh}$ 表示两个样本在 horizon $h$ 都有有效观测。该 future distance 只在预训练阶段作为 teacher，监督当前历史 key 的相对相似度；future trajectory 不输入 TGGE，也不保存在 query key 中。下游检索和部署阶段只计算历史编码，不再需要当前 query 的 future。
+
+### 2.5 Relation-only 目标
+
+Relation-only 指只用 clean 历史编码产生 Latent48 key，并用 future relation teacher 监督 key 间的相对排序：
+
+$$
+\mathcal L_{\mathrm{relation-only}}
+=
+\mathcal L_{\mathrm{future\ relation}}.
+$$
+
+该模式不构造 masked view，不调用 reconstruction head，因此不会把“恢复历史值”的能力误认为“检索未来关系”的直接证据。Relation-only 配置使用 `reconstruction_weight=0`、`retrieval_weight=1`，并与当前联合目标保持独立 checkpoint 和 run name。
+
+Joint-current 仍表示现有的
+
+$$
+\mathcal L_{\mathrm{joint-current}}
+=
+\mathcal L_{\mathrm{reconstruction}}+0.1\mathcal L_{\mathrm{future\ relation}}.
+$$
+
+后续可增加 Joint-weak：$0.1\mathcal L_{\mathrm{reconstruction}}+\mathcal L_{\mathrm{future\ relation}}$，用于判断掩码是否只提供缺失观测鲁棒性正则。三种目标必须使用同一数据切分、路由结构和 teacher 协议。
 
 ---
 
@@ -822,10 +844,11 @@ downstream run:      metrla_stgcn_tgge_structured_corrector_v2_seed42
 ### 8.2 阶段一：v2 检索编码器预训练
 
 1. 使用与当前 Latent48 相同的数据切分、归一化、静态图和 288 步上下文。
-2. 保留 masked reconstruction 与 relation/OffsetDecay retrieval loss。
+2. 首先运行 Relation-only：只优化 future relation/OffsetDecay retrieval loss；Joint-current 和 Joint-weak 作为独立消融，不覆盖 Relation-only checkpoint。
 3. 不增加新的 future target 分支，不把未来语义直接拼进 key。
 4. 非局部路由只读取历史 token；二跳/三跳扩散先验由当前静态图预先计算，不参与未来目标构造。
 5. 记录训练参数、精确参数量、每轮时间、峰值显存和 checkpoint fingerprint。
+6. Relation-only 使用 `validation_interval=2`，每两轮验证一次并在最后一轮强制验证；该设置不改变训练 batch 的梯度更新，但可能改变 early stopping 的观测轮次。
 
 ### 8.3 阶段二：构建 v2 Bank
 
@@ -858,6 +881,15 @@ downstream run:      metrla_stgcn_tgge_structured_corrector_v2_seed42
 1. STGCN base-only；
 2. v1 Latent48 + 当前 PostHoc-Wide；
 3. v2 TGGE Latent48 + Structured Error Corrector。
+4. v2 TGGE Latent48 Relation-only；与 Joint-current 共享结构和随机种子，单独比较检索排序与训练成本。
+
+### 9.1.1 预训练目标消融
+
+| 实验 | 总损失 | 是否构造 masked view | 目的 |
+|---|---|---|---|
+| Relation-only | $\mathcal L_{rel}$ | 否 | 验证 future relation 是否足够训练检索 key |
+| Joint-current | $\mathcal L_{rec}+0.1\mathcal L_{rel}$ | 是 | 当前联合目标基线 |
+| Joint-weak | $0.1\mathcal L_{rec}+\mathcal L_{rel}$ | 是 | 判断掩码是否只作为鲁棒性正则 |
 
 ### 9.2 编码器消融
 

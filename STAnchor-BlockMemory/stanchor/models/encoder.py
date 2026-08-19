@@ -140,7 +140,7 @@ class MixedRangeRouteAttention(nn.Module):
         remote.fill_diagonal_(False)
         return direct, remote
 
-    def select_indices(
+    def _select_indices_reference(
         self,
         scores: torch.Tensor,
         graph: GraphData,
@@ -205,11 +205,94 @@ class MixedRangeRouteAttention(nn.Module):
 
         return indices, valid, local_slots
 
+    def select_indices_vectorized(
+        self,
+        scores: torch.Tensor,
+        graph: GraphData,
+        candidate_indices: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+        | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Select mixed-range route slots without a Python target-node loop."""
+        if scores.ndim != 3 or scores.shape[1] != scores.shape[2]:
+            raise ValueError("scores must be [B, N, N]")
+        batch, nodes, _ = scores.shape
+        if nodes != graph.num_nodes:
+            raise ValueError("route score node dimension does not match graph")
+        effective_k = min(self.route_top_k, max(nodes - 1, 0))
+        if effective_k == 0:
+            empty = torch.empty((batch, nodes, 0), dtype=torch.long, device=scores.device)
+            valid = torch.empty((batch, nodes, 0), dtype=torch.bool, device=scores.device)
+            return empty, valid, valid
+
+        if candidate_indices is None:
+            candidate_indices = graph.mixed_range_candidate_indices()
+        local_ids, local_valid, remote_ids, remote_valid = (
+            tensor.to(device=scores.device) for tensor in candidate_indices
+        )
+        candidate_width = local_ids.shape[1]
+        if candidate_width < effective_k or remote_ids.shape[1] < effective_k:
+            raise ValueError("graph candidate index width is smaller than route top-k")
+        local_quota = min(self.route_local_quota, effective_k)
+        remote_quota = effective_k - local_quota
+
+        gather_index = local_ids.unsqueeze(0).expand(batch, -1, -1)
+        local_scores = scores.gather(2, gather_index).masked_fill(
+            ~local_valid.unsqueeze(0), -torch.inf
+        )
+        gather_index = remote_ids.unsqueeze(0).expand(batch, -1, -1)
+        remote_scores = scores.gather(2, gather_index).masked_fill(
+            ~remote_valid.unsqueeze(0), -torch.inf
+        )
+        local_count = local_valid.sum(dim=1).to(dtype=torch.long)
+        remote_count = remote_valid.sum(dim=1).to(dtype=torch.long)
+        local_take = local_count.clamp_max(local_quota)
+        remote_take = remote_count.clamp_max(remote_quota)
+        local_deficit = local_quota - local_take
+        remote_deficit = remote_quota - remote_take
+        remote_take = (remote_take + local_deficit).clamp_max(remote_count)
+        local_take = (local_take + remote_deficit).clamp_max(local_count)
+
+        local_order = torch.topk(local_scores, k=effective_k, dim=-1).indices
+        remote_order = torch.topk(remote_scores, k=effective_k, dim=-1).indices
+        local_rank_ids = local_ids.unsqueeze(0).expand(batch, -1, -1).gather(2, local_order)
+        remote_rank_ids = remote_ids.unsqueeze(0).expand(batch, -1, -1).gather(2, remote_order)
+
+        slots = torch.arange(effective_k, device=scores.device).view(1, 1, -1)
+        local_final = local_take.view(1, nodes, 1)
+        remote_final = remote_take.view(1, nodes, 1)
+        local_slot = (slots < local_final).expand(batch, -1, -1)
+        remote_slot = ((slots >= local_final) & (slots - local_final < remote_final)).expand(
+            batch, -1, -1
+        )
+        local_position = slots.expand(batch, nodes, -1).clamp_max(effective_k - 1)
+        remote_position = (slots - local_final).clamp_min(0).expand(batch, -1, -1).clamp_max(effective_k - 1)
+        selected_local = local_rank_ids.gather(2, local_position)
+        selected_remote = remote_rank_ids.gather(2, remote_position)
+        indices = torch.where(
+            local_slot,
+            selected_local,
+            torch.where(remote_slot, selected_remote, torch.zeros_like(selected_local)),
+        )
+        valid = local_slot | remote_slot
+        local_slots = local_slot
+        return indices, valid, local_slots
+
+    def select_indices(
+        self,
+        scores: torch.Tensor,
+        graph: GraphData,
+        candidate_indices: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+        | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        return self.select_indices_vectorized(scores, graph, candidate_indices)
+
     def forward(
         self,
         x: torch.Tensor,
         graph: GraphData,
         diffusion_prior: torch.Tensor | None = None,
+        candidate_indices: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+        | None = None,
     ) -> torch.Tensor:
         if x.ndim != 4:
             raise ValueError("x must be [B, P, N, D]")
@@ -232,7 +315,7 @@ class MixedRangeRouteAttention(nn.Module):
         scores = scores + self.prior_weight * torch.log1p(diffusion_prior.clamp_min(0.0))[None]
         scores = scores.masked_fill(torch.eye(nodes, dtype=torch.bool, device=x.device)[None], -torch.inf)
 
-        indices, valid, _ = self.select_indices(scores, graph)
+        indices, valid, _ = self.select_indices(scores, graph, candidate_indices)
         if indices.shape[-1] == 0:
             return torch.zeros_like(x)
         route_scores = scores.gather(2, indices)
@@ -324,6 +407,8 @@ class FactorizedSTBlock(nn.Module):
         x: torch.Tensor,
         graph: GraphData,
         diffusion_prior: torch.Tensor | None = None,
+        candidate_indices: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+        | None = None,
     ) -> torch.Tensor:
         batch, patches, nodes, hidden = x.shape
         temporal_input = self.temporal_norm(x).permute(0, 2, 1, 3).reshape(batch * nodes, patches, hidden)
@@ -344,6 +429,7 @@ class FactorizedSTBlock(nn.Module):
                 spatial_input,
                 graph,
                 diffusion_prior,
+                candidate_indices,
             )
         x = x + self.dropout(spatial_output)
         return x + self.dropout(self.ffn(self.ffn_norm(x)))
@@ -402,6 +488,11 @@ class FactorizedSTEncoder(nn.Module):
             if self.blocks[0].route_attention is not None
             else None
         )
+        candidate_indices = (
+            graph.mixed_range_candidate_indices()
+            if self.blocks[0].route_attention is not None
+            else None
+        )
         for block in self.blocks:
-            hidden = block(hidden, graph, diffusion_prior)
+            hidden = block(hidden, graph, diffusion_prior, candidate_indices)
         return self.output_norm(hidden)

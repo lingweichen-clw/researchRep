@@ -95,6 +95,8 @@ r_{b,n,m}=\frac{q_{b,n}^{\top}k_{b,m}}{\sqrt{d_r}}
 
 当前实现配置 `hidden_dim=80`、`route_dim=16`、3 个编码块；3 个路由分支实测 25,827 个参数，完整 retrieval state 实测 302,755 个参数。时间分支仍沿用 v1 的因子化时间注意力，后续时间卷积替换必须作为独立消融，不与本次空间路由结果混报。
 
+当前预训练目标新增一个独立的 Relation-only 版本：只执行 clean history -> TGGE -> Latent48 -> OffsetDecay/SymNorm future-relation loss，不构造 masked view 或 reconstruction head。它用于验证 future relation 是否直接足以塑造检索 key；原联合目标保留为对照，不覆盖旧 checkpoint。Relation-only 的完整协议见 TGGE v2 方案文档。
+
 ## 4. SymNorm future-relation 预训练
 
 ### 4.1 OffsetDecay 关系对象

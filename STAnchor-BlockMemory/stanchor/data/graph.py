@@ -74,6 +74,37 @@ class GraphData:
         prior.fill_diagonal_(0.0)
         return prior
 
+    def mixed_range_candidate_indices(
+        self,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return padded first-order and remote source indices once per graph.
+
+        Each index tensor has shape ``[N, N-1]``.  Valid entries are sorted
+        source ids and padding is marked by the corresponding boolean mask.
+        """
+        device = self.edge_index.device
+        direct = torch.zeros(
+            (self.num_nodes, self.num_nodes), dtype=torch.bool, device=device
+        )
+        target, source = self.edge_index
+        direct[target, source] = True
+        direct.fill_diagonal_(False)
+        remote = ~direct
+        remote.fill_diagonal_(False)
+        source_ids = torch.arange(self.num_nodes, device=device).expand(
+            self.num_nodes, self.num_nodes
+        )
+
+        def pack(mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+            padded = source_ids.masked_fill(~mask, self.num_nodes)
+            padded = padded.sort(dim=1).values[:, : self.num_nodes - 1]
+            valid = padded != self.num_nodes
+            return padded.clamp_max(self.num_nodes - 1), valid
+
+        local_ids, local_valid = pack(direct)
+        remote_ids, remote_valid = pack(remote)
+        return local_ids, local_valid, remote_ids, remote_valid
+
 
 def _loads_pickle(payload: bytes):
     try:
