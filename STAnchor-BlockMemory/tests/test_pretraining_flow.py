@@ -157,6 +157,59 @@ class PretrainingFlowTest(unittest.TestCase):
         )
         self.assertFalse(any(parameter.grad is not None for parameter in self.model.reconstruction_head.parameters()))
 
+    def test_single_view_masked_relation_uses_one_encoder_forward(self) -> None:
+        calls: list[int] = []
+        hook = self.model.encoder.register_forward_hook(
+            lambda *_args: calls.append(1)
+        )
+        try:
+            output = self.model.forward_pretrain_single_view(
+                self.x,
+                self.observed,
+                self.weekday,
+                self.slot,
+                self.graph,
+                self.neighbors,
+                mask_task="time",
+            )
+        finally:
+            hook.remove()
+
+        self.assertEqual(calls, [1])
+        self.assertEqual(tuple(output.clean.hidden.shape), (self.batch, 4, self.nodes, 16))
+        self.assertEqual(tuple(output.reconstruction.shape), tuple(self.x.shape))
+        losses = compute_pretraining_loss(
+            output=output,
+            future_model=self.y,
+            observed_context=self.observed,
+            observed_future=torch.ones_like(self.y, dtype=torch.bool),
+            context_start=self.context_start,
+            future_end=self.future_end,
+            retrieval_weight=1.0,
+            retrieval_temperature=0.1,
+            positive_quantile=0.2,
+            context_quantile=0.3,
+            negative_quantile=0.7,
+            hard_negative_weight=2.0,
+            retrieval_loss_mode="relation",
+            relation_teacher_temperature=0.1,
+            relation_student_temperature=0.1,
+            forecast_context=self.x,
+            forecast_context_observed=self.observed,
+            relation_teacher_mode="offset_decay",
+            relation_distance_normalization="anchor_mean",
+            reconstruction_weight=0.1,
+        )
+        self.assertTrue(bool(torch.isfinite(losses.total)))
+        self.assertGreater(losses.reconstruction_positions, 0)
+        losses.total.backward()
+        self.assertTrue(
+            any(
+                parameter.grad is not None and float(parameter.grad.abs().sum()) > 0.0
+                for parameter in self.model.encoder.parameters()
+            )
+        )
+
     def test_reconstruction_weight_controls_joint_total(self) -> None:
         output = self.model.forward_pretrain(
             self.x,

@@ -105,6 +105,41 @@ class GraphData:
         remote_ids, remote_valid = pack(remote)
         return local_ids, local_valid, remote_ids, remote_valid
 
+    def higher_order_candidate_indices(
+        self,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return direct and non-direct candidates restricted to 2/3-hop support.
+
+        The local tensors are retained for the shared route-selection contract;
+        a route with ``route_local_quota=0`` ignores them.  If a node has too
+        few positive 2/3-hop paths, the remaining non-direct nodes are used as
+        a deterministic fallback so fixed-size top-k routing remains valid.
+        """
+        device = self.edge_index.device
+        direct = self.dense_neighbors(include_self=False).to(device)
+        diffusion = self.random_walk_diffusion_prior()
+        higher = (diffusion > 0.0) & ~direct
+        higher.fill_diagonal_(False)
+        remote = (~direct).clone()
+        remote.fill_diagonal_(False)
+        higher_count = higher.sum(dim=1)
+        remote_count = remote.sum(dim=1)
+        fallback = higher_count == 0
+        remote = torch.where(fallback[:, None], remote, higher)
+        source_ids = torch.arange(self.num_nodes, device=device).expand(
+            self.num_nodes, self.num_nodes
+        )
+
+        def pack(mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+            padded = source_ids.masked_fill(~mask, self.num_nodes)
+            padded = padded.sort(dim=1).values[:, : self.num_nodes - 1]
+            valid = padded != self.num_nodes
+            return padded.clamp_max(self.num_nodes - 1), valid
+
+        local_ids, local_valid = pack(direct)
+        remote_ids, remote_valid = pack(remote)
+        return local_ids, local_valid, remote_ids, remote_valid
+
 
 def _loads_pickle(payload: bytes):
     try:

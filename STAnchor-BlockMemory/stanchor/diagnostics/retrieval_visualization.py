@@ -9,7 +9,7 @@ from typing import Any, Sequence
 
 import numpy as np
 import torch
-from scipy.stats import spearmanr
+from scipy.stats import rankdata, spearmanr
 from torch.utils.data import DataLoader, Dataset, default_collate
 
 from stanchor.bank.storage import MemoryBank
@@ -31,12 +31,14 @@ from stanchor.retrieval.strategies import (
 from stanchor.utils import resolve_device, save_json
 
 
-SUPPORTED_VERSIONS = {"e2", "e3", "e5a"}
+SUPPORTED_VERSIONS = {"e2", "e3", "e5a", "tgge_joint"}
 SUPPORTED_CANDIDATE_PROTOCOLS = {
     "exact_calendar",
     "relaxed_calendar",
     "broad_causal",
+    "pretrain_broad_causal",
 }
+OFFSET_ALIGNED_VERSIONS = {"e5a", "tgge_joint"}
 
 
 def validate_aligned_bank_axes(
@@ -356,6 +358,139 @@ def future_neighbor_recall_at_k(
     return torch.where(eligible, recall, torch.zeros_like(recall)), eligible
 
 
+def anchor_wise_ranking_metrics(
+    key_distance: np.ndarray,
+    teacher_distance: np.ndarray,
+    valid: np.ndarray,
+    ndcg_k: int = 5,
+    teacher_temperature: float = 0.1,
+) -> dict[str, Any]:
+    """Evaluate local candidate orderings independently for every anchor.
+
+    ``key_distance``, ``teacher_distance``, and ``valid`` are ``[B, N, R]``.
+    An anchor is a fixed ``(query, node)``; its candidate count can vary through
+    padding.  Anchors with fewer than two finite candidates are excluded from
+    all ranking metrics so that one-candidate pools do not create trivial wins.
+    Kendall's statistic uses only strict candidate pairs, excluding ties from
+    the denominator.  The returned ``*_values`` arrays are intended for plots
+    and uncertainty summaries; scalar fields are JSON-safe after conversion.
+    """
+    key = np.asarray(key_distance, dtype=np.float64)
+    teacher = np.asarray(teacher_distance, dtype=np.float64)
+    mask = np.asarray(valid, dtype=bool)
+    if key.ndim != 3 or teacher.shape != key.shape or mask.shape != key.shape:
+        raise ValueError("ranking distances and valid mask must be [B, N, R] and aligned")
+    if ndcg_k <= 0:
+        raise ValueError("ndcg_k must be positive")
+    if teacher_temperature <= 0:
+        raise ValueError("teacher_temperature must be positive")
+
+    spearman_values: list[float] = []
+    kendall_values: list[float] = []
+    recall_at_1_values: list[float] = []
+    ndcg_values: list[float] = []
+    recall_at_5_values: list[float] = []
+    candidate_counts: list[int] = []
+
+    def _kendall_strict(left: np.ndarray, right: np.ndarray) -> float:
+        concordant = 0
+        discordant = 0
+        for left_index in range(left.size - 1):
+            left_delta = left[left_index] - left[left_index + 1 :]
+            right_delta = right[left_index] - right[left_index + 1 :]
+            strict = (left_delta != 0.0) & (right_delta != 0.0)
+            if not np.any(strict):
+                continue
+            signs_match = np.sign(left_delta[strict]) == np.sign(right_delta[strict])
+            concordant += int(signs_match.sum())
+            discordant += int((~signs_match).sum())
+        denominator = concordant + discordant
+        return 0.0 if denominator == 0 else (concordant - discordant) / denominator
+
+    def _ndcg(left: np.ndarray, right: np.ndarray) -> float:
+        cutoff = min(ndcg_k, left.size)
+        relevance = np.exp(-right / teacher_temperature)
+        discounts = 1.0 / np.log2(np.arange(2, cutoff + 2, dtype=np.float64))
+        key_order = np.argsort(left, kind="stable")[:cutoff]
+        ideal_order = np.argsort(right, kind="stable")[:cutoff]
+        dcg = float(np.sum((2.0**relevance[key_order] - 1.0) * discounts))
+        ideal = float(np.sum((2.0**relevance[ideal_order] - 1.0) * discounts))
+        return 0.0 if ideal <= 0.0 else dcg / ideal
+
+    for batch_index in range(key.shape[0]):
+        for node_index in range(key.shape[1]):
+            anchor_mask = mask[batch_index, node_index]
+            anchor_mask &= np.isfinite(key[batch_index, node_index])
+            anchor_mask &= np.isfinite(teacher[batch_index, node_index])
+            candidate_key = key[batch_index, node_index][anchor_mask]
+            candidate_teacher = teacher[batch_index, node_index][anchor_mask]
+            candidate_count = int(candidate_key.size)
+            if candidate_count < 2:
+                continue
+            candidate_counts.append(candidate_count)
+
+            key_ranks = rankdata(candidate_key, method="average")
+            teacher_ranks = rankdata(candidate_teacher, method="average")
+            if np.ptp(key_ranks) == 0.0 or np.ptp(teacher_ranks) == 0.0:
+                spearman = 0.0
+            else:
+                spearman = float(np.corrcoef(key_ranks, teacher_ranks)[0, 1])
+            spearman_values.append(spearman)
+            kendall_values.append(_kendall_strict(candidate_key, candidate_teacher))
+
+            key_top1 = int(np.argsort(candidate_key, kind="stable")[0])
+            teacher_top1 = int(np.argsort(candidate_teacher, kind="stable")[0])
+            recall_at_1_values.append(float(key_top1 == teacher_top1))
+            ndcg_values.append(_ndcg(candidate_key, candidate_teacher))
+
+            if candidate_count > ndcg_k:
+                top_k = ndcg_k
+                key_top = set(np.argsort(candidate_key, kind="stable")[:top_k].tolist())
+                teacher_top = set(np.argsort(candidate_teacher, kind="stable")[:top_k].tolist())
+                recall_at_5_values.append(len(key_top & teacher_top) / float(top_k))
+
+    def _mean(values: list[float]) -> float:
+        return float(np.mean(values)) if values else 0.0
+
+    def _std(values: list[float]) -> float:
+        return float(np.std(values)) if values else 0.0
+
+    counts = np.asarray(candidate_counts, dtype=np.float64)
+    return {
+        "spearman_mean": _mean(spearman_values),
+        "spearman_std": _std(spearman_values),
+        "spearman_eligible_anchors": len(spearman_values),
+        "kendall_mean": _mean(kendall_values),
+        "kendall_std": _std(kendall_values),
+        "kendall_eligible_anchors": len(kendall_values),
+        "recall_at_1_mean": _mean(recall_at_1_values),
+        "recall_at_1_std": _std(recall_at_1_values),
+        "recall_at_1_eligible_anchors": len(recall_at_1_values),
+        "ndcg_at_5_mean": _mean(ndcg_values),
+        "ndcg_at_5_std": _std(ndcg_values),
+        "ndcg_at_5_eligible_anchors": len(ndcg_values),
+        "recall_at_5_mean": _mean(recall_at_5_values),
+        "recall_at_5_std": _std(recall_at_5_values),
+        "recall_at_5_eligible_anchors": len(recall_at_5_values),
+        "candidate_count_mean": float(counts.mean()) if counts.size else 0.0,
+        "candidate_count_min": int(counts.min()) if counts.size else 0,
+        "candidate_count_max": int(counts.max()) if counts.size else 0,
+        "random_recall_at_1_expected": (
+            float(np.mean(1.0 / counts)) if counts.size else 0.0
+        ),
+        "random_recall_at_5_expected": (
+            float(np.mean(ndcg_k / counts[counts > ndcg_k]))
+            if np.any(counts > ndcg_k)
+            else 0.0
+        ),
+        "spearman_values": np.asarray(spearman_values, dtype=np.float64),
+        "kendall_values": np.asarray(kendall_values, dtype=np.float64),
+        "recall_at_1_values": np.asarray(recall_at_1_values, dtype=np.float64),
+        "ndcg_at_5_values": np.asarray(ndcg_values, dtype=np.float64),
+        "recall_at_5_values": np.asarray(recall_at_5_values, dtype=np.float64),
+    }
+
+
 def alignment_statistics(
     key_distance: np.ndarray,
     future_distance: np.ndarray,
@@ -484,6 +619,8 @@ def build_diagnostic_event_candidates(
         raise ValueError(
             f"candidate protocol must be one of {sorted(SUPPORTED_CANDIDATE_PROTOCOLS)}"
         )
+    if protocol == "pretrain_broad_causal":
+        protocol = "broad_causal"
     if max_candidates <= 0:
         raise ValueError("max_candidates must be positive")
     if weekday.ndim != 1 or slot.shape != weekday.shape or context_start.shape != weekday.shape:
@@ -611,6 +748,43 @@ def _array_summary(values: Sequence[float] | np.ndarray) -> dict[str, float | in
     }
 
 
+def _ranking_summary(metrics: dict[str, Any]) -> dict[str, Any]:
+    """Drop NumPy per-anchor arrays before writing ranking metrics to JSON."""
+    return {
+        key: value
+        for key, value in metrics.items()
+        if not isinstance(value, np.ndarray)
+    }
+
+
+def _write_ranking_csv(result: dict[str, Any], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fields = ("selector", "metric", "mean", "std", "eligible_anchors")
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for selector in ("pretrained", "random"):
+            metrics = result["ranking"][selector]
+            for metric, label in (
+                ("spearman", "spearman_mean"),
+                ("kendall", "kendall_mean"),
+                ("recall_at_1", "recall_at_1_mean"),
+                ("ndcg_at_5", "ndcg_at_5_mean"),
+                ("recall_at_5", "recall_at_5_mean"),
+            ):
+                writer.writerow(
+                    {
+                        "selector": selector,
+                        "metric": metric,
+                        "mean": metrics[label],
+                        "std": metrics.get(label.replace("_mean", "_std"), 0.0),
+                        "eligible_anchors": metrics.get(
+                            label.replace("_mean", "_eligible_anchors"), 0
+                        ),
+                    }
+                )
+
+
 def _physical_node_series(
     values: torch.Tensor,
     node_id: int,
@@ -683,7 +857,7 @@ def _collect_case_payloads(
         )
         pretrained_raw = pretrained_retriever.aggregate(pretrained_candidates)
         random_raw = random_retriever.aggregate(random_candidates)
-        if version == "e5a":
+        if version in OFFSET_ALIGNED_VERSIONS:
             pretrained_deployed = offset_decay_aggregation(
                 pretrained_candidates,
                 batch["x"].to(device),
@@ -789,7 +963,7 @@ def _collect_case_payloads(
                 "random_key_cosine_scores": random_scores,
             }
         )
-        if version == "e5a":
+        if version in OFFSET_ALIGNED_VERSIONS:
             case["pretrained_raw_memory"] = _physical_node_series(
                 pretrained_raw.prediction[batch_index, :, node_id, channel_id],
                 node_id,
@@ -891,6 +1065,10 @@ def run_retrieval_visualization(
     pretrained_key_chunks: list[np.ndarray] = []
     random_key_chunks: list[np.ndarray] = []
     future_distance_chunks: list[np.ndarray] = []
+    pretrained_anchor_key_chunks: list[np.ndarray] = []
+    random_anchor_key_chunks: list[np.ndarray] = []
+    anchor_future_distance_chunks: list[np.ndarray] = []
+    anchor_valid_chunks: list[np.ndarray] = []
     pretrained_recall_chunks: list[np.ndarray] = []
     random_recall_chunks: list[np.ndarray] = []
     candidate_count_chunks: list[np.ndarray] = []
@@ -899,7 +1077,7 @@ def run_retrieval_visualization(
     query_count = 0
     batch_count = 0
     metric_names = ["pretrained_memory", "random_memory"]
-    if version == "e5a":
+    if version in OFFSET_ALIGNED_VERSIONS:
         metric_names.extend(("pretrained_raw_memory", "random_raw_memory"))
     metrics = {
         name: ForecastMetricAccumulator(config.data.horizon) for name in metric_names
@@ -1013,7 +1191,7 @@ def run_retrieval_visualization(
             )
             normalization = (
                 config.pretrain.relation_distance_normalization
-                if version == "e5a"
+                if version in OFFSET_ALIGNED_VERSIONS
                 else "none"
             )
             future_distance, future_valid = teacher_candidate_distances(
@@ -1025,6 +1203,16 @@ def run_retrieval_visualization(
                 normalization,
             )
             alignment_valid = future_valid & pretrained_key_valid & random_key_valid
+            pretrained_anchor_key_chunks.append(
+                pretrained_key_distance.detach().cpu().numpy()
+            )
+            random_anchor_key_chunks.append(
+                random_key_distance.detach().cpu().numpy()
+            )
+            anchor_future_distance_chunks.append(
+                future_distance.detach().cpu().numpy()
+            )
+            anchor_valid_chunks.append(alignment_valid.detach().cpu().numpy())
             pretrained_key_chunks.append(
                 pretrained_key_distance.masked_select(alignment_valid).detach().cpu().numpy()
             )
@@ -1066,7 +1254,7 @@ def run_retrieval_visualization(
             )
             pretrained_raw = pretrained_retriever.aggregate(pretrained_candidates)
             random_raw = random_retriever.aggregate(random_candidates)
-            if version == "e5a":
+            if version in OFFSET_ALIGNED_VERSIONS:
                 pretrained_deployed = offset_decay_aggregation(
                     pretrained_candidates,
                     batch["x"].to(device),
@@ -1142,7 +1330,7 @@ def run_retrieval_visualization(
                         ),
                     }
                 )
-            if version == "e5a":
+            if version in OFFSET_ALIGNED_VERSIONS:
                 pretrained_raw_anchor_mae, pretrained_raw_anchor_valid = memory_mae_by_anchor(
                     physical_predictions["pretrained_raw_memory"],
                     target_physical,
@@ -1191,6 +1379,24 @@ def run_retrieval_visualization(
         pretrained_keys = np.concatenate(pretrained_key_chunks)
         random_keys = np.concatenate(random_key_chunks)
         future_distances = np.concatenate(future_distance_chunks)
+        anchor_key_pretrained = np.concatenate(pretrained_anchor_key_chunks, axis=0)
+        anchor_key_random = np.concatenate(random_anchor_key_chunks, axis=0)
+        anchor_future = np.concatenate(anchor_future_distance_chunks, axis=0)
+        anchor_valid = np.concatenate(anchor_valid_chunks, axis=0)
+        pretrained_ranking = anchor_wise_ranking_metrics(
+            anchor_key_pretrained,
+            anchor_future,
+            anchor_valid,
+            ndcg_k=5,
+            teacher_temperature=config.pretrain.relation_teacher_temperature,
+        )
+        random_ranking = anchor_wise_ranking_metrics(
+            anchor_key_random,
+            anchor_future,
+            anchor_valid,
+            ndcg_k=5,
+            teacher_temperature=config.pretrain.relation_teacher_temperature,
+        )
         shared_valid = np.ones_like(future_distances, dtype=bool)
         pretrained_alignment = alignment_statistics(
             pretrained_keys, future_distances, shared_valid
@@ -1210,6 +1416,15 @@ def run_retrieval_visualization(
         random_alignment["recall_at_5_eligible_anchors"] = int(
             random_recall_values.size
         )
+        ranking_payload = {
+            "pretrained": _ranking_summary(pretrained_ranking),
+            "random": _ranking_summary(random_ranking),
+            "delta_pretrained_minus_random": {
+                metric: pretrained_ranking[f"{metric}_mean"]
+                - random_ranking[f"{metric}_mean"]
+                for metric in ("spearman", "kendall", "recall_at_1", "ndcg_at_5", "recall_at_5")
+            },
+        }
         selected = select_quantile_cases(case_records)
         cases = _collect_case_payloads(
             selected,
@@ -1228,7 +1443,7 @@ def run_retrieval_visualization(
             candidate_protocol,
         )
         payload_selected: dict[str, Any] | None = None
-        if version == "e5a":
+        if version in OFFSET_ALIGNED_VERSIONS:
             payload_selected = select_quantile_cases(payload_case_records)
             payload_selected["selection_rule"]["score"] = (
                 "rawfuture_memory_mae_minus_offset_decay_memory_mae"
@@ -1276,13 +1491,14 @@ def run_retrieval_visualization(
             "bank_alignment": bank_alignment,
             "candidate_protocol": {
                 "name": candidate_protocol,
-                "same_weekday": candidate_protocol != "broad_causal",
+                "same_weekday": candidate_protocol
+                not in {"broad_causal", "pretrain_broad_causal"},
                 "slot_radius": 1 if candidate_protocol == "relaxed_calendar" else 0,
                 "strict_causal": True,
                 "shared_pretrained_random_event_axis": True,
                 "broad_sampling": (
                     "chronological_quantiles_up_to_event_top_r"
-                    if candidate_protocol == "broad_causal"
+                    if candidate_protocol in {"broad_causal", "pretrain_broad_causal"}
                     else "all_legal_events"
                 ),
             },
@@ -1304,7 +1520,7 @@ def run_retrieval_visualization(
                     if version in {"e2", "e3"}
                     else config.data.context_length
                 ),
-                "anchor_mean_distance_normalization": version == "e5a",
+                "anchor_mean_distance_normalization": version in OFFSET_ALIGNED_VERSIONS,
             },
             "future_information_boundary": future_information_boundary(),
             "alignment": {
@@ -1319,6 +1535,7 @@ def run_retrieval_visualization(
                     - random_alignment["future_neighbor_recall_at_5"],
                 },
             },
+            "ranking": ranking_payload,
             "memory_metrics": {name: accumulator.compute() for name, accumulator in metrics.items()},
             "case_selection": selected,
             "offset_decay_payload_case_selection": payload_selected,
@@ -1341,14 +1558,17 @@ def run_retrieval_visualization(
     result_path = output_path / "metrics.json"
     cases_path = output_path / "cases.json"
     bins_path = output_path / "alignment_bins.csv"
+    ranking_path = output_path / "ranking_metrics.csv"
     save_json(result_path, result)
     save_json(cases_path, cases)
     _write_alignment_csv(result, bins_path)
+    _write_ranking_csv(result, ranking_path)
     figure_paths = render_visualization_figures(result, cases, output_path)
     result["outputs"] = {
         "metrics": str(result_path),
         "cases": str(cases_path),
         "alignment_bins": str(bins_path),
+        "ranking_metrics": str(ranking_path),
         "figures": [str(path) for path in figure_paths],
     }
     save_json(result_path, result)
@@ -1507,6 +1727,100 @@ def _plot_offset_decay_cases(cases: dict[str, Any], output_path: Path) -> None:
     plt.close(figure)
 
 
+def _plot_top5_error_profiles(cases: dict[str, Any], output_path: Path) -> None:
+    """Show candidate error by retrieved rank so close trajectories remain distinguishable."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    case_names = ("strong_win", "representative", "failure")
+    figure, axes = plt.subplots(3, 1, figsize=(8.5, 9.0), constrained_layout=True)
+    colors = {"Pretrained": "#C43C39", "Random": "#4C78A8"}
+    for axis, case_name in zip(axes, case_names):
+        case = cases[case_name]
+        truth = np.asarray(case["query_future"], dtype=np.float64)
+        profiles: dict[str, np.ndarray] = {}
+        for label in ("Pretrained", "Random"):
+            prefix = label.lower()
+            candidates = np.asarray(case[f"{prefix}_candidate_futures"], dtype=np.float64)
+            profiles[label] = np.mean(np.abs(candidates - truth[None, :]), axis=1)
+            ranks = np.arange(1, profiles[label].size + 1)
+            axis.plot(
+                ranks,
+                profiles[label],
+                marker="o",
+                linewidth=2.0,
+                color=colors[label],
+                label=f"{label} candidate MAE",
+            )
+            memory = np.asarray(case[f"{prefix}_memory"], dtype=np.float64)
+            axis.axhline(
+                np.mean(np.abs(memory - truth)),
+                color=colors[label],
+                linestyle="--",
+                linewidth=1.1,
+                alpha=0.75,
+                label=f"{label} memory MAE",
+            )
+        finite = np.concatenate(tuple(values[np.isfinite(values)] for values in profiles.values()))
+        if finite.size:
+            span = float(finite.max() - finite.min())
+            margin = max(span * 0.15, 1.0e-3)
+            axis.set_ylim(float(finite.min()) - margin, float(finite.max()) + margin)
+        axis.set_title(f"{case_name.replace('_', ' ').title()} | lower is better")
+        axis.set_xlabel("Retrieved candidate rank")
+        axis.set_ylabel("Future MAE")
+        axis.grid(axis="y", alpha=0.25)
+        axis.legend(frameon=False, fontsize=8, ncol=2)
+    figure.suptitle("Top-5 Candidate Error Profiles", fontsize=14)
+    figure.savefig(output_path, dpi=220, facecolor="white")
+    plt.close(figure)
+
+
+def _plot_ranking_metrics(result: dict[str, Any], output_path: Path) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    ranking = result["ranking"]
+    labels = ["Anchor Spearman", "Anchor Kendall", "Recall@1", "NDCG@5", "Recall@5\nsecondary"]
+    keys = ("spearman_mean", "kendall_mean", "recall_at_1_mean", "ndcg_at_5_mean", "recall_at_5_mean")
+    pretrained = [float(ranking["pretrained"][key]) for key in keys]
+    random = [float(ranking["random"][key]) for key in keys]
+    positions = np.arange(len(labels), dtype=np.float64)
+    width = 0.34
+    figure, axis = plt.subplots(figsize=(11.5, 4.8), constrained_layout=True)
+    bars_pretrained = axis.bar(
+        positions - width / 2, pretrained, width, color="#C43C39", label="Joint v2"
+    )
+    bars_random = axis.bar(
+        positions + width / 2, random, width, color="#4C78A8", label="Matched random"
+    )
+    axis.axhline(0.0, color="#333333", linewidth=0.8)
+    axis.set_xticks(positions, labels)
+    axis.set_ylabel("Anchor-wise score")
+    axis.set_title(
+        f"Local candidate ordering | protocol={result['candidate_protocol']['name']}"
+    )
+    axis.grid(axis="y", alpha=0.25)
+    axis.legend(frameon=False)
+    axis.bar_label(bars_pretrained, fmt="%.3f", padding=3, fontsize=8)
+    axis.bar_label(bars_random, fmt="%.3f", padding=3, fontsize=8)
+    expected = float(ranking["pretrained"].get("random_recall_at_1_expected", 0.0))
+    if expected > 0.0:
+        axis.axhline(
+            expected,
+            color="#777777",
+            linestyle="--",
+            linewidth=1.0,
+            label=f"Random Recall@1 expectation={expected:.3f}",
+        )
+    figure.savefig(output_path, dpi=220, facecolor="white")
+    plt.close(figure)
+
+
 def render_visualization_figures(
     result: dict[str, Any],
     cases: dict[str, Any],
@@ -1518,10 +1832,16 @@ def render_visualization_figures(
     paths = [
         output_dir / "key_future_alignment.png",
         output_dir / "deterministic_top5_cases.png",
+        output_dir / "top5_error_profiles.png",
     ]
     _plot_alignment(result, paths[0])
     _plot_cases(cases, paths[1])
-    if str(result["version"]).lower() == "e5a":
+    _plot_top5_error_profiles(cases, paths[2])
+    if "ranking" in result:
+        ranking_path = output_dir / "ranking_metrics.png"
+        _plot_ranking_metrics(result, ranking_path)
+        paths.append(ranking_path)
+    if str(result["version"]).lower() in OFFSET_ALIGNED_VERSIONS:
         offset_path = output_dir / "offset_decay_payload_cases.png"
         _plot_offset_decay_cases(cases, offset_path)
         paths.append(offset_path)

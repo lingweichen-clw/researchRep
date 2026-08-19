@@ -489,7 +489,11 @@ class FactorizedSTEncoder(nn.Module):
             else None
         )
         candidate_indices = (
-            graph.mixed_range_candidate_indices()
+            (
+                graph.higher_order_candidate_indices()
+                if self.blocks[0].route_attention.route_local_quota == 0
+                else graph.mixed_range_candidate_indices()
+            )
             if self.blocks[0].route_attention is not None
             else None
         )

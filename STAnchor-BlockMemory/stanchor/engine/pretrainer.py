@@ -199,6 +199,43 @@ def run_pretrain_epoch(
                     future_increment_weight=config.pretrain.future_increment_weight,
                 )
                 output = None
+            elif config.pretrain.objective == "masked_relation_single_view":
+                output = model.forward_pretrain_single_view(
+                    x=retrieval_x,
+                    observed=retrieval_observed,
+                    weekday=retrieval_weekday,
+                    slot=retrieval_slot,
+                    graph=graph,
+                    neighbors=neighbors,
+                    mask_task=mask_task,
+                )
+                losses = compute_pretraining_loss(
+                    output=output,
+                    future_model=future_model,
+                    observed_context=retrieval_observed,
+                    observed_future=observed_future,
+                    context_start=context_start,
+                    future_end=future_end,
+                    retrieval_weight=config.pretrain.retrieval_weight,
+                    retrieval_temperature=config.pretrain.retrieval_temperature,
+                    positive_quantile=config.pretrain.positive_quantile,
+                    context_quantile=config.pretrain.context_quantile,
+                    negative_quantile=config.pretrain.negative_quantile,
+                    hard_negative_weight=config.pretrain.hard_negative_weight,
+                    retrieval_loss_mode=config.pretrain.retrieval_loss_mode,
+                    relation_teacher_temperature=config.pretrain.relation_teacher_temperature,
+                    relation_student_temperature=config.pretrain.relation_student_temperature,
+                    forecast_context=forecast_context,
+                    forecast_context_observed=forecast_context_observed,
+                    relation_teacher_mode=config.pretrain.relation_teacher_mode,
+                    relation_distance_normalization=(
+                        config.pretrain.relation_distance_normalization
+                    ),
+                    future_increment_weight=config.pretrain.future_increment_weight,
+                    profile_loss_weight=config.pretrain.profile_loss_weight,
+                    profile_scale_floor=config.pretrain.profile_scale_floor,
+                    reconstruction_weight=config.pretrain.reconstruction_weight,
+                )
             else:
                 output = model.forward_pretrain(
                     x=retrieval_x,

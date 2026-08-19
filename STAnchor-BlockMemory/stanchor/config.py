@@ -215,8 +215,15 @@ class ExperimentConfig:
             raise ValueError("time_mask_block_size must be divisible by patch_size")
         if self.model.hidden_dim % self.model.num_heads != 0:
             raise ValueError("hidden_dim must be divisible by num_heads")
-        if self.pretrain.objective not in {"joint", "relation_only"}:
-            raise ValueError("pretrain objective must be joint or relation_only")
+        if self.pretrain.objective not in {
+            "joint",
+            "relation_only",
+            "masked_relation_single_view",
+        }:
+            raise ValueError(
+                "pretrain objective must be joint, relation_only, or "
+                "masked_relation_single_view"
+            )
         if self.pretrain.reconstruction_weight < 0.0:
             raise ValueError("reconstruction_weight must be non-negative")
         if self.pretrain.validation_interval <= 0:
@@ -227,6 +234,13 @@ class ExperimentConfig:
         ):
             raise ValueError(
                 "relation_only objective requires reconstruction_weight=0"
+            )
+        if (
+            self.pretrain.objective == "masked_relation_single_view"
+            and self.pretrain.reconstruction_weight <= 0.0
+        ):
+            raise ValueError(
+                "masked_relation_single_view requires reconstruction_weight>0"
             )
         if self.model.route_dim <= 0 or self.model.route_dim > 2 * self.model.hidden_dim:
             raise ValueError("route_dim must be positive and no larger than 2 * hidden_dim")

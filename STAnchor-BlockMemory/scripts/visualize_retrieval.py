@@ -16,9 +16,11 @@ from stanchor.diagnostics.retrieval_visualization import run_retrieval_visualiza
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Visualize teacher-aligned historical retrieval for E2, E3, or E5A."
+        description="Visualize teacher-aligned historical retrieval for E2, E3, E5A, or TGGE Joint v2."
     )
-    parser.add_argument("--version", required=True, choices=("e2", "e3", "e5a"))
+    parser.add_argument(
+        "--version", required=True, choices=("e2", "e3", "e5a", "tgge_joint")
+    )
     parser.add_argument("--config", required=True)
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--bank", required=True)
@@ -28,7 +30,12 @@ def main() -> None:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument(
         "--candidate-protocol",
-        choices=("exact_calendar", "relaxed_calendar", "broad_causal"),
+        choices=(
+            "exact_calendar",
+            "relaxed_calendar",
+            "broad_causal",
+            "pretrain_broad_causal",
+        ),
         default="exact_calendar",
         help=(
             "Validation-only candidate attribution protocol. broad_causal uses "
@@ -42,6 +49,16 @@ def main() -> None:
         help=(
             "Optional diagnostic override for endpoint-level reranking. "
             "Use 0 to attribute retrieval entirely to learned key similarity."
+        ),
+    )
+    parser.add_argument(
+        "--event-top-r",
+        type=int,
+        default=None,
+        help=(
+            "Validation-only candidate-pool width override. Use a larger value "
+            "with broad_causal/pretrain_broad_causal; exact_calendar remains bounded "
+            "by its legal calendar pool."
         ),
     )
     parser.add_argument(
@@ -67,6 +84,14 @@ def main() -> None:
         config = replace(
             config,
             bank=replace(config.bank, level_weight=args.level_weight),
+        )
+        config.validate()
+    if args.event_top_r is not None:
+        if args.event_top_r <= 0:
+            raise ValueError("event-top-r must be positive")
+        config = replace(
+            config,
+            bank=replace(config.bank, event_top_r=args.event_top_r),
         )
         config.validate()
     result = run_retrieval_visualization(

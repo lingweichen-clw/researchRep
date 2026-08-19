@@ -9,6 +9,7 @@ import torch
 
 from stanchor.diagnostics.retrieval_visualization import (
     alignment_statistics,
+    anchor_wise_ranking_metrics,
     build_diagnostic_event_candidates,
     build_teacher_aligned_signature,
     complete_anchor_mask,
@@ -26,6 +27,71 @@ from stanchor.diagnostics.retrieval_visualization import (
 
 
 class RetrievalVisualizationTest(unittest.TestCase):
+    def test_anchor_wise_ranking_metrics_perfect_and_reversed(self) -> None:
+        key_distance = np.asarray([[[0.0, 1.0, 2.0, 3.0, 4.0]]])
+        teacher_distance = np.asarray([[[0.0, 1.0, 2.0, 3.0, 4.0]]])
+        valid = np.ones_like(key_distance, dtype=bool)
+
+        perfect = anchor_wise_ranking_metrics(
+            key_distance,
+            teacher_distance,
+            valid,
+            ndcg_k=5,
+            teacher_temperature=1.0,
+        )
+        self.assertAlmostEqual(perfect["spearman_mean"], 1.0)
+        self.assertAlmostEqual(perfect["kendall_mean"], 1.0)
+        self.assertAlmostEqual(perfect["recall_at_1_mean"], 1.0)
+        self.assertAlmostEqual(perfect["ndcg_at_5_mean"], 1.0)
+
+        reversed_metrics = anchor_wise_ranking_metrics(
+            np.asarray([[[4.0, 3.0, 2.0, 1.0, 0.0]]]),
+            key_distance,
+            valid,
+            ndcg_k=5,
+            teacher_temperature=1.0,
+        )
+        self.assertAlmostEqual(reversed_metrics["spearman_mean"], -1.0)
+        self.assertAlmostEqual(reversed_metrics["kendall_mean"], -1.0)
+        self.assertAlmostEqual(reversed_metrics["recall_at_1_mean"], 0.0)
+        self.assertLess(reversed_metrics["ndcg_at_5_mean"], 1.0)
+
+    def test_anchor_wise_ranking_metrics_excludes_small_and_tied_anchors(self) -> None:
+        key_distance = np.asarray(
+            [
+                [[0.0, 1.0, 2.0, 3.0, 4.0]],
+                [[0.0, 1.0, 0.0, 0.0, 0.0]],
+                [[0.0, 1.0, 2.0, 0.0, 0.0]],
+            ]
+        )
+        teacher_distance = np.asarray(
+            [
+                [[0.0, 1.0, 2.0, 3.0, 4.0]],
+                [[0.0, 1.0, 0.0, 0.0, 0.0]],
+                [[2.0, 1.0, 0.0, 0.0, 0.0]],
+            ]
+        )
+        valid = np.asarray(
+            [
+                [[True, True, True, True, True]],
+                [[True, False, False, False, False]],
+                [[True, True, True, False, False]],
+            ]
+        )
+
+        result = anchor_wise_ranking_metrics(
+            key_distance,
+            teacher_distance,
+            valid,
+            ndcg_k=5,
+            teacher_temperature=1.0,
+        )
+
+        self.assertEqual(result["spearman_eligible_anchors"], 2)
+        self.assertEqual(result["kendall_eligible_anchors"], 2)
+        self.assertEqual(result["recall_at_1_eligible_anchors"], 2)
+        self.assertEqual(result["ndcg_at_5_eligible_anchors"], 2)
+        self.assertAlmostEqual(result["kendall_mean"], 0.0)
     def test_diagnostic_candidate_protocols_are_causal_and_shared(self) -> None:
         class Calendar:
             def lookup(self, weekday: int, slot: int) -> np.ndarray:
@@ -56,10 +122,20 @@ class RetrievalVisualizationTest(unittest.TestCase):
         broad = build_diagnostic_event_candidates(
             Bank(), weekday, slot, context_start, 3, torch.device("cpu"), "broad_causal"
         )
+        pretrain_broad = build_diagnostic_event_candidates(
+            Bank(),
+            weekday,
+            slot,
+            context_start,
+            3,
+            torch.device("cpu"),
+            "pretrain_broad_causal",
+        )
 
         self.assertEqual(exact.event_ids[0, : exact.valid[0].sum()].tolist(), [2])
         self.assertEqual(relaxed.event_ids[0, : relaxed.valid[0].sum()].tolist(), [0, 1, 2, 3])
         self.assertEqual(broad.event_ids[0, : broad.valid[0].sum()].tolist(), [0, 2, 3])
+        self.assertTrue(torch.equal(broad.event_ids, pretrain_broad.event_ids))
         self.assertTrue(torch.equal(relaxed.event_ids, relaxed.event_ids.clone()))
         self.assertTrue((Bank().future_end[broad.event_ids[0, broad.valid[0]].numpy()] < 12).all())
 
@@ -327,7 +403,7 @@ class RetrievalVisualizationTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             paths = render_visualization_figures(result, cases, Path(directory))
 
-            self.assertEqual(len(paths), 3)
+            self.assertEqual(len(paths), 4)
             for path in paths:
                 self.assertTrue(path.exists())
                 self.assertGreater(path.stat().st_size, 1000)
