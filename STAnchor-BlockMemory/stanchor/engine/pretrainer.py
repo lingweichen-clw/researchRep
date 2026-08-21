@@ -45,6 +45,8 @@ class PretrainEpochResult:
     skipped_batches: int
     batches: int
     profile: float = 0.0
+    rank: float = 0.0
+    rank_pairs: int = 0
     adapter_valid_fraction: float = 0.0
     adapter_fusion_gate_mean: float = 0.0
     adapter_spatial_gate_mean: float = 0.0
@@ -119,8 +121,9 @@ def run_pretrain_epoch(
         raise ValueError("progress_interval must be positive")
     training = optimizer is not None
     model.train(training)
-    totals = {"total": 0.0, "reconstruction": 0.0, "retrieval": 0.0, "profile": 0.0}
+    totals = {"total": 0.0, "reconstruction": 0.0, "retrieval": 0.0, "profile": 0.0, "rank": 0.0}
     anchors = positives = hard_negatives = reconstruction_positions = batches = skipped_batches = 0
+    rank_pairs = 0
     relation_candidates = 0
     teacher_support = student_support = 0.0
     support_anchors = 0
@@ -197,6 +200,12 @@ def run_pretrain_epoch(
                         config.pretrain.relation_distance_normalization
                     ),
                     future_increment_weight=config.pretrain.future_increment_weight,
+                    rank_loss_weight=config.pretrain.rank_loss_weight,
+                    rank_positive_count=config.pretrain.rank_positive_count,
+                    rank_negative_count=config.pretrain.rank_negative_count,
+                    rank_future_gap=config.pretrain.rank_future_gap,
+                    rank_margin=config.pretrain.rank_margin,
+                    rank_temperature=config.pretrain.rank_temperature,
                 )
                 output = None
             elif config.pretrain.objective == "masked_relation_single_view":
@@ -232,6 +241,12 @@ def run_pretrain_epoch(
                         config.pretrain.relation_distance_normalization
                     ),
                     future_increment_weight=config.pretrain.future_increment_weight,
+                    rank_loss_weight=config.pretrain.rank_loss_weight,
+                    rank_positive_count=config.pretrain.rank_positive_count,
+                    rank_negative_count=config.pretrain.rank_negative_count,
+                    rank_future_gap=config.pretrain.rank_future_gap,
+                    rank_margin=config.pretrain.rank_margin,
+                    rank_temperature=config.pretrain.rank_temperature,
                     profile_loss_weight=config.pretrain.profile_loss_weight,
                     profile_scale_floor=config.pretrain.profile_scale_floor,
                     reconstruction_weight=config.pretrain.reconstruction_weight,
@@ -269,6 +284,12 @@ def run_pretrain_epoch(
                         config.pretrain.relation_distance_normalization
                     ),
                     future_increment_weight=config.pretrain.future_increment_weight,
+                    rank_loss_weight=config.pretrain.rank_loss_weight,
+                    rank_positive_count=config.pretrain.rank_positive_count,
+                    rank_negative_count=config.pretrain.rank_negative_count,
+                    rank_future_gap=config.pretrain.rank_future_gap,
+                    rank_margin=config.pretrain.rank_margin,
+                    rank_temperature=config.pretrain.rank_temperature,
                     profile_loss_weight=config.pretrain.profile_loss_weight,
                     profile_scale_floor=config.pretrain.profile_scale_floor,
                     reconstruction_weight=config.pretrain.reconstruction_weight,
@@ -286,11 +307,13 @@ def run_pretrain_epoch(
             totals["reconstruction"] += float(losses.reconstruction.detach())
             totals["retrieval"] += float(losses.retrieval.detach())
             totals["profile"] += float((losses.profile if losses.profile is not None else losses.total * 0.0).detach())
+            totals["rank"] += float((losses.rank if losses.rank is not None else losses.total * 0.0).detach())
             anchors += losses.valid_retrieval_anchors
             positives += losses.positive_pairs
             hard_negatives += losses.hard_negative_pairs
             reconstruction_positions += losses.reconstruction_positions
             relation_candidates += losses.relation_candidate_pairs
+            rank_pairs += losses.rank_pairs
             if losses.valid_retrieval_anchors > 0:
                 teacher_support += (
                     losses.teacher_effective_support * losses.valid_retrieval_anchors
@@ -320,6 +343,8 @@ def run_pretrain_epoch(
         teacher_effective_support=teacher_support / max(support_anchors, 1),
         student_effective_support=student_support / max(support_anchors, 1),
         profile=totals["profile"] / batches,
+        rank=totals["rank"] / batches,
+        rank_pairs=rank_pairs,
         adapter_valid_fraction=adapter_totals["valid_fraction"] / max(adapter_batches, 1),
         adapter_fusion_gate_mean=adapter_totals["fusion_gate_mean"] / max(adapter_batches, 1),
         adapter_spatial_gate_mean=adapter_totals["spatial_gate_mean"] / max(adapter_batches, 1),

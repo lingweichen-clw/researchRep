@@ -56,6 +56,12 @@ pretrain:
   relation_teacher_mode: offset_decay
   relation_distance_normalization: symmetric_geometric_mean
   future_increment_weight: 0.0
+  rank_loss_weight: 0.05
+  rank_positive_count: 2
+  rank_negative_count: 2
+  rank_future_gap: 0.05
+  rank_margin: 0.05
+  rank_temperature: 0.1
   profile_loss_weight: 0.0
   profile_scale_floor: 0.1
   hard_negative_weight: 2.0

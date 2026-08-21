@@ -97,6 +97,12 @@ class PretrainConfig:
     relation_teacher_mode: str = "context_normalized"
     relation_distance_normalization: str = "none"
     future_increment_weight: float = 0.0
+    rank_loss_weight: float = 0.0
+    rank_positive_count: int = 2
+    rank_negative_count: int = 2
+    rank_future_gap: float = 0.05
+    rank_margin: float = 0.05
+    rank_temperature: float = 0.1
     profile_loss_weight: float = 0.0
     profile_scale_floor: float = 0.1
     hard_negative_weight: float = 2.0
@@ -345,6 +351,25 @@ class ExperimentConfig:
         increment_weight = self.pretrain.future_increment_weight
         if not 0.0 <= increment_weight <= 1.0:
             raise ValueError("future_increment_weight must be in [0, 1]")
+        if self.pretrain.rank_loss_weight < 0.0:
+            raise ValueError("rank_loss_weight must be non-negative")
+        if self.pretrain.rank_positive_count <= 0:
+            raise ValueError("rank_positive_count must be positive")
+        if self.pretrain.rank_negative_count <= 0:
+            raise ValueError("rank_negative_count must be positive")
+        if self.pretrain.rank_future_gap < 0.0:
+            raise ValueError("rank_future_gap must be non-negative")
+        if self.pretrain.rank_margin < 0.0:
+            raise ValueError("rank_margin must be non-negative")
+        if self.pretrain.rank_temperature <= 0.0:
+            raise ValueError("rank_temperature must be positive")
+        if (
+            self.pretrain.rank_loss_weight > 0.0
+            and self.pretrain.retrieval_loss_mode != "relation"
+        ):
+            raise ValueError(
+                "rank_loss_weight requires retrieval_loss_mode=relation"
+            )
         if teacher_mode == "context_normalized":
             if distance_normalization != "none" or increment_weight != 0.0:
                 raise ValueError(

@@ -12,6 +12,7 @@ from stanchor.losses.pretraining import (
     build_future_relation_targets,
     build_offset_decay_signature,
     future_relation_retrieval_loss,
+    hard_mirage_ranking_loss,
 )
 
 
@@ -59,6 +60,16 @@ class FutureRelationLossTest(unittest.TestCase):
                     relation_teacher_mode="offset_decay",
                 ),
             ).validate()
+
+        with self.assertRaisesRegex(ValueError, "rank_positive_count"):
+            ExperimentConfig(
+                data=DataConfig(raw_path="data.h5", adjacency_path="adj.pkl"),
+                pretrain=PretrainConfig(
+                    retrieval_loss_mode="relation",
+                    rank_loss_weight=0.05,
+                    rank_positive_count=0,
+                ),
+            ).validate()
         with self.assertRaisesRegex(ValueError, "0.5"):
             ExperimentConfig(
                 data=DataConfig(raw_path="data.h5", adjacency_path="adj.pkl"),
@@ -70,6 +81,69 @@ class FutureRelationLossTest(unittest.TestCase):
                 ),
             ).validate()
 
+    def test_hard_mirage_rank_prefers_correct_candidate_order(self) -> None:
+        distance = torch.tensor(
+            [
+                [[0.0], [0.1], [0.2], [1.0]],
+                [[0.1], [0.0], [0.3], [1.1]],
+                [[0.2], [0.3], [0.0], [1.2]],
+                [[1.0], [1.1], [1.2], [0.0]],
+            ]
+        )
+        candidate_mask = ~torch.eye(4, dtype=torch.bool).unsqueeze(-1)
+        correct_similarity = -distance
+        wrong_similarity = correct_similarity.clone()
+        wrong_similarity[0, 3, 0] = 1.0
+
+        correct = hard_mirage_ranking_loss(
+            student_similarity=correct_similarity,
+            future_distance=distance,
+            candidate_mask=candidate_mask,
+            positive_count=2,
+            negative_count=2,
+            future_gap=0.05,
+            margin=0.05,
+            temperature=0.1,
+        )
+        wrong = hard_mirage_ranking_loss(
+            student_similarity=wrong_similarity,
+            future_distance=distance,
+            candidate_mask=candidate_mask,
+            positive_count=2,
+            negative_count=2,
+            future_gap=0.05,
+            margin=0.05,
+            temperature=0.1,
+        )
+
+        self.assertGreater(correct.valid_pairs, 0)
+        self.assertEqual(correct.valid_pairs, wrong.valid_pairs)
+        self.assertLess(float(correct.loss), float(wrong.loss))
+
+    def test_relation_loss_reports_rank_loss_and_finite_gradient(self) -> None:
+        keys = torch.randn(self.batch, 1, 3, requires_grad=True)
+        result = future_relation_retrieval_loss(
+            keys,
+            self.future,
+            self.statistics,
+            self.future_observed,
+            self.context_start,
+            self.future_end,
+            teacher_temperature=0.1,
+            student_temperature=0.1,
+            rank_loss_weight=0.05,
+            rank_positive_count=2,
+            rank_negative_count=2,
+            rank_future_gap=0.05,
+            rank_margin=0.05,
+            rank_temperature=0.1,
+        )
+
+        self.assertGreater(result.rank_pairs, 0)
+        self.assertTrue(bool(torch.isfinite(result.rank_loss)))
+        result.loss.backward()
+        self.assertIsNotNone(keys.grad)
+        self.assertTrue(bool(torch.isfinite(keys.grad).all()))
     def test_offset_decay_signature_uses_endpoint_and_linear_horizon_decay(self) -> None:
         forecast_context = torch.tensor([[[[1.0]], [[2.0]], [[3.0]]]])
         context_observed = torch.ones_like(forecast_context, dtype=torch.bool)

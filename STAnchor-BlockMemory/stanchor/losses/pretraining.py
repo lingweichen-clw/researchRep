@@ -22,6 +22,14 @@ class RetrievalLossOutput:
     candidate_pairs: int = 0
     teacher_effective_support: float = 0.0
     student_effective_support: float = 0.0
+    rank_loss: torch.Tensor | None = None
+    rank_pairs: int = 0
+
+
+@dataclass(frozen=True)
+class RankingLossOutput:
+    loss: torch.Tensor
+    valid_pairs: int
 
 
 @dataclass(frozen=True)
@@ -47,6 +55,8 @@ class PretrainingLoss:
     teacher_effective_support: float = 0.0
     student_effective_support: float = 0.0
     profile: torch.Tensor | None = None
+    rank: torch.Tensor | None = None
+    rank_pairs: int = 0
 
 
 def masked_reconstruction_loss(
@@ -419,6 +429,65 @@ def build_future_relation_targets(
     )
 
 
+def hard_mirage_ranking_loss(
+    student_similarity: torch.Tensor,
+    future_distance: torch.Tensor,
+    candidate_mask: torch.Tensor,
+    positive_count: int = 2,
+    negative_count: int = 2,
+    future_gap: float = 0.05,
+    margin: float = 0.05,
+    temperature: float = 0.1,
+) -> RankingLossOutput:
+    """Correct local key-order inversions using the existing future teacher."""
+    if student_similarity.shape != future_distance.shape:
+        raise ValueError("student_similarity and future_distance must align")
+    if candidate_mask.shape != future_distance.shape or future_distance.ndim != 3:
+        raise ValueError("ranking tensors must be [B, B, N]")
+    if positive_count <= 0 or negative_count <= 0:
+        raise ValueError("positive_count and negative_count must be positive")
+    if future_gap < 0.0 or margin < 0.0:
+        raise ValueError("future_gap and margin must be non-negative")
+    if temperature <= 0.0:
+        raise ValueError("temperature must be positive")
+
+    capacity = future_distance.shape[1]
+    positive_k = min(positive_count, capacity)
+    negative_k = min(negative_count, capacity)
+    valid = candidate_mask.bool() & torch.isfinite(future_distance)
+    positive_distance, positive_index = torch.topk(
+        future_distance.masked_fill(~valid, torch.inf),
+        k=positive_k,
+        dim=1,
+        largest=False,
+    )
+    positive_valid = torch.isfinite(positive_distance)
+    positive_score = torch.gather(student_similarity, 1, positive_index)
+    positive_cutoff = positive_distance.masked_fill(
+        ~positive_valid, -torch.inf
+    ).amax(dim=1, keepdim=True)
+    negative_mask = valid & (future_distance >= positive_cutoff + future_gap)
+    selected_negative_score, negative_index = torch.topk(
+        student_similarity.masked_fill(~negative_mask, -torch.inf),
+        k=negative_k,
+        dim=1,
+        largest=True,
+    )
+    negative_valid = torch.isfinite(selected_negative_score)
+    negative_score = torch.gather(student_similarity, 1, negative_index)
+
+    pair_valid = positive_valid.unsqueeze(2) & negative_valid.unsqueeze(1)
+    score_gap = positive_score.unsqueeze(2) - negative_score.unsqueeze(1)
+    pair_loss = functional.softplus((margin - score_gap) / temperature)
+    if bool(pair_valid.any()):
+        loss = pair_loss.masked_select(pair_valid).mean()
+        valid_pairs = int(pair_valid.sum().item())
+    else:
+        loss = student_similarity.sum() * 0.0
+        valid_pairs = 0
+    return RankingLossOutput(loss=loss, valid_pairs=valid_pairs)
+
+
 def future_relation_retrieval_loss(
     node_keys: torch.Tensor,
     future_model: torch.Tensor,
@@ -433,6 +502,12 @@ def future_relation_retrieval_loss(
     forecast_context_observed: torch.Tensor | None = None,
     relation_distance_normalization: str = "none",
     future_increment_weight: float = 0.0,
+    rank_loss_weight: float = 0.0,
+    rank_positive_count: int = 2,
+    rank_negative_count: int = 2,
+    rank_future_gap: float = 0.05,
+    rank_margin: float = 0.05,
+    rank_temperature: float = 0.1,
 ) -> RetrievalLossOutput:
     """Match node-key similarity distributions to future-distance relations."""
     if node_keys.ndim != 3:
@@ -457,6 +532,7 @@ def future_relation_retrieval_loss(
     )
     normalized_keys = functional.normalize(node_keys, dim=-1)
     student_logits = torch.einsum("ind,jnd->ijn", normalized_keys, normalized_keys)
+    student_similarity = student_logits
     student_logits = student_logits / student_temperature
     student_distribution = _masked_softmax(
         student_logits,
@@ -476,6 +552,17 @@ def future_relation_retrieval_loss(
         loss = node_keys.sum() * 0.0
         teacher_support = 0.0
         student_support = 0.0
+    rank_output = hard_mirage_ranking_loss(
+        student_similarity=student_similarity,
+        future_distance=targets.future_distance,
+        candidate_mask=targets.candidate_mask,
+        positive_count=rank_positive_count,
+        negative_count=rank_negative_count,
+        future_gap=rank_future_gap,
+        margin=rank_margin,
+        temperature=rank_temperature,
+    )
+    loss = loss + rank_loss_weight * rank_output.loss
     valid_candidates = targets.candidate_mask & valid_anchors[:, None, :]
     return RetrievalLossOutput(
         loss=loss,
@@ -485,6 +572,8 @@ def future_relation_retrieval_loss(
         candidate_pairs=int(valid_candidates.sum().item()),
         teacher_effective_support=teacher_support,
         student_effective_support=student_support,
+        rank_loss=rank_output.loss,
+        rank_pairs=rank_output.valid_pairs,
     )
 
 
@@ -502,6 +591,12 @@ def compute_relation_only_loss(
     relation_teacher_mode: str,
     relation_distance_normalization: str,
     future_increment_weight: float = 0.0,
+    rank_loss_weight: float = 0.0,
+    rank_positive_count: int = 2,
+    rank_negative_count: int = 2,
+    rank_future_gap: float = 0.05,
+    rank_margin: float = 0.05,
+    rank_temperature: float = 0.1,
 ) -> PretrainingLoss:
     """Compute a clean-key-only future relation objective.
 
@@ -524,8 +619,15 @@ def compute_relation_only_loss(
         forecast_context_observed=forecast_context_observed,
         relation_distance_normalization=relation_distance_normalization,
         future_increment_weight=future_increment_weight,
+        rank_loss_weight=rank_loss_weight,
+        rank_positive_count=rank_positive_count,
+        rank_negative_count=rank_negative_count,
+        rank_future_gap=rank_future_gap,
+        rank_margin=rank_margin,
+        rank_temperature=rank_temperature,
     )
     reconstruction = clean.retrieval.node_keys.sum() * 0.0
+    rank = retrieval_output.rank_loss if retrieval_output.rank_loss is not None else reconstruction
     total = reconstruction + retrieval_weight * retrieval_output.loss
     return PretrainingLoss(
         total=total,
@@ -539,6 +641,8 @@ def compute_relation_only_loss(
         teacher_effective_support=retrieval_output.teacher_effective_support,
         student_effective_support=retrieval_output.student_effective_support,
         profile=None,
+        rank=rank,
+        rank_pairs=retrieval_output.rank_pairs,
     )
 
 
@@ -563,6 +667,12 @@ def compute_pretraining_loss(
     relation_teacher_mode: str = "context_normalized",
     relation_distance_normalization: str = "none",
     future_increment_weight: float = 0.0,
+    rank_loss_weight: float = 0.0,
+    rank_positive_count: int = 2,
+    rank_negative_count: int = 2,
+    rank_future_gap: float = 0.05,
+    rank_margin: float = 0.05,
+    rank_temperature: float = 0.1,
     profile_loss_weight: float = 0.0,
     profile_scale_floor: float = 0.1,
     reconstruction_weight: float = 1.0,
@@ -606,6 +716,12 @@ def compute_pretraining_loss(
             forecast_context_observed=forecast_context_observed,
             relation_distance_normalization=relation_distance_normalization,
             future_increment_weight=future_increment_weight,
+            rank_loss_weight=rank_loss_weight,
+            rank_positive_count=rank_positive_count,
+            rank_negative_count=rank_negative_count,
+            rank_future_gap=rank_future_gap,
+            rank_margin=rank_margin,
+            rank_temperature=rank_temperature,
         )
     else:
         raise ValueError(f"unknown retrieval_loss_mode: {retrieval_loss_mode}")
@@ -661,4 +777,6 @@ def compute_pretraining_loss(
         teacher_effective_support=retrieval_output.teacher_effective_support,
         student_effective_support=retrieval_output.student_effective_support,
         profile=profile_loss,
+        rank=(retrieval_output.rank_loss if retrieval_output.rank_loss is not None else reconstruction),
+        rank_pairs=retrieval_output.rank_pairs,
     )
