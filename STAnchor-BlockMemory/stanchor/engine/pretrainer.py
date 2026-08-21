@@ -47,6 +47,7 @@ class PretrainEpochResult:
     profile: float = 0.0
     rank: float = 0.0
     rank_pairs: int = 0
+    relation: float = 0.0
     adapter_valid_fraction: float = 0.0
     adapter_fusion_gate_mean: float = 0.0
     adapter_spatial_gate_mean: float = 0.0
@@ -124,6 +125,7 @@ def run_pretrain_epoch(
     totals = {"total": 0.0, "reconstruction": 0.0, "retrieval": 0.0, "profile": 0.0, "rank": 0.0}
     anchors = positives = hard_negatives = reconstruction_positions = batches = skipped_batches = 0
     rank_pairs = 0
+    relation_total = 0.0
     relation_candidates = 0
     teacher_support = student_support = 0.0
     support_anchors = 0
@@ -308,6 +310,7 @@ def run_pretrain_epoch(
             totals["retrieval"] += float(losses.retrieval.detach())
             totals["profile"] += float((losses.profile if losses.profile is not None else losses.total * 0.0).detach())
             totals["rank"] += float((losses.rank if losses.rank is not None else losses.total * 0.0).detach())
+            relation_total += float((losses.relation if losses.relation is not None else losses.retrieval).detach())
             anchors += losses.valid_retrieval_anchors
             positives += losses.positive_pairs
             hard_negatives += losses.hard_negative_pairs
@@ -345,6 +348,7 @@ def run_pretrain_epoch(
         profile=totals["profile"] / batches,
         rank=totals["rank"] / batches,
         rank_pairs=rank_pairs,
+        relation=relation_total / batches,
         adapter_valid_fraction=adapter_totals["valid_fraction"] / max(adapter_batches, 1),
         adapter_fusion_gate_mean=adapter_totals["fusion_gate_mean"] / max(adapter_batches, 1),
         adapter_spatial_gate_mean=adapter_totals["spatial_gate_mean"] / max(adapter_batches, 1),
@@ -602,7 +606,9 @@ def train_pretraining(
             continue
         logger.info(
             "Epoch %03d | train_total=%.6f | val_evaluated=true | val_total=%.6f | val_mask=%.6f | "
-            "val_retrieval=%.6f | val_profile=%.6f | val_anchors=%d | val_positive_pairs=%d | "
+            "train_relation=%.6f | train_rank=%.6f | train_rank_weighted=%.6f | "
+            "val_retrieval_total=%.6f | val_relation=%.6f | val_rank=%.6f | "
+            "val_rank_weighted=%.6f | val_rank_pairs=%d | val_profile=%.6f | val_anchors=%d | val_positive_pairs=%d | "
             "val_hard_negatives=%d | val_relation_candidates=%d | "
             "val_teacher_keff=%.3f | val_student_keff=%.3f | "
             "val_adapter_valid=%.3f | val_adapter_gate=%.3f | "
@@ -615,7 +621,14 @@ def train_pretraining(
             train_result.total,
             val_result.total,
             val_result.reconstruction,
+            train_result.relation,
+            train_result.rank,
+            config.pretrain.rank_loss_weight * train_result.rank,
             val_result.retrieval,
+            val_result.relation,
+            val_result.rank,
+            config.pretrain.rank_loss_weight * val_result.rank,
+            val_result.rank_pairs,
             val_result.profile,
             val_result.valid_retrieval_anchors,
             val_result.positive_pairs,

@@ -24,6 +24,7 @@ class RetrievalLossOutput:
     student_effective_support: float = 0.0
     rank_loss: torch.Tensor | None = None
     rank_pairs: int = 0
+    relation_loss: torch.Tensor | None = None
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,7 @@ class PretrainingLoss:
     profile: torch.Tensor | None = None
     rank: torch.Tensor | None = None
     rank_pairs: int = 0
+    relation: torch.Tensor | None = None
 
 
 def masked_reconstruction_loss(
@@ -552,6 +554,7 @@ def future_relation_retrieval_loss(
         loss = node_keys.sum() * 0.0
         teacher_support = 0.0
         student_support = 0.0
+    relation_loss = loss
     rank_output = hard_mirage_ranking_loss(
         student_similarity=student_similarity,
         future_distance=targets.future_distance,
@@ -574,6 +577,7 @@ def future_relation_retrieval_loss(
         student_effective_support=student_support,
         rank_loss=rank_output.loss,
         rank_pairs=rank_output.valid_pairs,
+        relation_loss=relation_loss,
     )
 
 
@@ -643,6 +647,7 @@ def compute_relation_only_loss(
         profile=None,
         rank=rank,
         rank_pairs=retrieval_output.rank_pairs,
+        relation=(retrieval_output.relation_loss if retrieval_output.relation_loss is not None else retrieval_output.loss),
     )
 
 
@@ -779,4 +784,5 @@ def compute_pretraining_loss(
         profile=profile_loss,
         rank=(retrieval_output.rank_loss if retrieval_output.rank_loss is not None else reconstruction),
         rank_pairs=retrieval_output.rank_pairs,
+        relation=(retrieval_output.relation_loss if retrieval_output.relation_loss is not None else retrieval_output.loss),
     )
