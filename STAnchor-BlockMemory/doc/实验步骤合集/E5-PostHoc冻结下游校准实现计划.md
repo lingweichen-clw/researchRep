@@ -39,24 +39,21 @@
 - Modify: `stanchor/engine/target.py`
 - Test: `tests/test_error_aware_fusion.py`
 
-- [x] Add a failing stage test asserting that PostHoc trains only `risk_head` and `error_aware_fusion`.
+- [x] Add a failing stage test asserting that PostHoc trains only `StructuredErrorCorrector`.
 - [x] Select only one `posthoc_calibrator` stage for `posthoc_frozen_base`; retain existing stage behavior for all old configs.
 - [x] Require `learned_topk_error_aware`, reject base warm-up and calibrator warm-up in PostHoc mode, and use `target.epochs` as the calibrator budget.
 - [x] Save `training_protocol`, base checkpoint provenance and base fingerprint in the downstream checkpoint.
 - [x] Compare the backbone fingerprint before and after every epoch and fail if it changes.
 
-### Task 4: Add isolated capacity configs and a two-run queue
+### Task 4: Add the current Structured Error Corrector configs
 
 **Files:**
-- Create: `configs/metrla_e5_final_latent48_posthoc_error_aware_v1.yaml`
-- Create: `configs/metrla_e5_final_latent48_posthoc_error_aware_wide_v1.yaml`
-- Create: `scripts/run_global288_posthoc_error_aware_queue.ps1`
+- Create: versioned STGCN and GraphWaveNet error-aware configs
 
 - [x] Base both configs on the pure Latent48 Global288 contract with `profile_dim=0`, `latent_dim=0`, `level_weight=0`, and `training_protocol=posthoc_frozen_base`.
-- [x] Set BaseCap to `risk_hidden_dim=32`, `fusion_feature_hidden_dim=8`.
-- [x] Set Wide to `risk_hidden_dim=64`, `fusion_feature_hidden_dim=16`.
+- [x] Set the current Structured Error Corrector to `risk_hidden_dim=256`, `fusion_feature_hidden_dim=128` (224,142 parameters).
 - [x] Make the queue require the existing pure Latent48 relation checkpoint, local Bank and controlled-init base-only checkpoint.
-- [x] Refuse to overwrite output/log roots and sequentially run train, validation evaluation and branch diagnostics for both capacities.
+- [x] Refuse to overwrite output/log roots and run train, validation evaluation and branch diagnostics only for the current version.
 
 ### Task 5: Verify and launch
 

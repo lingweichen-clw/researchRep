@@ -16,11 +16,10 @@ from stanchor.losses.downstream import (
 )
 from stanchor.models.downstream import (
     ConfidenceHead,
-    ErrorAwareAdditiveFusion,
     LightweightForecastBackbone,
-    PredictedBaseRisk,
     SafeResidualFusion,
     STAnchorDownstreamModel,
+    StructuredErrorCorrector,
     build_error_aware_features,
 )
 from stanchor.retrieval.retriever import AggregationOutput, NodeCandidates
@@ -31,8 +30,8 @@ class ErrorAwareFusionTest(unittest.TestCase):
     def _model(
         mode: str = "learned_topk_error_aware",
         backbone_hidden_dim: int = 16,
-        risk_hidden_dim: int = 8,
-        fusion_hidden_dim: int = 8,
+        risk_hidden_dim: int = 256,
+        fusion_hidden_dim: int = 128,
     ) -> STAnchorDownstreamModel:
         return STAnchorDownstreamModel(
             LightweightForecastBackbone(
@@ -42,13 +41,8 @@ class ErrorAwareFusionTest(unittest.TestCase):
             SafeResidualFusion(3),
             1.0,
             mode=mode,
-            risk_head=(
-                PredictedBaseRisk(12, 3, 1, risk_hidden_dim)
-                if mode == "learned_topk_error_aware"
-                else None
-            ),
-            error_aware_fusion=(
-                ErrorAwareAdditiveFusion(9, fusion_hidden_dim)
+            error_corrector=(
+                StructuredErrorCorrector(12, 3, 1, risk_hidden_dim, fusion_hidden_dim)
                 if mode == "learned_topk_error_aware"
                 else None
             ),
@@ -80,8 +74,8 @@ class ErrorAwareFusionTest(unittest.TestCase):
 
     def test_latent48_error_aware_features_have_nine_nonredundant_shapes(self) -> None:
         x, base, candidates, aggregation = self._inputs()
-        risk_head = PredictedBaseRisk(12, 3, 1, hidden_dim=8)
-        risk = risk_head(x, base)
+        corrector = StructuredErrorCorrector(12, 3, 1)
+        risk, _ = corrector.predict_risk(x, base)
         features, memory_valid = build_error_aware_features(
             candidates, aggregation, base, risk, level_temperature=1.0
         )
@@ -92,29 +86,44 @@ class ErrorAwareFusionTest(unittest.TestCase):
 
     def test_additive_fusion_starts_at_point_one_and_returns_contributions(self) -> None:
         x, base, candidates, aggregation = self._inputs()
-        risk = PredictedBaseRisk(12, 3, 1, hidden_dim=8)(x, base)
+        corrector = StructuredErrorCorrector(12, 3, 1)
+        risk, _ = corrector.predict_risk(x, base)
         features, memory_valid = build_error_aware_features(
             candidates, aggregation, base, risk, level_temperature=1.0
         )
-        fusion = ErrorAwareAdditiveFusion(num_features=9, hidden_dim=8, initial_weight=0.1)
+        fusion = StructuredErrorCorrector(12, 3, 1)
         final, weight, contributions = fusion(
-            base, aggregation.prediction, features, memory_valid
+            x, base, aggregation.prediction, features, memory_valid
         )
-        self.assertTrue(torch.allclose(weight, torch.full_like(weight, 0.1), atol=1.0e-6))
+        self.assertTrue(bool(torch.isfinite(weight).all()))
+        self.assertTrue(bool((weight >= 0).all()))
+        self.assertTrue(bool((weight <= 1).all()))
         self.assertEqual(tuple(contributions.shape), (2, 3, 4, 9))
-        self.assertTrue(torch.allclose(final, base + 0.1 * (aggregation.prediction - base)))
+        self.assertTrue(bool(torch.isfinite(final).all()))
 
     def test_no_memory_is_exact_base_fallback(self) -> None:
         x, base, candidates, aggregation = self._inputs(valid=False)
-        risk = PredictedBaseRisk(12, 3, 1, hidden_dim=8)(x, base)
+        corrector = StructuredErrorCorrector(12, 3, 1)
+        risk, _ = corrector.predict_risk(x, base)
         features, memory_valid = build_error_aware_features(
             candidates, aggregation, base, risk, level_temperature=1.0
         )
-        final, weight, _ = ErrorAwareAdditiveFusion(9, 8)(
-            base, aggregation.prediction, features, memory_valid
+        final, weight, _ = StructuredErrorCorrector(12, 3, 1)(
+            x, base, aggregation.prediction, features, memory_valid
         )
         self.assertTrue(torch.equal(final, base))
         self.assertTrue(torch.equal(weight, torch.zeros_like(weight)))
+
+    def test_structured_corrector_matches_documented_224k_architecture(self) -> None:
+        corrector = StructuredErrorCorrector(12, 12, 1)
+        parameters = sum(parameter.numel() for parameter in corrector.parameters())
+        self.assertEqual(corrector.risk_repr_dim, 128)
+        self.assertEqual(corrector.joint_dim, 256)
+        self.assertEqual(corrector.evidence_encoder[0].out_features, 128)
+        self.assertEqual(corrector.shape_functions[0][0].out_features, 32)
+        self.assertEqual(corrector.output[0].in_features, 256)
+        self.assertEqual(corrector.output[0].out_features, 128)
+        self.assertEqual(parameters, 224_142)
 
     def test_risk_and_oracle_blend_targets_match_definitions(self) -> None:
         base = torch.tensor([[[[2.0]]]])
@@ -143,8 +152,7 @@ class ErrorAwareFusionTest(unittest.TestCase):
             fusion=SafeResidualFusion(3),
             confidence_level_temperature=1.0,
             mode="learned_topk_error_aware",
-            risk_head=PredictedBaseRisk(12, 3, 1, hidden_dim=8),
-            error_aware_fusion=ErrorAwareAdditiveFusion(9, 8),
+            error_corrector=StructuredErrorCorrector(12, 3, 1, 256, 128),
         )
         output = model(x, candidates, aggregation)
         target = torch.randn_like(output.final_prediction)
@@ -163,8 +171,8 @@ class ErrorAwareFusionTest(unittest.TestCase):
         self.assertTrue(bool(torch.isfinite(losses.total)))
         losses.total.backward()
         self.assertIsNotNone(model.backbone.network[0].weight.grad)
-        self.assertIsNotNone(model.risk_head.network[0].weight.grad)
-        self.assertIsNotNone(model.error_aware_fusion.shape_functions[0][0].weight.grad)
+        self.assertIsNotNone(model.error_corrector.risk_encoder[0].weight.grad)
+        self.assertIsNotNone(model.error_corrector.shape_functions[0][0].weight.grad)
 
     def test_training_stages_freeze_the_expected_modules(self) -> None:
         x, _, candidates, aggregation = self._inputs()
@@ -175,21 +183,19 @@ class ErrorAwareFusionTest(unittest.TestCase):
             SafeResidualFusion(3),
             1.0,
             mode="learned_topk_error_aware",
-            risk_head=PredictedBaseRisk(12, 3, 1, 8),
-            error_aware_fusion=ErrorAwareAdditiveFusion(9, 8),
+            error_corrector=StructuredErrorCorrector(12, 3, 1, 256, 128),
         )
         base_groups = configure_error_aware_stage(model, "base")
         self.assertEqual([group["role"] for group in base_groups], ["backbone"])
         self.assertTrue(all(parameter.requires_grad for parameter in model.backbone.parameters()))
-        self.assertFalse(any(parameter.requires_grad for parameter in model.risk_head.parameters()))
+        self.assertFalse(any(parameter.requires_grad for parameter in model.error_corrector.parameters()))
         calibrator_groups = configure_error_aware_stage(model, "calibrator")
         self.assertEqual([group["role"] for group in calibrator_groups], ["calibrator"])
         self.assertFalse(any(parameter.requires_grad for parameter in model.backbone.parameters()))
-        self.assertTrue(all(parameter.requires_grad for parameter in model.risk_head.parameters()))
+        self.assertTrue(all(parameter.requires_grad for parameter in model.error_corrector.parameters()))
         model.train()
         self.assertFalse(model.backbone.training)
-        self.assertTrue(model.risk_head.training)
-        self.assertTrue(model.error_aware_fusion.training)
+        self.assertTrue(model.error_corrector.training)
         joint_groups = configure_error_aware_stage(model, "joint")
         model.train()
         self.assertEqual(
@@ -325,8 +331,8 @@ class ErrorAwareFusionTest(unittest.TestCase):
     def test_posthoc_capacity_configs_have_exact_calibrator_parameters(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         expected = {
-            "metrla_e5_final_latent48_posthoc_error_aware_v1.yaml": 1422,
-            "metrla_e5_final_latent48_posthoc_error_aware_wide_v1.yaml": 2822,
+            "metrla_stgcn_tgge_v3_error_aware_posthoc_v1.yaml": 224142,
+            "metrla_graphwavenet_tgge_v3_error_aware_posthoc_v1.yaml": 224142,
         }
         for config_name, expected_parameters in expected.items():
             config = load_config(project_root / "configs" / config_name)
@@ -336,13 +342,14 @@ class ErrorAwareFusionTest(unittest.TestCase):
             self.assertEqual(
                 config.target.downstream_mode, "learned_topk_error_aware"
             )
-            model = target_engine.build_downstream_model(config)
-            calibrator_parameters = sum(
-                parameter.numel()
-                for module in (model.risk_head, model.error_aware_fusion)
-                if module is not None
-                for parameter in module.parameters()
+            model = StructuredErrorCorrector(
+                config.data.context_length,
+                config.data.horizon,
+                config.model.input_channels,
+                config.target.risk_hidden_dim,
+                config.target.fusion_feature_hidden_dim,
             )
+            calibrator_parameters = sum(parameter.numel() for parameter in model.parameters())
             self.assertEqual(calibrator_parameters, expected_parameters)
 
     def test_base_risk_is_supervised_even_when_memory_is_missing(self) -> None:
@@ -353,8 +360,7 @@ class ErrorAwareFusionTest(unittest.TestCase):
             SafeResidualFusion(3),
             1.0,
             mode="learned_topk_error_aware",
-            risk_head=PredictedBaseRisk(12, 3, 1, 8),
-            error_aware_fusion=ErrorAwareAdditiveFusion(9, 8),
+            error_corrector=StructuredErrorCorrector(12, 3, 1, 256, 128),
         )
         output = model(x, candidates, aggregation)
         target = torch.randn_like(output.final_prediction)

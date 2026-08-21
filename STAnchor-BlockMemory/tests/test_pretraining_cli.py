@@ -46,7 +46,7 @@ class PretrainingCliTest(unittest.TestCase):
 
         self.assertEqual(config.pretrain.objective, "masked_relation_single_view")
         self.assertEqual(config.pretrain.retrieval_weight, 1.0)
-        self.assertEqual(config.pretrain.reconstruction_weight, 0.1)
+        self.assertEqual(config.pretrain.reconstruction_weight, 2.0)
         self.assertEqual(config.model.route_top_k, 6)
         self.assertEqual(config.model.route_local_quota, 0)
 

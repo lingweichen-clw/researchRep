@@ -10,6 +10,8 @@ from stanchor.engine.target import (
     checkpoint_bank_level_weight,
     checkpoint_candidate_protocol,
     checkpoint_downstream_mode,
+    validate_evaluation_bank_path,
+    should_stop_target_stage,
 )
 from stanchor.losses.downstream import compute_downstream_loss
 from stanchor.modes import LEARNED_TOPK_OFFSET_DECAY_HORIZON
@@ -21,9 +23,29 @@ from stanchor.models.downstream import (
     confidence_soft_target,
 )
 from stanchor.retrieval.retriever import AggregationOutput, NodeCandidates
+from scripts.train_downstream import build_parser
 
 
 class DownstreamFlowTest(unittest.TestCase):
+    def test_target_early_stopping_can_be_disabled_for_formal_runs(self) -> None:
+        self.assertFalse(should_stop_target_stage(50, 10, enabled=False))
+        self.assertTrue(should_stop_target_stage(10, 10, enabled=True))
+
+    def test_base_only_evaluation_does_not_require_a_bank(self) -> None:
+        self.assertIsNone(validate_evaluation_bank_path("base_only", None))
+        with self.assertRaisesRegex(ValueError, "requires --bank"):
+            validate_evaluation_bank_path("learned_topk_error_aware", None)
+
+    def test_downstream_cli_exposes_formal_no_early_stopping_switch(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "--config",
+                "config.yaml",
+                "--disable-early-stopping",
+            ]
+        )
+        self.assertTrue(args.disable_early_stopping)
+
     def test_config_rejects_unknown_downstream_mode(self) -> None:
         config = ExperimentConfig(
             data=DataConfig(raw_path="data.h5", adjacency_path="adj.pkl"),
@@ -58,10 +80,9 @@ class DownstreamFlowTest(unittest.TestCase):
             target=TargetConfig(downstream_mode="learned_topk_confidence"),
         )
         model = build_downstream_model(config)
-        self.assertIsNone(model.risk_head)
-        self.assertIsNone(model.error_aware_fusion)
+        self.assertIsNone(model.error_corrector)
         self.assertFalse(
-            any(name.startswith("risk_head") for name in model.state_dict())
+            any(name.startswith("error_corrector") for name in model.state_dict())
         )
 
     def test_candidate_protocol_defaults_to_exact_calendar(self) -> None:

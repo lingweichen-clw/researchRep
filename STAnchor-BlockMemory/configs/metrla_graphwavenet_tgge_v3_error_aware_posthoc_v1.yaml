@@ -14,7 +14,7 @@ model:
   input_channels: 1
   output_channels: 1
   patch_size: 12
-  hidden_dim: 96
+  hidden_dim: 80
   retrieval_dim: 48
   profile_dim: 0
   latent_dim: 0
@@ -24,20 +24,31 @@ model:
   ffn_multiplier: 2
   dropout: 0.1
   graph_bias: 1.0
+  route_enabled: true
+  route_dim: 16
+  route_top_k: 6
+  route_local_quota: 0
+  route_prior_weight: 0.25
+  route_temperature: 0.1
+  route_gate_bias: -2.0
   dynamics_adapter_mode: none
   dynamics_bottleneck_dim: 16
   dynamics_gate_bias: -2.0
+  dynamics_gate_groups: 8
 
 pretrain:
   batch_size: 16
   epochs: 50
   learning_rate: 0.001
   weight_decay: 0.0001
+  objective: masked_relation_single_view
+  reconstruction_weight: 2.0
+  validation_interval: 1
   time_mask_ratio: 0.25
   time_mask_block_size: 36
   space_mask_ratio: 0.25
   time_task_probability: 0.5
-  retrieval_weight: 0.1
+  retrieval_weight: 1.0
   retrieval_loss_mode: relation
   retrieval_temperature: 0.1
   relation_teacher_temperature: 0.1
@@ -55,7 +66,7 @@ pretrain:
   progress_interval: 10
 
 bank:
-  output_dir: artifacts/metrla_bank_e5_final_latent48_global288_local_seed42
+  output_dir: artifacts/convergence/tgge_single_view_v3_higher_order_reconstruction2/bank
   memory_fraction: 0.7
   event_top_r: 32
   node_top_k: 5
@@ -67,20 +78,35 @@ bank:
 target:
   downstream_mode: learned_topk_error_aware
   training_protocol: posthoc_frozen_base
+  training_data_scope: post_memory_calibration
   candidate_protocol: exact_calendar
   batch_size: 32
   epochs: 50
   learning_rate: 0.001
   weight_decay: 0.0001
+  optimizer_name: adam
+  scheduler_name: step_lr
+  scheduler_step_size: 10
+  scheduler_gamma: 0.95
   confidence_hidden_dim: 32
   confidence_weight: 0.0
   confidence_level_temperature: 1.0
   help_margin: 0.0
   help_temperature: 0.1
-  backbone_hidden_dim: 64
+  backbone_name: graph_wavenet
+  graph_wavenet_residual_channels: 32
+  graph_wavenet_dilation_channels: 32
+  graph_wavenet_skip_channels: 256
+  graph_wavenet_end_channels: 512
+  graph_wavenet_kernel_size: 2
+  graph_wavenet_blocks: 4
+  graph_wavenet_layers: 2
+  graph_wavenet_dropout: 0.3
+  graph_wavenet_adaptive_dim: 10
+  graph_wavenet_adaptive_adj: true
   patience: 10
-  risk_hidden_dim: 64
-  fusion_feature_hidden_dim: 16
+  risk_hidden_dim: 256
+  fusion_feature_hidden_dim: 128
   risk_weight: 0.1
   blend_weight: 0.1
   blend_minimum_direction_norm: 0.0001
@@ -92,5 +118,4 @@ runtime:
   seed: 42
   device: cuda:0
   output_dir: artifacts
-  run_name: metrla_e5_final_latent48_posthoc_error_aware_wide_seed42
-
+  run_name: convergence/downstream_tgge_v3_graphwavenet_error_aware_seed42

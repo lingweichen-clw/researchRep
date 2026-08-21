@@ -17,9 +17,17 @@ from stanchor.retrieval.strategies import CANDIDATE_PROTOCOLS
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate a trained STAnchor downstream model.")
     parser.add_argument("--config", required=True)
-    parser.add_argument("--pretrained-checkpoint", required=True)
+    parser.add_argument(
+        "--pretrained-checkpoint",
+        default=None,
+        help="Required for retrieval modes; unused by base_only.",
+    )
     parser.add_argument("--downstream-checkpoint", required=True)
-    parser.add_argument("--bank", required=True)
+    parser.add_argument(
+        "--bank",
+        default=None,
+        help="Required for retrieval modes; unused by base_only.",
+    )
     parser.add_argument("--split", choices=("val", "test"), default="test")
     parser.add_argument("--max-batches", type=int, default=None)
     parser.add_argument("--candidate-protocol", choices=CANDIDATE_PROTOCOLS, default=None)

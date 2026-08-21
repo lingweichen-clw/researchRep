@@ -1095,7 +1095,6 @@ def run_retrieval_visualization(
             config.bank.level_temperature,
             config.bank.search_temperature,
             device,
-            profile_weight_override=profile_weight_override,
         )
         random_retriever = TwoStageRetriever(
             random_bank,
@@ -1105,7 +1104,6 @@ def run_retrieval_visualization(
             config.bank.level_temperature,
             config.bank.search_temperature,
             device,
-            profile_weight_override=profile_weight_override,
         )
 
         for batch_index, batch in enumerate(loader):

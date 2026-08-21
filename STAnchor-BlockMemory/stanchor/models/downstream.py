@@ -140,53 +140,6 @@ class ConfidenceHead(nn.Module):
         return torch.where(memory_valid, probability, torch.zeros_like(probability))
 
 
-class PredictedBaseRisk(nn.Module):
-    """Estimate per-horizon base-model error from visible history and base output."""
-
-    def __init__(
-        self,
-        context_length: int,
-        horizon: int,
-        channels: int,
-        hidden_dim: int,
-    ) -> None:
-        super().__init__()
-        if context_length <= 0 or horizon <= 0 or channels <= 0 or hidden_dim <= 0:
-            raise ValueError("risk-head dimensions must be positive")
-        self.context_length = context_length
-        self.horizon = horizon
-        self.channels = channels
-        input_dim = (context_length + horizon) * channels
-        self.network = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, horizon),
-        )
-
-    def forward(self, history: torch.Tensor, base_prediction: torch.Tensor) -> torch.Tensor:
-        if history.ndim != 4 or base_prediction.ndim != 4:
-            raise ValueError("history and base_prediction must be [B,T/H,N,C]")
-        batch, time, nodes, channels = history.shape
-        if time != self.context_length or channels != self.channels:
-            raise ValueError("history does not match risk-head configuration")
-        if base_prediction.shape != (batch, self.horizon, nodes, channels):
-            raise ValueError("base prediction does not match risk-head configuration")
-        node_history = history.permute(0, 2, 1, 3)
-        mean = node_history.mean(dim=2, keepdim=True)
-        std = node_history.std(dim=2, keepdim=True, unbiased=False).clamp_min(1.0e-3)
-        normalized_history = (node_history - mean) / std
-        node_base = base_prediction.permute(0, 2, 1, 3)
-        risk_input = torch.cat(
-            (
-                normalized_history.reshape(batch, nodes, -1),
-                node_base.reshape(batch, nodes, -1),
-            ),
-            dim=-1,
-        )
-        risk = torch.nn.functional.softplus(self.network(risk_input))
-        return risk.permute(0, 2, 1).unsqueeze(-1).contiguous()
-
-
 def build_error_aware_features(
     candidates: NodeCandidates,
     aggregation: AggregationOutput,
@@ -194,11 +147,11 @@ def build_error_aware_features(
     predicted_base_risk: torch.Tensor,
     level_temperature: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Build nine non-redundant deployment-available diagnostics.
+    """Build twelve deployment-available, horizon-aware diagnostics.
 
-    Latent48 Banks expose one retrieval similarity.  Profile and latent
-    sub-scores are absent in this mainline, so using both fallback values
-    would duplicate the same ``shape_scores`` signal.
+    The candidate future tensor remains [B,H,N,K,C] while diagnostics are
+    computed. This preserves horizon-specific evidence instead of copying
+    node-level retrieval statistics to every forecast step.
     """
     if level_temperature <= 0:
         raise ValueError("level_temperature must be positive")
@@ -245,7 +198,14 @@ def build_error_aware_features(
     candidate_denominator = effective_candidate_weights.sum(dim=3).clamp_min(1.0e-8)
     correction_sign = torch.sign(aggregation.candidate_futures - base_prediction.unsqueeze(3))
     signed_agreement = (effective_candidate_weights * correction_sign).sum(dim=3) / candidate_denominator
-    direction_agreement = signed_agreement.abs().mean(dim=-1)
+    signed_direction = signed_agreement.mean(dim=-1)
+    direction_agreement = signed_direction.abs()
+    delta = aggregation.candidate_futures - base_prediction.unsqueeze(3)
+    delta_mean = (effective_candidate_weights * delta).sum(dim=3) / candidate_denominator
+    delta_centered = delta - delta_mean.unsqueeze(3)
+    delta_variance = (effective_candidate_weights * delta_centered.square()).sum(dim=3) / candidate_denominator
+    delta_mean_abs = delta_mean.abs().mean(dim=-1)
+    delta_std = delta_variance.clamp_min(0.0).sqrt().mean(dim=-1)
 
     def expand_node(value: torch.Tensor) -> torch.Tensor:
         return value[:, None, :, None].expand(-1, horizon, -1, -1)
@@ -261,72 +221,142 @@ def build_error_aware_features(
             expand_node(effective_support),
             payload_dispersion.unsqueeze(-1),
             direction_agreement.unsqueeze(-1),
+            signed_direction.unsqueeze(-1),
             expand_node(level_match),
             memory_disagreement.unsqueeze(-1),
             horizon_position,
+            delta_mean_abs.unsqueeze(-1),
+            delta_std.unsqueeze(-1),
         ),
         dim=-1,
     )
     memory_valid = aggregation.valid.all(dim=-1, keepdim=True)
     features = torch.where(memory_valid.expand_as(features), features, torch.zeros_like(features))
-    if features.shape != (batch, horizon, nodes, 9):
+    if features.shape != (batch, horizon, nodes, 12):
         raise RuntimeError("error-aware feature construction produced an invalid shape")
     return features, memory_valid
 
 
-class ErrorAwareAdditiveFusion(nn.Module):
-    """Add interpretable per-feature logit contributions to one blend weight."""
+class StructuredErrorCorrector(nn.Module):
+    """Risk/evidence corrector used by the current post-hoc protocol.
+
+    The module keeps the base forecaster frozen and learns a bounded residual
+    weight from deployment-available history, base output, and nine retrieval
+    diagnostics. With the documented default widths it remains close to the 300k-parameter TGGE encoder budget.
+    """
 
     def __init__(
         self,
-        num_features: int = 9,
-        hidden_dim: int = 8,
+        context_length: int,
+        horizon: int,
+        channels: int,
+        risk_hidden_dim: int = 256,
+        evidence_hidden_dim: int = 128,
+        num_features: int = 12,
         initial_weight: float = 0.1,
     ) -> None:
         super().__init__()
-        if num_features <= 0 or hidden_dim <= 0:
-            raise ValueError("fusion dimensions must be positive")
+        if min(context_length, horizon, channels, risk_hidden_dim, evidence_hidden_dim, num_features) <= 0:
+            raise ValueError("structured corrector dimensions must be positive")
         if not 0.0 < initial_weight < 1.0:
             raise ValueError("initial_weight must be in (0,1)")
+        self.context_length = context_length
+        self.horizon = horizon
+        self.channels = channels
         self.num_features = num_features
+        self.risk_repr_dim = risk_hidden_dim // 2
+        if self.risk_repr_dim <= 0:
+            raise ValueError("risk_hidden_dim must be at least 2")
+        self.risk_encoder = nn.Sequential(
+            nn.Linear((context_length + horizon) * channels, risk_hidden_dim),
+            nn.GELU(),
+            nn.Linear(risk_hidden_dim, self.risk_repr_dim),
+            nn.GELU(),
+        )
+        self.risk_output = nn.Linear(self.risk_repr_dim, horizon)
+        self.evidence_encoder = nn.Sequential(
+            nn.Linear(num_features, evidence_hidden_dim),
+            nn.GELU(),
+            nn.Linear(evidence_hidden_dim, evidence_hidden_dim),
+            nn.GELU(),
+        )
+        # The documented joint state concatenates 128-D risk and 128-D
+        # evidence representations, then preserves the full 256-D state.
+        self.joint_dim = self.risk_repr_dim + evidence_hidden_dim
+        self.joint_encoder = nn.Sequential(
+            nn.Linear(self.risk_repr_dim + evidence_hidden_dim, self.joint_dim),
+            nn.GELU(),
+        )
+        self.gate = nn.Sequential(nn.Linear(self.joint_dim, self.joint_dim), nn.Sigmoid())
+        self.output = nn.Sequential(
+            nn.Linear(self.joint_dim, evidence_hidden_dim),
+            nn.GELU(),
+            nn.Linear(evidence_hidden_dim, 1),
+        )
         self.shape_functions = nn.ModuleList(
-            [
-                nn.Sequential(
-                    nn.Linear(1, hidden_dim),
-                    nn.GELU(),
-                    nn.Linear(hidden_dim, 1),
-                )
-                for _ in range(num_features)
-            ]
+            [nn.Sequential(nn.Linear(1, 32), nn.GELU(), nn.Linear(32, 1)) for _ in range(num_features)]
         )
         for function in self.shape_functions:
             nn.init.zeros_(function[-1].weight)
             nn.init.zeros_(function[-1].bias)
         initial_logit = math.log(initial_weight / (1.0 - initial_weight))
-        self.bias = nn.Parameter(torch.tensor(initial_logit, dtype=torch.float32))
+        self.horizon_logits = nn.Parameter(torch.full((horizon,), initial_logit))
+        self.horizon_bias = nn.Parameter(torch.zeros(horizon))
+
+    def _risk_state(self, history: torch.Tensor, base_prediction: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if history.ndim != 4 or base_prediction.ndim != 4:
+            raise ValueError("history and base_prediction must be [B,T/H,N,C]")
+        batch, time, nodes, channels = history.shape
+        if time != self.context_length or channels != self.channels:
+            raise ValueError("history does not match corrector configuration")
+        if base_prediction.shape != (batch, self.horizon, nodes, channels):
+            raise ValueError("base prediction does not match corrector configuration")
+        node_history = history.permute(0, 2, 1, 3)
+        mean = node_history.mean(dim=2, keepdim=True)
+        std = node_history.std(dim=2, keepdim=True, unbiased=False).clamp_min(1.0e-3)
+        normalized_history = (node_history - mean) / std
+        node_base = base_prediction.permute(0, 2, 1, 3)
+        risk_input = torch.cat((normalized_history.reshape(batch, nodes, -1), node_base.reshape(batch, nodes, -1)), dim=-1)
+        return self.risk_encoder(risk_input), node_base
+
+    def predict_risk(self, history: torch.Tensor, base_prediction: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        state, _ = self._risk_state(history, base_prediction)
+        risk = torch.nn.functional.softplus(self.risk_output(state))
+        return risk.permute(0, 2, 1).unsqueeze(-1).contiguous(), state
 
     def forward(
         self,
+        history: torch.Tensor,
         base: torch.Tensor,
         memory: torch.Tensor,
         features: torch.Tensor,
         memory_valid: torch.Tensor,
+        risk_state: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        if base.shape != memory.shape:
-            raise ValueError("base and memory must have identical shapes")
-        if features.shape != base.shape[:-1] + (self.num_features,):
-            raise ValueError("features have an invalid shape")
+        if base.shape != memory.shape or features.shape != base.shape[:-1] + (self.num_features,):
+            raise ValueError("base, memory, and features have incompatible shapes")
         if memory_valid.shape != base.shape[:-1] + (1,):
             raise ValueError("memory_valid must be [B,H,N,1]")
+        if risk_state is None:
+            risk_state, _ = self._risk_state(history, base.detach())
+        elif risk_state.shape != (base.shape[0], base.shape[2], self.risk_repr_dim):
+            raise ValueError("risk_state has an invalid shape")
+        evidence = self.evidence_encoder(features)
+        risk_state = risk_state[:, None, :, :].expand(-1, self.horizon, -1, -1)
+        joint = self.joint_encoder(torch.cat((risk_state, evidence), dim=-1))
+        gated = joint * self.gate(joint)
         contributions = torch.cat(
-            [function(features[..., index : index + 1]) for index, function in enumerate(self.shape_functions)],
-            dim=-1,
+            [function(features[..., index : index + 1]) for index, function in enumerate(self.shape_functions)], dim=-1
         )
-        logit = self.bias + contributions.sum(dim=-1, keepdim=True)
-        weight = torch.sigmoid(logit)
+        logit = (
+            self.horizon_bias.view(1, -1, 1, 1)
+            + self.output(gated)
+            + contributions.sum(dim=-1, keepdim=True)
+        )
+        horizon_limit = torch.sigmoid(self.horizon_logits).view(1, -1, 1, 1)
+        weight = horizon_limit * torch.sigmoid(logit)
         weight = torch.where(memory_valid, weight, torch.zeros_like(weight))
-        final = base + weight * (memory - base)
-        return final, weight, contributions
+        return base + weight * (memory - base), weight, contributions
 
 
 class SafeResidualFusion(nn.Module):
@@ -394,8 +424,7 @@ class STAnchorDownstreamModel(nn.Module):
         fusion: SafeResidualFusion,
         confidence_level_temperature: float,
         mode: str = LEARNED_TOPK_CONFIDENCE,
-        risk_head: PredictedBaseRisk | None = None,
-        error_aware_fusion: ErrorAwareAdditiveFusion | None = None,
+        error_corrector: StructuredErrorCorrector | None = None,
     ) -> None:
         super().__init__()
         self.backbone = backbone
@@ -403,12 +432,9 @@ class STAnchorDownstreamModel(nn.Module):
         self.fusion = fusion
         self.confidence_level_temperature = confidence_level_temperature
         self.mode = validate_downstream_mode(mode)
-        self.risk_head = risk_head
-        self.error_aware_fusion = error_aware_fusion
-        if self.mode == LEARNED_TOPK_ERROR_AWARE and (
-            risk_head is None or error_aware_fusion is None
-        ):
-            raise ValueError("error-aware mode requires risk_head and error_aware_fusion")
+        self.error_corrector = error_corrector
+        if self.mode == LEARNED_TOPK_ERROR_AWARE and error_corrector is None:
+            raise ValueError("error-aware mode requires StructuredErrorCorrector")
 
     def train(self, mode: bool = True) -> "STAnchorDownstreamModel":
         super().train(mode)
@@ -417,8 +443,7 @@ class STAnchorDownstreamModel(nn.Module):
                 self.backbone,
                 self.confidence_head,
                 self.fusion,
-                self.risk_head,
-                self.error_aware_fusion,
+                self.error_corrector,
             ):
                 if module is not None and not any(
                     parameter.requires_grad for parameter in module.parameters()
@@ -477,9 +502,9 @@ class STAnchorDownstreamModel(nn.Module):
         if candidates is None:
             raise ValueError(f"{self.mode} requires node candidates for confidence features")
         if self.mode == LEARNED_TOPK_ERROR_AWARE:
-            if self.risk_head is None or self.error_aware_fusion is None:
-                raise RuntimeError("error-aware modules are not initialized")
-            predicted_risk = self.risk_head(x, base.detach())
+            if self.error_corrector is None:
+                raise RuntimeError("error-aware corrector is not initialized")
+            predicted_risk, risk_state = self.error_corrector.predict_risk(x, base.detach())
             features, memory_valid = build_error_aware_features(
                 candidates,
                 aggregation,
@@ -487,11 +512,13 @@ class STAnchorDownstreamModel(nn.Module):
                 predicted_risk,
                 self.confidence_level_temperature,
             )
-            final, fusion_weight, contributions = self.error_aware_fusion(
+            final, fusion_weight, contributions = self.error_corrector(
+                x,
                 base,
                 aggregation.prediction.detach(),
                 features,
                 memory_valid,
+                risk_state=risk_state,
             )
             return DownstreamOutput(
                 base_prediction=base,

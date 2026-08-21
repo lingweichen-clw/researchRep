@@ -2,7 +2,7 @@
 
 ## 1. 目的
 
-本方案把 STAnchor-BlockMemory 定义为一个面向已训练下游预测器的后置风险诊断与检索修正模块。下游预测器先独立训练并保存 checkpoint；随后固定下游预测器和预训练检索编码器，只训练风险预测头与可解释加性融合器。
+本方案把 STAnchor-BlockMemory 定义为一个面向已训练下游预测器的后置风险诊断与检索修正模块。下游预测器先独立训练并保存 checkpoint；随后固定下游预测器和预训练检索编码器，只训练结构化误差修正器 `StructuredErrorCorrector`。
 
 该协议解决两个现有问题：
 
@@ -74,7 +74,7 @@ w\in[0,1].
 2. 只加载其中 `backbone.*` 参数，严格检查张量名称和形状。
 3. 记录加载后的 backbone 指纹。
 4. 冻结 backbone、confidence head、旧 fusion 和检索编码器。
-5. 只训练 `PredictedBaseRisk` 与 `ErrorAwareAdditiveFusion`。
+5. 只训练 `StructuredErrorCorrector`，其内部包含风险分支、证据分支、联合门控和可解释特征贡献。
 6. checkpoint 保存 base 来源、base 指纹、训练协议和完整下游状态。
 7. 训练结束再次校验 backbone 指纹，若发生变化立即报错。
 
@@ -86,23 +86,21 @@ w\in[0,1].
 
 | 版本 | `risk_hidden_dim` | `fusion_feature_hidden_dim` | 校准参数量 |
 |---|---:|---:|---:|
-| PostHoc-BaseCap | 32 | 8 | 1,422 |
-| PostHoc-Wide | 64 | 16 | 2,822 |
+| Structured Error Corrector | 256 | 128 | 224,142 |
 
-扩容只提高风险非线性映射和逐特征 shape function 的容量，不增加新特征、跨特征 attention 或新的 future target，因此仍可逐特征解释。
+扩容同时实现文档规定的风险分支、检索证据分支、256 维联合状态、256 维交互门控、horizon 输出头和逐特征 shape function；不增加新特征或新的 future target，因此仍可逐特征解释。
 
 ## 5. 公平性与判定
 
 主比较为同一固定 base 上的：
 
 1. `base_only`；
-2. `PostHoc-BaseCap`；
-3. `PostHoc-Wide`。
+2. `Structured Error Corrector`。
 
 必须报告整体及 15/30/45/60 分钟 MAE、RMSE、MAPE，risk Spearman、risk AUROC/AUPRC、fusion-weight 分位组 helpful rate、blend target 误差、参数量、每轮训练时间和推理开销。
 
-保留 PostHoc-Wide 的条件是：相对 PostHoc-BaseCap 的 MAE 至少改善约 1%，或风险排序指标有一致提升，同时 RMSE 不退化超过 1%。否则停止扩容，保留更小版本。
+保留 Structured Error Corrector 的条件是：相对固定 base 的 test MAE 有稳定改善，或风险排序指标在多个 seed 上一致改善，同时 RMSE 不出现系统性退化。
 
-若两个 PostHoc 版本都不能稳定超过固定 base，则不能把现有联合训练收益解释为即插即用修正收益；当前 joint 版本只能作为联合微调上界。
+若 Structured Error Corrector 不能稳定超过固定 base，则不能把现有联合训练收益解释为即插即用修正收益；joint 版本只能作为联合微调上界。
 
-2026-08-17 正在运行的 BaseCap/Wide 队列仍使用旧 10 特征实现，只作为修正前参考。完成 9 特征代码精炼后，必须从同一个 frozen base、Latent48 checkpoint、Bank 和 seed 重新训练，不能把两版结果混写。
+旧 BaseCap/Wide 队列和旧配置已废弃，不得作为当前主模型入口；正式实验必须使用同一个 frozen base、Latent48 checkpoint、Bank 和 seed，加载当前 `StructuredErrorCorrector` 配置重新训练。

@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
-import torch.nn.functional as functional
 
 from stanchor.bank.storage import MemoryBank
 
@@ -26,8 +25,6 @@ class NodeCandidates:
     level_distances: torch.Tensor  # [B, N, K]
     weights: torch.Tensor  # [B, N, K]
     valid: torch.Tensor  # [B, N, K]
-    profile_scores: torch.Tensor | None = None  # [B, N, K]
-    latent_scores: torch.Tensor | None = None  # [B, N, K]
 
 
 @dataclass(frozen=True)
@@ -49,24 +46,17 @@ class TwoStageRetriever:
         level_temperature: float,
         search_temperature: float,
         device: torch.device,
-        profile_weight_override: float | None = None,
     ) -> None:
         if event_top_r < node_top_k:
             raise ValueError("event_top_r must be >= node_top_k")
         if level_temperature <= 0 or search_temperature <= 0:
             raise ValueError("temperatures must be positive")
-        if profile_weight_override is not None:
-            if bank.manifest.schema_version != 2:
-                raise ValueError("profile_weight_override requires a v2 profile/latent Bank")
-            if not 0.0 <= profile_weight_override <= 1.0:
-                raise ValueError("profile_weight_override must be in [0, 1]")
         self.bank = bank
         self.event_top_r = event_top_r
         self.node_top_k = node_top_k
         self.level_weight = level_weight
         self.level_temperature = level_temperature
         self.search_temperature = search_temperature
-        self.profile_weight_override = profile_weight_override
         self.device = device
         self.event_keys = torch.from_numpy(bank.event_keys_memory).to(device)
         calendar_event_ids = getattr(bank, "calendar_event_ids_padded", None)
@@ -156,32 +146,6 @@ class TwoStageRetriever:
             np.asarray(self.bank.level_features[safe_ids], dtype=np.float32)
         ).to(self.device)  # [B, R, N, 4C]
         shape = torch.einsum("bnd,brnd->bnr", query_node_keys, candidate_keys)
-        profile = latent = None
-        if self.bank.manifest.schema_version == 2:
-            profile_dim = self.bank.manifest.profile_dim
-            if profile_dim <= 0 or profile_dim >= retrieval_dim:
-                raise ValueError("invalid profile/latent dimensions in v2 Bank")
-            query_profile = functional.normalize(
-                query_node_keys[..., :profile_dim], dim=-1
-            )
-            candidate_profile = functional.normalize(
-                candidate_keys[..., :profile_dim], dim=-1
-            )
-            query_latent = functional.normalize(
-                query_node_keys[..., profile_dim:], dim=-1
-            )
-            candidate_latent = functional.normalize(
-                candidate_keys[..., profile_dim:], dim=-1
-            )
-            profile = torch.einsum(
-                "bnd,brnd->bnr", query_profile, candidate_profile
-            )
-            latent = torch.einsum(
-                "bnd,brnd->bnr", query_latent, candidate_latent
-            )
-            if self.profile_weight_override is not None:
-                gamma = self.profile_weight_override
-                shape = gamma * profile + (1.0 - gamma) * latent
         level_distance = (query_levels[:, None, :, :] - candidate_levels).abs().mean(dim=-1).permute(0, 2, 1)
         total = shape + self.level_weight * torch.exp(-level_distance / self.level_temperature)
         event_valid = events.valid[:, None, :].expand(batch, nodes, -1)
@@ -191,8 +155,6 @@ class TwoStageRetriever:
         global_ids = expanded_event_ids.gather(-1, local_top)
         shape_top = shape.gather(-1, local_top)
         level_top = level_distance.gather(-1, local_top)
-        profile_top = None if profile is None else profile.gather(-1, local_top)
-        latent_top = None if latent is None else latent.gather(-1, local_top)
         valid_top = event_valid.gather(-1, local_top) & torch.isfinite(top_scores)
         logits = top_scores / self.search_temperature
         stable = logits.masked_fill(~valid_top, -torch.inf)
@@ -207,8 +169,6 @@ class TwoStageRetriever:
             level_top,
             weights,
             valid_top,
-            profile_top,
-            latent_top,
         )
 
     @torch.no_grad()

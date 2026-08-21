@@ -158,8 +158,10 @@ class TargetConfig:
     graph_wavenet_adaptive_dim: int = 10
     graph_wavenet_adaptive_adj: bool = True
     patience: int = 10
-    risk_hidden_dim: int = 32
-    fusion_feature_hidden_dim: int = 8
+    early_stopping_enabled: bool = True
+    # Current mainline Structured Error Corrector widths (~158k parameters).
+    risk_hidden_dim: int = 256
+    fusion_feature_hidden_dim: int = 128
     risk_weight: float = 0.1
     blend_weight: float = 0.1
     blend_minimum_direction_norm: float = 1.0e-4

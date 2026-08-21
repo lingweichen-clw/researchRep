@@ -36,11 +36,10 @@ from stanchor.modes import (
 )
 from stanchor.models.downstream import (
     ConfidenceHead,
-    ErrorAwareAdditiveFusion,
     LightweightForecastBackbone,
-    PredictedBaseRisk,
     SafeResidualFusion,
     STAnchorDownstreamModel,
+    StructuredErrorCorrector,
 )
 from stanchor.models.pretraining import STAnchorPretrainModel
 from stanchor.models.stgcn import STGCNForecastBackbone
@@ -128,20 +127,14 @@ def build_downstream_model(
         fusion=SafeResidualFusion(config.data.horizon),
         confidence_level_temperature=config.target.confidence_level_temperature,
         mode=config.target.downstream_mode,
-        risk_head=(
-            PredictedBaseRisk(
+        error_corrector=(
+            StructuredErrorCorrector(
                 config.data.context_length,
                 config.data.horizon,
                 config.model.input_channels,
-                config.target.risk_hidden_dim,
-            )
-            if error_aware
-            else None
-        ),
-        error_aware_fusion=(
-            ErrorAwareAdditiveFusion(
-                num_features=9,
-                hidden_dim=config.target.fusion_feature_hidden_dim,
+                risk_hidden_dim=config.target.risk_hidden_dim,
+                evidence_hidden_dim=config.target.fusion_feature_hidden_dim,
+                num_features=12,
                 initial_weight=0.1,
             )
             if error_aware
@@ -166,6 +159,14 @@ def validate_downstream_bank_path(
     if bank_path is None:
         raise ValueError(f"downstream mode {mode!r} requires --bank")
     return resolve_project_path(bank_path)
+
+
+def validate_evaluation_bank_path(
+    mode: str,
+    bank_path: str | Path | None,
+) -> Path | None:
+    """Resolve an evaluation Bank only for modes that execute retrieval."""
+    return validate_downstream_bank_path(mode, bank_path)
 
 
 def validate_downstream_pretrained_checkpoint(
@@ -272,11 +273,8 @@ def configure_downstream_trainable(
         for parameter in downstream.confidence_head.parameters():
             parameter.requires_grad_(False)
     if mode != LEARNED_TOPK_ERROR_AWARE:
-        if downstream.risk_head is not None:
-            for parameter in downstream.risk_head.parameters():
-                parameter.requires_grad_(False)
-        if downstream.error_aware_fusion is not None:
-            for parameter in downstream.error_aware_fusion.parameters():
+        if downstream.error_corrector is not None:
+            for parameter in downstream.error_corrector.parameters():
                 parameter.requires_grad_(False)
     if mode == BASE_ONLY:
         for parameter in downstream.fusion.parameters():
@@ -329,6 +327,17 @@ def build_target_scheduler(
     )
 
 
+def should_stop_target_stage(
+    stale_epochs: int,
+    patience: int,
+    enabled: bool = True,
+) -> bool:
+    """Return whether target-stage early stopping should terminate training."""
+    if stale_epochs < 0 or patience <= 0:
+        raise ValueError("stale_epochs must be non-negative and patience must be positive")
+    return bool(enabled and stale_epochs >= patience)
+
+
 def configure_error_aware_stage(
     downstream: STAnchorDownstreamModel,
     stage: str,
@@ -344,21 +353,17 @@ def configure_error_aware_stage(
         for parameter in downstream.backbone.parameters():
             parameter.requires_grad_(True)
     if stage in {"calibrator", "posthoc_calibrator", "joint"}:
-        if downstream.risk_head is None or downstream.error_aware_fusion is None:
-            raise ValueError("error-aware stages require risk and fusion modules")
-        for module in (downstream.risk_head, downstream.error_aware_fusion):
-            for parameter in module.parameters():
-                parameter.requires_grad_(True)
+        if downstream.error_corrector is None:
+            raise ValueError("error-aware stages require StructuredErrorCorrector")
+        for parameter in downstream.error_corrector.parameters():
+            parameter.requires_grad_(True)
     groups = []
     backbone_parameters = [
         parameter for parameter in downstream.backbone.parameters() if parameter.requires_grad
     ]
     calibrator_parameters = [
-        parameter
-        for module in (downstream.risk_head, downstream.error_aware_fusion)
-        if module is not None
-        for parameter in module.parameters()
-        if parameter.requires_grad
+        parameter for parameter in downstream.error_corrector.parameters()
+        if downstream.error_corrector is not None and parameter.requires_grad
     ]
     if backbone_parameters:
         groups.append({"params": backbone_parameters, "role": "backbone"})
@@ -738,10 +743,9 @@ def train_downstream(
             "backbone": count_parameters(downstream.backbone),
             "confidence_head": count_parameters(downstream.confidence_head),
             "fusion": count_parameters(downstream.fusion),
-            "risk_head": count_parameters(downstream.risk_head) if downstream.risk_head is not None else 0,
-            "error_aware_fusion": (
-                count_parameters(downstream.error_aware_fusion)
-                if downstream.error_aware_fusion is not None
+            "structured_error_corrector": (
+                count_parameters(downstream.error_corrector)
+                if downstream.error_corrector is not None
                 else 0
             ),
             "downstream_trainable": count_parameters(downstream),
@@ -812,7 +816,7 @@ def train_downstream(
         logger.info(
             "Optimization | epochs=%d | batch_size=%d | optimizer=%s | lr=%.3g | "
             "weight_decay=%.3g | scheduler=%s | step_size=%d | gamma=%.3f | "
-            "confidence_weight=%.3f | patience=%d",
+            "confidence_weight=%.3f | patience=%d | early_stopping=%s",
             config.target.epochs,
             config.target.batch_size,
             config.target.optimizer_name,
@@ -823,6 +827,7 @@ def train_downstream(
             config.target.scheduler_gamma,
             config.target.confidence_weight,
             config.target.patience,
+            "enabled" if config.target.early_stopping_enabled else "disabled",
         )
         stages = build_downstream_training_stages(config, base_checkpoint_path)
 
@@ -997,7 +1002,11 @@ def train_downstream(
                     )
                 elif stage != "base":
                     stale += 1
-                    if stale >= config.target.patience:
+                    if should_stop_target_stage(
+                        stale,
+                        config.target.patience,
+                        config.target.early_stopping_enabled,
+                    ):
                         logger.info(
                             "Stage early stopping | epoch=%d | stage=%s | stale_epochs=%d | best_val_mae=%.6f",
                             epoch,
@@ -1026,9 +1035,16 @@ def evaluate_downstream(
     device = resolve_device(config.runtime.device)
     data, graph_cpu = build_data_and_graph(config)
     graph = graph_cpu.to(device)
-    pretrained, _ = load_pretrained_model(config, pretrained_checkpoint, data.series.slots_per_day, device)
     checkpoint = load_checkpoint(downstream_checkpoint, device)
     mode = checkpoint_downstream_mode(checkpoint)
+    if mode == BASE_ONLY:
+        pretrained = None
+    else:
+        if pretrained_checkpoint is None:
+            raise ValueError(f"downstream mode {mode!r} requires --pretrained-checkpoint")
+        pretrained, _ = load_pretrained_model(
+            config, pretrained_checkpoint, data.series.slots_per_day, device
+        )
     level_weight = checkpoint_bank_level_weight(
         checkpoint,
         default=config.bank.level_weight,
@@ -1054,8 +1070,14 @@ def evaluate_downstream(
     downstream.load_state_dict(checkpoint["downstream_state_dict"], strict=True)
     dataset: Dataset = getattr(data, split)
     loader = DataLoader(dataset, batch_size=config.target.batch_size, shuffle=False)
+    resolved_bank_path = validate_evaluation_bank_path(mode, bank_path)
+    if resolved_bank_path is None:
+        return run_target_epoch(
+            pretrained, downstream, None, None, data, loader, graph, config,
+            data.scaler, device, None, max_batches
+        )
     with MemoryBank(
-        bank_path,
+        resolved_bank_path,
         expected_schema_version=(2 if pretrained.model_config.profile_dim > 0 else 1),
     ) as bank:
         _validate_bank(bank, pretrained, graph_cpu, data.scaler.state_dict())
@@ -1071,5 +1093,6 @@ def evaluate_downstream(
             device,
         )
         return run_target_epoch(
-            pretrained, downstream, retriever, bank, data, loader, graph, config, data.scaler, device, None, max_batches
+            pretrained, downstream, retriever, bank, data, loader, graph, config,
+            data.scaler, device, None, max_batches
         )

@@ -15,7 +15,7 @@ from stanchor.modes import DOWNSTREAM_MODES
 from stanchor.retrieval.strategies import CANDIDATE_PROTOCOLS
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train target backbone, confidence, and safe fusion.")
     parser.add_argument("--config", required=True)
     parser.add_argument(
@@ -52,8 +52,23 @@ def main() -> None:
         help="Override the node reranking level weight; use 0 for key-only attribution.",
     )
     parser.add_argument("--seed", type=int, default=None, help="Override only the downstream seed.")
+    parser.add_argument(
+        "--disable-early-stopping",
+        action="store_true",
+        help="Run every configured epoch and keep updating the best validation checkpoint.",
+    )
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
     args = parser.parse_args()
     config = load_config(args.config)
+    if args.disable_early_stopping:
+        config = replace(
+            config,
+            target=replace(config.target, early_stopping_enabled=False),
+        )
     if args.epochs is not None:
         if args.epochs <= 0:
             raise ValueError("epochs must be positive")
