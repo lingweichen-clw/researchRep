@@ -69,6 +69,7 @@ pretrain:
   context_quantile: 0.2
   negative_quantile: 0.8
   patience: 10
+  early_stopping_enabled: false
   progress_interval: 10
 
 bank:

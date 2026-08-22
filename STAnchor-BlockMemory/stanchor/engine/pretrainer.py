@@ -509,6 +509,11 @@ def train_pretraining(
         config.model.dynamics_bottleneck_dim,
         config.pretrain.patience,
     )
+    logger.info(
+        "Pretraining duration | early_stopping=%s | fixed_epochs=%d",
+        "enabled" if config.pretrain.early_stopping_enabled else "disabled",
+        config.pretrain.epochs,
+    )
     best_value = float("inf")
     best_relation_value = float("inf")
     best_stopping_value = float("inf")
@@ -676,24 +681,25 @@ def train_pretraining(
                 best_relation_value,
                 best_relation_path,
             )
-        stopping_name, stopping_value = early_stopping_metric(
-            config.pretrain.retrieval_loss_mode,
-            val_result,
-        )
-        if stopping_value < best_stopping_value:
-            best_stopping_value = stopping_value
-            stale_epochs = 0
-        else:
-            stale_epochs += 1
-            if stale_epochs >= config.pretrain.patience:
-                logger.info(
-                    "Early stopping | epoch=%d | stale_epochs=%d | %s=%.6f",
-                    epoch,
-                    stale_epochs,
-                    stopping_name,
-                    best_stopping_value,
-                )
-                break
+        if config.pretrain.early_stopping_enabled:
+            stopping_name, stopping_value = early_stopping_metric(
+                config.pretrain.retrieval_loss_mode,
+                val_result,
+            )
+            if stopping_value < best_stopping_value:
+                best_stopping_value = stopping_value
+                stale_epochs = 0
+            else:
+                stale_epochs += 1
+                if stale_epochs >= config.pretrain.patience:
+                    logger.info(
+                        "Early stopping | epoch=%d | stale_epochs=%d | %s=%.6f",
+                        epoch,
+                        stale_epochs,
+                        stopping_name,
+                        best_stopping_value,
+                    )
+                    break
     if config.pretrain.retrieval_loss_mode == "relation":
         logger.info(
             "Pretraining finished | best_val=%.6f | best_val_relation=%.6f | "

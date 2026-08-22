@@ -110,6 +110,9 @@ class PretrainConfig:
     context_quantile: float = 0.2
     negative_quantile: float = 0.8
     patience: int = 10
+    # Pretraining uses a fixed epoch budget by default; legacy convergence
+    # experiments may explicitly opt into early stopping.
+    early_stopping_enabled: bool = False
     progress_interval: int = 10
 
 
