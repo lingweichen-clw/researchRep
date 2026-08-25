@@ -140,6 +140,104 @@ class ConfidenceHead(nn.Module):
         return torch.where(memory_valid, probability, torch.zeros_like(probability))
 
 
+class HorizonAwareAggregationHead(nn.Module):
+    """Learn horizon-specific candidate weights from deployment-visible evidence.
+
+    The head consumes only retrieval-time signals and the current base forecast.
+    It does not touch targets or the frozen encoder. The output keeps the same
+    [B, H, N, C] interface as the legacy aggregation step.
+    """
+
+    def __init__(self, hidden_dim: int = 174) -> None:
+        super().__init__()
+        if hidden_dim <= 0:
+            raise ValueError("hidden_dim must be positive")
+        self.network = nn.Sequential(
+            nn.Linear(6, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(
+        self,
+        candidates: NodeCandidates,
+        aggregation: AggregationOutput,
+        base_prediction: torch.Tensor,
+    ) -> AggregationOutput:
+        if aggregation.prediction.shape != base_prediction.shape:
+            raise ValueError("memory and base predictions must have identical shapes")
+        if aggregation.candidate_futures.ndim != 5:
+            raise ValueError("candidate futures must be [B,H,N,K,C]")
+        batch, horizon, nodes, top_k, channels = aggregation.candidate_futures.shape
+        if candidates.weights.shape != (batch, nodes, top_k):
+            raise ValueError("candidate weights do not align with aggregation")
+        if aggregation.candidate_masks.shape != aggregation.candidate_futures.shape:
+            raise ValueError("candidate masks must match candidate futures")
+
+        candidate_mask = aggregation.candidate_masks.bool()
+        candidate_valid = candidate_mask.any(dim=-1)
+        # Invalid Bank padding may contain NaN; never let 0 * NaN enter a reduction.
+        safe_candidate_futures = torch.where(
+            candidate_mask,
+            torch.nan_to_num(aggregation.candidate_futures),
+            torch.zeros_like(aggregation.candidate_futures),
+        )
+        base_weights = candidates.weights[:, None, :, :].expand(batch, horizon, nodes, top_k)
+        prior = torch.where(candidate_valid, base_weights, torch.zeros_like(base_weights))
+        prior_den = prior.sum(dim=-1, keepdim=True).clamp_min(1.0e-8)
+        provisional = (prior.unsqueeze(-1) * safe_candidate_futures).sum(dim=3) / prior_den
+
+        candidate_offset = (safe_candidate_futures - base_prediction.unsqueeze(3)).abs().mean(dim=-1)
+        provisional_offset = (safe_candidate_futures - provisional.unsqueeze(3)).abs().mean(dim=-1)
+        shape_score = torch.nan_to_num(candidates.shape_scores[:, None, :, :].expand(batch, horizon, nodes, top_k))
+        level_distance = torch.nan_to_num(candidates.level_distances[:, None, :, :].expand(batch, horizon, nodes, top_k))
+        shape_score = torch.where(candidate_valid, shape_score, torch.zeros_like(shape_score))
+        level_distance = torch.where(candidate_valid, level_distance, torch.zeros_like(level_distance))
+        horizon_position = torch.linspace(
+            0.0,
+            1.0,
+            horizon,
+            dtype=base_prediction.dtype,
+            device=base_prediction.device,
+        ).view(1, horizon, 1, 1).expand(batch, -1, nodes, top_k)
+        features = torch.stack(
+            (
+                prior,
+                shape_score,
+                -level_distance,
+                -candidate_offset,
+                -provisional_offset,
+                horizon_position,
+            ),
+            dim=-1,
+        )
+        logits = self.network(features).squeeze(-1)
+        logits = logits.masked_fill(~candidate_valid, -1.0e9)
+        max_logits = logits.amax(dim=-1, keepdim=True)
+        candidate_weights = torch.exp(logits - max_logits).masked_fill(~candidate_valid, 0.0)
+        candidate_weights = candidate_weights / candidate_weights.sum(dim=-1, keepdim=True).clamp_min(1.0e-8)
+
+        effective_weights = candidate_weights.unsqueeze(-1) * candidate_mask.to(candidate_weights.dtype)
+        denominator = effective_weights.sum(dim=3)
+        prediction = (effective_weights * safe_candidate_futures).sum(dim=3) / denominator.clamp_min(1.0e-8)
+        variance = (
+            effective_weights
+            * (safe_candidate_futures - prediction.unsqueeze(3)).square()
+        ).sum(dim=3) / denominator.clamp_min(1.0e-8)
+        valid = denominator > 0
+        prediction = torch.where(valid, prediction, torch.zeros_like(prediction))
+        variance = torch.where(valid, variance, torch.zeros_like(variance))
+        return AggregationOutput(
+            prediction=prediction,
+            variance=variance,
+            valid=valid,
+            candidate_futures=aggregation.candidate_futures,
+            candidate_masks=aggregation.candidate_masks,
+        )
+
+
 def build_error_aware_features(
     candidates: NodeCandidates,
     aggregation: AggregationOutput,
@@ -147,7 +245,7 @@ def build_error_aware_features(
     predicted_base_risk: torch.Tensor,
     level_temperature: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Build twelve deployment-available, horizon-aware diagnostics.
+    """Build the legacy nine deployment-available diagnostics.
 
     The candidate future tensor remains [B,H,N,K,C] while diagnostics are
     computed. This preserves horizon-specific evidence instead of copying
@@ -190,22 +288,20 @@ def build_error_aware_features(
     level_match = torch.exp(-weighted_level / level_temperature)
     level_match = torch.where(valid_candidates.any(dim=-1), level_match, torch.zeros_like(level_match))
 
-    payload_dispersion = torch.log1p(aggregation.variance.clamp_min(0.0).sqrt().mean(dim=-1))
+    payload_dispersion = torch.log1p(aggregation.variance.clamp_min(1.0e-8).sqrt().mean(dim=-1))
     memory_disagreement = torch.log1p((aggregation.prediction - base_prediction).abs().mean(dim=-1))
     candidate_mask = aggregation.candidate_masks.bool()
+    safe_candidate_futures = torch.where(
+        candidate_mask,
+        torch.nan_to_num(aggregation.candidate_futures),
+        torch.zeros_like(aggregation.candidate_futures),
+    )
     candidate_weights = normalized_weights[:, None, :, :, None]
     effective_candidate_weights = candidate_weights * candidate_mask.to(base_prediction.dtype)
     candidate_denominator = effective_candidate_weights.sum(dim=3).clamp_min(1.0e-8)
-    correction_sign = torch.sign(aggregation.candidate_futures - base_prediction.unsqueeze(3))
+    correction_sign = torch.sign(safe_candidate_futures - base_prediction.unsqueeze(3))
     signed_agreement = (effective_candidate_weights * correction_sign).sum(dim=3) / candidate_denominator
-    signed_direction = signed_agreement.mean(dim=-1)
-    direction_agreement = signed_direction.abs()
-    delta = aggregation.candidate_futures - base_prediction.unsqueeze(3)
-    delta_mean = (effective_candidate_weights * delta).sum(dim=3) / candidate_denominator
-    delta_centered = delta - delta_mean.unsqueeze(3)
-    delta_variance = (effective_candidate_weights * delta_centered.square()).sum(dim=3) / candidate_denominator
-    delta_mean_abs = delta_mean.abs().mean(dim=-1)
-    delta_std = delta_variance.clamp_min(0.0).sqrt().mean(dim=-1)
+    direction_agreement = signed_agreement.mean(dim=-1).abs()
 
     def expand_node(value: torch.Tensor) -> torch.Tensor:
         return value[:, None, :, None].expand(-1, horizon, -1, -1)
@@ -221,24 +317,21 @@ def build_error_aware_features(
             expand_node(effective_support),
             payload_dispersion.unsqueeze(-1),
             direction_agreement.unsqueeze(-1),
-            signed_direction.unsqueeze(-1),
             expand_node(level_match),
             memory_disagreement.unsqueeze(-1),
             horizon_position,
-            delta_mean_abs.unsqueeze(-1),
-            delta_std.unsqueeze(-1),
         ),
         dim=-1,
     )
     memory_valid = aggregation.valid.all(dim=-1, keepdim=True)
     features = torch.where(memory_valid.expand_as(features), features, torch.zeros_like(features))
-    if features.shape != (batch, horizon, nodes, 12):
+    if features.shape != (batch, horizon, nodes, 9):
         raise RuntimeError("error-aware feature construction produced an invalid shape")
     return features, memory_valid
 
 
 class StructuredErrorCorrector(nn.Module):
-    """Risk/evidence corrector used by the current post-hoc protocol.
+    """Legacy risk/evidence corrector used by the post-hoc protocol.
 
     The module keeps the base forecaster frozen and learns a bounded residual
     weight from deployment-available history, base output, and nine retrieval
@@ -252,8 +345,9 @@ class StructuredErrorCorrector(nn.Module):
         channels: int,
         risk_hidden_dim: int = 256,
         evidence_hidden_dim: int = 128,
-        num_features: int = 12,
+        num_features: int = 9,
         initial_weight: float = 0.1,
+        correction_variant: str = "scalar_gate",
     ) -> None:
         super().__init__()
         if min(context_length, horizon, channels, risk_hidden_dim, evidence_hidden_dim, num_features) <= 0:
@@ -264,6 +358,7 @@ class StructuredErrorCorrector(nn.Module):
         self.horizon = horizon
         self.channels = channels
         self.num_features = num_features
+        self.correction_variant = correction_variant
         self.risk_repr_dim = risk_hidden_dim // 2
         if self.risk_repr_dim <= 0:
             raise ValueError("risk_hidden_dim must be at least 2")
@@ -338,7 +433,7 @@ class StructuredErrorCorrector(nn.Module):
         if memory_valid.shape != base.shape[:-1] + (1,):
             raise ValueError("memory_valid must be [B,H,N,1]")
         if risk_state is None:
-            risk_state, _ = self._risk_state(history, base.detach())
+            risk_state, _ = self._risk_state(history, base)
         elif risk_state.shape != (base.shape[0], base.shape[2], self.risk_repr_dim):
             raise ValueError("risk_state has an invalid shape")
         evidence = self.evidence_encoder(features)
@@ -354,7 +449,16 @@ class StructuredErrorCorrector(nn.Module):
             + contributions.sum(dim=-1, keepdim=True)
         )
         horizon_limit = torch.sigmoid(self.horizon_logits).view(1, -1, 1, 1)
+        if self.correction_variant == "vector_residual":
+            residual = 0.5 * torch.tanh(self.output(gated))
+            residual = torch.where(memory_valid, residual, torch.zeros_like(residual))
+            return base + residual, residual, contributions
         weight = horizon_limit * torch.sigmoid(logit)
+        if self.correction_variant == "residual_additive":
+            additive = 0.25 * torch.tanh(self.output(gated))
+            final = base + weight * (memory - base) + additive
+            final = torch.where(memory_valid, final, base)
+            return final, weight, contributions
         weight = torch.where(memory_valid, weight, torch.zeros_like(weight))
         return base + weight * (memory - base), weight, contributions
 
@@ -425,6 +529,7 @@ class STAnchorDownstreamModel(nn.Module):
         confidence_level_temperature: float,
         mode: str = LEARNED_TOPK_CONFIDENCE,
         error_corrector: StructuredErrorCorrector | None = None,
+        horizon_aggregator: HorizonAwareAggregationHead | None = None,
     ) -> None:
         super().__init__()
         self.backbone = backbone
@@ -433,8 +538,11 @@ class STAnchorDownstreamModel(nn.Module):
         self.confidence_level_temperature = confidence_level_temperature
         self.mode = validate_downstream_mode(mode)
         self.error_corrector = error_corrector
+        self.horizon_aggregator = horizon_aggregator
         if self.mode == LEARNED_TOPK_ERROR_AWARE and error_corrector is None:
             raise ValueError("error-aware mode requires StructuredErrorCorrector")
+        if self.mode == LEARNED_TOPK_ERROR_AWARE and horizon_aggregator is None:
+            raise ValueError("error-aware mode requires HorizonAwareAggregationHead")
 
     def train(self, mode: bool = True) -> "STAnchorDownstreamModel":
         super().train(mode)
@@ -444,6 +552,7 @@ class STAnchorDownstreamModel(nn.Module):
                 self.confidence_head,
                 self.fusion,
                 self.error_corrector,
+                self.horizon_aggregator,
             ):
                 if module is not None and not any(
                     parameter.requires_grad for parameter in module.parameters()
@@ -484,7 +593,7 @@ class STAnchorDownstreamModel(nn.Module):
             )
             final, fusion_weight = self.fusion(
                 base,
-                aggregation.prediction.detach(),
+                aggregation.prediction,
                 confidence,
                 memory_valid,
             )
@@ -504,18 +613,19 @@ class STAnchorDownstreamModel(nn.Module):
         if self.mode == LEARNED_TOPK_ERROR_AWARE:
             if self.error_corrector is None:
                 raise RuntimeError("error-aware corrector is not initialized")
-            predicted_risk, risk_state = self.error_corrector.predict_risk(x, base.detach())
+            aggregation = self.horizon_aggregator(candidates, aggregation, base)
+            predicted_risk, risk_state = self.error_corrector.predict_risk(x, base)
             features, memory_valid = build_error_aware_features(
                 candidates,
                 aggregation,
-                base.detach(),
+                base,
                 predicted_risk,
                 self.confidence_level_temperature,
             )
             final, fusion_weight, contributions = self.error_corrector(
                 x,
                 base,
-                aggregation.prediction.detach(),
+                aggregation.prediction,
                 features,
                 memory_valid,
                 risk_state=risk_state,
@@ -534,13 +644,13 @@ class STAnchorDownstreamModel(nn.Module):
         features, memory_valid = build_confidence_features(
             candidates,
             aggregation,
-            base.detach(),
+            base,
             self.confidence_level_temperature,
         )
-        confidence = self.confidence_head(features.detach(), memory_valid)
+        confidence = self.confidence_head(features, memory_valid)
         final, fusion_weight = self.fusion(
             base,
-            aggregation.prediction.detach(),
+            aggregation.prediction,
             confidence,
             memory_valid,
         )
@@ -553,3 +663,4 @@ class STAnchorDownstreamModel(nn.Module):
             final_prediction=final,
             memory_valid=memory_valid,
         )
+

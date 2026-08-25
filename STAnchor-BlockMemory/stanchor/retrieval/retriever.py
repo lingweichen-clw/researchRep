@@ -36,6 +36,48 @@ class AggregationOutput:
     candidate_masks: torch.Tensor  # [B, H, N, K, C]
 
 
+def horizon_aware_candidate_weights(
+    base_weights: torch.Tensor,
+    future: torch.Tensor,
+    mask: torch.Tensor,
+    temperature: float = 1.0,
+    horizon_scores: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Return [B,H,N,K] weights without using target values.
+
+    The first pass uses the existing node-level weights to form a provisional
+    horizon mean.  Candidates closer to that mean receive a small,
+    horizon-specific consensus bonus.  Explicit ``horizon_scores`` are
+    supported for controlled ablations; all-zero scores exactly reproduce the
+    original broadcast node weights.
+    """
+    if base_weights.ndim != 3 or future.ndim != 5 or mask.ndim != 5:
+        raise ValueError("invalid aggregation tensor ranks")
+    batch, horizon, nodes, top_k, channels = future.shape
+    if base_weights.shape != (batch, nodes, top_k):
+        raise ValueError("base_weights must be [B,N,K]")
+    if mask.shape != future.shape:
+        raise ValueError("mask must match future")
+    if temperature <= 0:
+        raise ValueError("temperature must be positive")
+    valid = mask.any(dim=-1)
+    base = base_weights[:, None, :, :].expand(batch, horizon, nodes, top_k)
+    effective = base * valid.to(base.dtype)
+    provisional_den = effective.sum(dim=-1, keepdim=True).clamp_min(1.0e-8)
+    provisional = (effective.unsqueeze(-1) * future).sum(dim=-2) / provisional_den
+    consensus = -((future - provisional.unsqueeze(-2)).abs().mean(dim=-1))
+    if horizon_scores is not None:
+        if horizon_scores.shape != consensus.shape:
+            raise ValueError("horizon_scores must be [B,H,N,K]")
+        consensus = horizon_scores
+    logits = torch.log(base.clamp_min(1.0e-8)) + consensus / float(temperature)
+    logits = logits.masked_fill(~valid, -torch.inf)
+    max_logits = logits.amax(dim=-1, keepdim=True)
+    max_logits = torch.where(torch.isfinite(max_logits), max_logits, torch.zeros_like(max_logits))
+    weights = torch.exp(logits - max_logits).masked_fill(~valid, 0.0)
+    return weights / weights.sum(dim=-1, keepdim=True).clamp_min(1.0e-8)
+
+
 class TwoStageRetriever:
     def __init__(
         self,
@@ -172,7 +214,12 @@ class TwoStageRetriever:
         )
 
     @torch.no_grad()
-    def aggregate(self, candidates: NodeCandidates) -> AggregationOutput:
+    def aggregate(
+        self,
+        candidates: NodeCandidates,
+        horizon_scores: torch.Tensor | None = None,
+        horizon_temperature: float = 1.0,
+    ) -> AggregationOutput:
         event_ids = candidates.event_ids.clamp_min(0).cpu().numpy()
         valid_candidate = candidates.valid.cpu().numpy()
         batch, nodes, top_k = event_ids.shape
@@ -193,8 +240,12 @@ class TwoStageRetriever:
             selected_mask.reshape(batch, nodes, top_k, horizon, channels).transpose(0, 3, 1, 2, 4)
         ).to(self.device)
         mask = mask & torch.from_numpy(valid_candidate[:, None, :, :, None]).to(self.device)
-        base_weights = candidates.weights[:, None, :, :, None]
-        effective_weights = base_weights * mask.to(base_weights.dtype)
+        # Keep the legacy node-level aggregation as the matched baseline. The
+        # trainable HorizonAwareAggregationHead is applied explicitly by the
+        # error-aware downstream path, so this method remains backward compatible.
+        effective_weights = candidates.weights[:, None, :, :, None] * mask.to(
+            candidates.weights.dtype
+        )
         denominator = effective_weights.sum(dim=3)
         prediction = (effective_weights * future).sum(dim=3) / denominator.clamp_min(1.0e-8)
         difference = future - prediction.unsqueeze(3)

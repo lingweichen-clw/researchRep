@@ -1043,3 +1043,272 @@ $$
 编码器负责形成紧凑、可迁移的时空检索语义：局部静态图提供物理邻居传播，历史条件非局部路由补充多跳或图外但趋势一致的节点关系；修正头负责判断当前基础模型是否需要被历史事件证据修正。二者职责分离，且每个新增计算都有明确的输入、输出、损失和解释路径。
 
 在 v2 通过 retrieval 指标、下游 test 指标、多 seed 稳定性和成本检查之前，不把它作为最终论文主模型；当前 v1 实验结果仍然保留为可复现实验基线。
+
+## 13. Horizon-aware 候选聚合模块（并入 v2 主方案）
+
+### 13.1 模块定位与张量接口
+
+`HorizonAwareAggregationHead` 是检索器和 `StructuredErrorCorrector` 之间的可训练 memory 聚合模块。它不改变 Bank、event search、node Top-K 检索或候选事件集合，只在已经选出的候选集合内部学习不同 horizon 的候选权重。
+
+候选 future 和有效 mask 分别为：
+
+$$
+Y^{cand}\in\mathbb R^{B\times H\times N\times K\times C},
+\qquad
+M^{cand}\in\{0,1\}^{B\times H\times N\times K\times C}.
+$$
+
+其中 $B$ 是 batch，$H$ 是预测步数，$N$ 是节点数，$K$ 是节点候选数，$C$ 是通道数。无效槽位是固定 Top-K 张量的 padding 或局部 future 缺失，不表示 TOK 检索器选择了非法事件。
+
+### 13.2 聚合器六维候选特征
+
+对 query $q$、horizon $h$、节点 $n$、候选 $k$，聚合器使用：
+
+$$
+\phi_{q,h,n,k}=
+[\phi^{prior},\phi^{shape},\phi^{level},\phi^{base},\phi^{memory},\phi^{horizon}].
+$$
+
+1. **prior candidate weight**：检索器原始候选权重
+
+$$
+\phi^{prior}_{q,n,k}=\pi_{q,n,k}.
+$$
+
+其中 $\pi$ 来自 node key 相似度的 softmax，不随 horizon 改变。
+
+2. **shape score**：候选节点 key 与 query node key 的相似度
+
+$$
+\phi^{shape}_{q,n,k}=s^{node}_{q,n,k}.
+$$
+
+3. **negative level distance**：query 历史水平统计与候选事件水平统计的负距离
+
+$$
+\phi^{level}_{q,n,k}=-d^{level}_{q,n,k}.
+$$
+
+距离越小，特征越大。
+
+4. **negative candidate/base offset**：候选 future 与 base prediction 的负平均绝对偏移
+
+$$
+\phi^{base}_{q,h,n,k}
+=-\frac{1}{C}\sum_c
+\left|Y^{cand}_{q,h,n,k,c}-Y^{base}_{q,h,n,c}\right|.
+$$
+
+5. **negative candidate/provisional-memory offset**：先用原始权重计算临时 memory：
+
+$$
+Y^{prov}_{q,h,n}
+=\sum_k\pi_{q,n,k}Y^{cand}_{q,h,n,k},
+$$
+
+再计算：
+
+$$
+\phi^{memory}_{q,h,n,k}
+=-\frac{1}{C}\sum_c
+\left|Y^{cand}_{q,h,n,k,c}-Y^{prov}_{q,h,n,c}\right|.
+$$
+
+6. **horizon position**：归一化 horizon 位置
+
+$$
+\phi^{horizon}_{h}=\frac{h-1}{H-1}.
+$$
+
+它让聚合器可以学习近端和远端 horizon 的不同候选偏好。
+
+### 13.3 聚合器网络组成、候选权重与 memory
+
+六维特征经过三层 MLP：
+
+```text
+Linear(6, 256)
+GELU
+Linear(256, 256)
+GELU
+Linear(256, 1)
+```
+
+得到候选 logit：
+
+$$
+\ell_{q,h,n,k}=f_{\theta_{agg}}(\phi_{q,h,n,k}).
+$$
+
+然后在候选维度执行 mask-aware softmax：
+
+$$
+w_{q,h,n,k}=\operatorname{Softmax}_{k}(\ell_{q,h,n,k}),
+\qquad \sum_k w_{q,h,n,k}=1.
+$$
+
+最终 memory 为：
+
+$$
+Y^{memory}_{q,h,n,c}
+=
+\frac{
+\sum_k w_{q,h,n,k}M^{cand}_{q,h,n,k,c}Y^{cand}_{q,h,n,k,c}
+}{
+\sum_k w_{q,h,n,k}M^{cand}_{q,h,n,k,c}+\epsilon
+}.
+$$
+
+候选分歧方差为：
+
+$$
+V_{q,h,n,c}
+=
+\frac{
+\sum_k w_{q,h,n,k}M^{cand}_{q,h,n,k,c}
+\left(Y^{cand}_{q,h,n,k,c}-Y^{memory}_{q,h,n,c}\right)^2
+}{
+\sum_k w_{q,h,n,k}M^{cand}_{q,h,n,k,c}+\epsilon
+}.
+$$
+
+$V$ 衡量同一节点、同一 horizon 的候选 future 分歧，不是 memory 对真实 future 的误差。
+
+### 13.4 StructuredErrorCorrector 的九维诊断特征
+
+九维诊断向量为：
+
+$$
+\psi_{q,h,n}=
+[r^{base},s^{retrieval},m^{margin},e^{support},d^{payload},a^{direction},l^{level},d^{memory},p^{horizon}].
+$$
+
+1. **predicted_base_risk**：由历史和 base prediction 估计基础模型风险
+
+$$
+r^{base}_{q,h,n}=g_{\psi}(X_q,Y^{base}_q)_{h,n}.
+$$
+
+2. **retrieval_similarity**：候选 shape score 的原始权重加权平均
+
+$$
+s^{retrieval}_{q,n}=\sum_k\pi_{q,n,k}s^{node}_{q,n,k}.
+$$
+
+3. **margin**：Top-1 与 Top-2 候选总分差
+
+$$
+m_{q,n}=score_{q,n,1}-score_{q,n,2}.
+$$
+
+4. **effective_support**：候选权重有效支持度
+
+$$
+e^{support}_{q,n}
+=\frac{1}{K\sum_k\pi_{q,n,k}^2+\epsilon}.
+$$
+
+值越大，候选权重越分散；值越小，权重越集中。
+
+5. **payload_dispersion**：候选 future 的加权标准差摘要
+
+$$
+d^{payload}_{q,h,n}
+=\log\left(1+\operatorname{mean}_c\sqrt{\max(V_{q,h,n,c},10^{-8})}\right).
+$$
+
+正的 $10^{-8}$ 下限用于避免 $V=0$ 时平方根反向导数奇异。
+
+6. **direction_agreement**：候选相对 base 的修正方向一致性
+
+$$
+a^{direction}_{q,h,n}
+=\left|\operatorname{mean}_c
+\frac{\sum_k \pi_{q,n,k}M_{q,h,n,k,c}
+\operatorname{sign}(Y^{cand}_{q,h,n,k,c}-Y^{base}_{q,h,n,c})}
+{\sum_k\pi_{q,n,k}M_{q,h,n,k,c}+\epsilon}\right|.
+$$
+
+当前实现保留一致性强弱，但没有保留统一向上或统一向下的 signed sign；如果后续增加 signed direction，需要作为独立特征重新消融。
+
+7. **level_match**：历史水平匹配程度
+
+$$
+l^{level}_{q,n}
+=\exp\left(-\frac{\sum_k\pi_{q,n,k}d^{level}_{q,n,k}}{\tau_{level}}\right).
+$$
+
+8. **memory_disagreement**：聚合 memory 与 base 的平均绝对差
+
+$$
+d^{memory}_{q,h,n}
+=\log\left(1+\operatorname{mean}_c
+|Y^{memory}_{q,h,n,c}-Y^{base}_{q,h,n,c}|\right).
+$$
+
+9. **horizon_position**：归一化预测位置
+
+$$
+p^{horizon}_{h}=\frac{h-1}{H-1}.
+$$
+
+其中 retrieval similarity、margin、effective support 和 level match 是节点级统计，在 horizon 维复制；其余特征具有直接 horizon 维度。
+
+### 13.5 三模块协同与梯度边界
+
+最终输出为：
+
+$$
+Y^{final}_{q,h,n}
+=Y^{base}_{q,h,n}
++\alpha_{q,h,n}
+\left(Y^{memory}_{q,h,n}-Y^{base}_{q,h,n}\right),
+$$
+
+其中 $\alpha$ 由 `StructuredErrorCorrector` 根据历史、base 和九维诊断证据产生，并被限制在有界范围内。
+
+当前 posthoc 训练职责为：
+
+- backbone/base：冻结，参数 `requires_grad=False`；
+- encoder、Bank、event search 和 node Top-K：固定；
+- `HorizonAwareAggregationHead`：可训练，接收最终 forecast loss 的直接梯度；
+- `StructuredErrorCorrector`：可训练，接收 forecast、risk 和 blend loss；
+- loss target、预训练 teacher 和日志统计继续使用 detached/no-grad 语义。
+
+主梯度链为：
+
+$$
+\mathcal L_{forecast}
+\rightarrow Y^{final}
+\rightarrow\{Y^{memory},\alpha\}
+\rightarrow\{\theta_{agg},\theta_{corrector}\}.
+$$
+
+参数预算为：
+
+- `StructuredErrorCorrector`：133,070；
+- `HorizonAwareAggregationHead`：67,841；
+- 合计：200,911；
+- 比例约为 1.96:1，满足总量 20--25 万以及接近 2:1 的约束。
+
+### 13.6 信息边界与数值稳定性验证
+
+聚合模块推理时仅使用：
+
+- 当前 query 历史；
+- 冻结 base prediction；
+- 历史 Bank 中已经发生的候选 future；
+- 检索相似度、level distance、候选 mask 和 horizon 位置。
+
+当前 query 的真实 future 不参与候选选择、六维聚合特征、九维诊断特征或推理。真实 target 只用于训练 loss。
+
+真实 METR-LA batch 验证结果：
+
+- exact_calendar 的 event 和 node Top-K 候选有效率均为 100%；
+- 每节点有 5/5 个有效候选；
+- future payload 有效率约为 95.54%；
+- valid payload 中 NaN/Inf 数量为 0；
+- `sqrt(max(V,10^{-8}))` 修复后，聚合器和校正器梯度全部 finite；
+- 2 batch smoke 可以完成 forward、backward 和 optimizer step。
+
+smoke 指标不作为正式结果；正式结论仍以完整 50 轮训练、best checkpoint 和 matched base-only 对照为准。

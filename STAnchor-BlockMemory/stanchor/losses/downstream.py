@@ -87,6 +87,7 @@ def compute_downstream_loss(
     risk_weight: float = 0.1,
     blend_weight: float = 0.1,
     blend_minimum_direction_norm: float = 1.0e-4,
+    loss_variant: str = "forecast_risk_blend",
 ) -> DownstreamLoss:
     forecast = masked_mae(output.final_prediction, target, observed)
     if use_error_aware:
@@ -121,7 +122,11 @@ def compute_downstream_loss(
         else:
             blend = output.fusion_weight.sum() * 0.0
         return DownstreamLoss(
-            total=forecast + risk_weight * risk + blend_weight * blend,
+            total=(forecast + risk_weight * risk + blend_weight * blend
+                   if loss_variant == "forecast_risk_blend"
+                   else forecast + risk_weight * risk
+                   if loss_variant == "forecast_risk"
+                   else forecast),
             forecast=forecast,
             confidence=output.confidence.sum() * 0.0,
             confidence_target=torch.zeros_like(output.confidence),

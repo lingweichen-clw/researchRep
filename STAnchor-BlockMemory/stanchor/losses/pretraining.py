@@ -1,4 +1,4 @@
-"""Masked reconstruction and future-guided retrieval objectives."""
+﻿"""Masked reconstruction and future-guided retrieval objectives."""
 
 from __future__ import annotations
 
@@ -264,6 +264,101 @@ def future_guided_retrieval_loss(
         valid_anchors=int(valid_anchor.sum().item()),
         positive_pairs=int(positive.sum().item()),
         hard_negative_pairs=int(hard_negative.sum().item()),
+    )
+
+
+def offset_decay_hard_negative_retrieval_loss(
+    node_keys: torch.Tensor,
+    context_normalized: torch.Tensor,
+    future_model: torch.Tensor,
+    context_statistics,
+    context_observed: torch.Tensor,
+    future_observed: torch.Tensor,
+    context_start: torch.Tensor,
+    future_end: torch.Tensor,
+    teacher_temperature: float = 0.1,
+    student_temperature: float = 0.1,
+    relation_teacher_mode: str = "offset_decay",
+    forecast_context: torch.Tensor | None = None,
+    forecast_context_observed: torch.Tensor | None = None,
+    relation_distance_normalization: str = "symmetric_geometric_mean",
+    future_increment_weight: float = 0.0,
+    positive_quantile: float = 0.1,
+    context_quantile: float = 0.2,
+    negative_quantile: float = 0.8,
+    hard_negative_weight: float = 2.0,
+) -> RetrievalLossOutput:
+    """Use E2-style positives/negatives with the current OffsetDecay teacher."""
+    if node_keys.ndim != 3 or context_normalized.ndim != 4:
+        raise ValueError("invalid hard-negative retrieval tensor ranks")
+    if hard_negative_weight <= 0.0:
+        raise ValueError("hard_negative_weight must be positive")
+    if not 0.0 <= positive_quantile <= 1.0:
+        raise ValueError("positive_quantile must be in [0, 1]")
+    if not 0.0 <= context_quantile <= 1.0:
+        raise ValueError("context_quantile must be in [0, 1]")
+    if not 0.0 <= negative_quantile <= 1.0:
+        raise ValueError("negative_quantile must be in [0, 1]")
+    batch, nodes, _ = node_keys.shape
+    if context_normalized.shape[0] != batch or context_normalized.shape[2] != nodes:
+        raise ValueError("context and keys do not align")
+    targets = build_future_relation_targets(
+        future_model=future_model,
+        context_statistics=context_statistics,
+        future_observed=future_observed,
+        context_start=context_start,
+        future_end=future_end,
+        teacher_temperature=teacher_temperature,
+        relation_teacher_mode=relation_teacher_mode,
+        forecast_context=forecast_context,
+        forecast_context_observed=forecast_context_observed,
+        relation_distance_normalization=relation_distance_normalization,
+        future_increment_weight=future_increment_weight,
+    )
+    context_distance, context_pair_valid = _pairwise_masked_mae(
+        context_normalized, context_observed
+    )
+    valid = targets.candidate_mask & context_pair_valid
+    valid = valid & targets.valid_anchors[:, None, :]
+    nan = torch.tensor(float("nan"), device=node_keys.device, dtype=context_distance.dtype)
+    context_for_quantile = torch.where(valid, context_distance, nan)
+    future_for_quantile = torch.where(valid, targets.future_distance, nan)
+    context_threshold = torch.nanquantile(context_for_quantile, context_quantile, dim=1)
+    positive_threshold = torch.nanquantile(future_for_quantile, positive_quantile, dim=1)
+    negative_threshold = torch.nanquantile(future_for_quantile, negative_quantile, dim=1)
+    positive = valid & (targets.future_distance <= positive_threshold[:, None, :])
+    hard_negative = (
+        valid
+        & ~positive
+        & (context_distance <= context_threshold[:, None, :])
+        & (targets.future_distance >= negative_threshold[:, None, :])
+    )
+    normalized_keys = functional.normalize(node_keys, dim=-1)
+    logits = torch.einsum("ind,jnd->ijn", normalized_keys, normalized_keys)
+    logits = logits / student_temperature
+    # Match the original E2 objective exactly: ordinary candidates contribute
+    # with weight 1, while a hard negative contributes with
+    # hard_negative_weight instead of receiving both weights.
+    hard_log_weight = torch.log(
+        torch.tensor(hard_negative_weight, dtype=logits.dtype, device=logits.device)
+    )
+    ordinary = valid & ~hard_negative
+    hard_weighted = logits + hard_log_weight
+    numerator = _masked_logsumexp(logits, positive, dim=1)
+    ordinary_sum = _masked_logsumexp(logits, ordinary, dim=1)
+    hard_sum = _masked_logsumexp(hard_weighted, hard_negative, dim=1)
+    denominator = torch.logaddexp(ordinary_sum, hard_sum)
+    valid_anchor = positive.any(dim=1) & torch.isfinite(numerator) & torch.isfinite(denominator)
+    if bool(valid_anchor.any()):
+        loss = (denominator - numerator).masked_select(valid_anchor).mean()
+    else:
+        loss = node_keys.sum() * 0.0
+    return RetrievalLossOutput(
+        loss=loss,
+        valid_anchors=int(valid_anchor.sum().item()),
+        positive_pairs=int(positive.sum().item()),
+        hard_negative_pairs=int(hard_negative.sum().item()),
+        candidate_pairs=int(valid.sum().item()),
     )
 
 
@@ -555,17 +650,23 @@ def future_relation_retrieval_loss(
         teacher_support = 0.0
         student_support = 0.0
     relation_loss = loss
-    rank_output = hard_mirage_ranking_loss(
-        student_similarity=student_similarity,
-        future_distance=targets.future_distance,
-        candidate_mask=targets.candidate_mask,
-        positive_count=rank_positive_count,
-        negative_count=rank_negative_count,
-        future_gap=rank_future_gap,
-        margin=rank_margin,
-        temperature=rank_temperature,
-    )
-    loss = loss + rank_loss_weight * rank_output.loss
+    # The mainline retrieval objective is relation-only.  Keep the legacy
+    # ranking implementation available for historical unit tests/ablations,
+    # but do not construct its hard-mirage pairs when its weight is zero.
+    if rank_loss_weight > 0.0:
+        rank_output = hard_mirage_ranking_loss(
+            student_similarity=student_similarity,
+            future_distance=targets.future_distance,
+            candidate_mask=targets.candidate_mask,
+            positive_count=rank_positive_count,
+            negative_count=rank_negative_count,
+            future_gap=rank_future_gap,
+            margin=rank_margin,
+            temperature=rank_temperature,
+        )
+        loss = loss + rank_loss_weight * rank_output.loss
+    else:
+        rank_output = RankingLossOutput(loss=loss.detach() * 0.0, valid_pairs=0)
     valid_candidates = targets.candidate_mask & valid_anchors[:, None, :]
     return RetrievalLossOutput(
         loss=loss,
@@ -706,6 +807,28 @@ def compute_pretraining_loss(
             negative_quantile=negative_quantile,
             hard_negative_weight=hard_negative_weight,
         )
+    elif retrieval_loss_mode == "hard_negative_offset_decay":
+        retrieval_output = offset_decay_hard_negative_retrieval_loss(
+            node_keys=output.clean.retrieval.node_keys,
+            context_normalized=output.clean.statistics.normalized,
+            future_model=future_model,
+            context_statistics=output.clean.statistics,
+            context_observed=observed_context,
+            future_observed=observed_future,
+            context_start=context_start,
+            future_end=future_end,
+            teacher_temperature=relation_teacher_temperature,
+            student_temperature=relation_student_temperature,
+            relation_teacher_mode=relation_teacher_mode,
+            forecast_context=forecast_context,
+            forecast_context_observed=forecast_context_observed,
+            relation_distance_normalization=relation_distance_normalization,
+            future_increment_weight=future_increment_weight,
+            positive_quantile=positive_quantile,
+            context_quantile=context_quantile,
+            negative_quantile=negative_quantile,
+            hard_negative_weight=hard_negative_weight,
+        )
     elif retrieval_loss_mode == "relation":
         retrieval_output = future_relation_retrieval_loss(
             node_keys=output.clean.retrieval.node_keys,
@@ -786,3 +909,4 @@ def compute_pretraining_loss(
         rank_pairs=retrieval_output.rank_pairs,
         relation=(retrieval_output.relation_loss if retrieval_output.relation_loss is not None else retrieval_output.loss),
     )
+

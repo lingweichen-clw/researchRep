@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import tempfile
 import unittest
@@ -72,7 +72,7 @@ class ErrorAwareFusionTest(unittest.TestCase):
         )
         return x, base, candidates, aggregation
 
-    def test_latent48_error_aware_features_have_twelve_nonredundant_shapes(self) -> None:
+    def test_legacy_error_aware_features_have_nine_dimensions(self) -> None:
         x, base, candidates, aggregation = self._inputs()
         corrector = StructuredErrorCorrector(12, 3, 1)
         risk, _ = corrector.predict_risk(x, base)
@@ -80,7 +80,7 @@ class ErrorAwareFusionTest(unittest.TestCase):
             candidates, aggregation, base, risk, level_temperature=1.0
         )
         self.assertEqual(tuple(risk.shape), (2, 3, 4, 1))
-        self.assertEqual(tuple(features.shape), (2, 3, 4, 12))
+        self.assertEqual(tuple(features.shape), (2, 3, 4, 9))
         self.assertTrue(bool(memory_valid.all()))
         self.assertTrue(bool(torch.isfinite(features).all()))
 
@@ -98,7 +98,7 @@ class ErrorAwareFusionTest(unittest.TestCase):
         self.assertTrue(bool(torch.isfinite(weight).all()))
         self.assertTrue(bool((weight >= 0).all()))
         self.assertTrue(bool((weight <= 1).all()))
-        self.assertEqual(tuple(contributions.shape), (2, 3, 4, 12))
+        self.assertEqual(tuple(contributions.shape), (2, 3, 4, 9))
         self.assertTrue(bool(torch.isfinite(final).all()))
 
     def test_no_memory_is_exact_base_fallback(self) -> None:
@@ -123,7 +123,7 @@ class ErrorAwareFusionTest(unittest.TestCase):
         self.assertEqual(corrector.shape_functions[0][0].out_features, 32)
         self.assertEqual(corrector.output[0].in_features, 256)
         self.assertEqual(corrector.output[0].out_features, 128)
-        self.assertEqual(parameters, 224_817)
+        self.assertEqual(parameters, 224_142)
 
     def test_risk_and_oracle_blend_targets_match_definitions(self) -> None:
         base = torch.tensor([[[[2.0]]]])
@@ -383,3 +383,4 @@ class ErrorAwareFusionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

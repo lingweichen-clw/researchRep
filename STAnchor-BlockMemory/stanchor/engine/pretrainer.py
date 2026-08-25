@@ -457,14 +457,12 @@ def train_pretraining(
     )
     logger.info(
         "Parameters | total=%s | trainable=%s | embedding=%s | encoder=%s | "
-        "route_attention=%s | dynamics_adapter=%s | retrieval_head=%s | "
-        "reconstruction_head=%s",
+        "route_attention=%s | retrieval_head=%s | reconstruction_head=%s",
         f"{parameter_counts['total']:,}",
         f"{parameter_counts['total_trainable']:,}",
         f"{parameter_counts['embedding']:,}",
         f"{parameter_counts['encoder']:,}",
         f"{parameter_counts['route_attention']:,}",
-        f"{parameter_counts['dynamics_adapter']:,}",
         f"{parameter_counts['retrieval_head']:,}",
         f"{parameter_counts['reconstruction_head']:,}",
     )
@@ -486,8 +484,7 @@ def train_pretraining(
         "time_mask=%.3f | time_mask_block=%d steps | space_mask=%.3f | "
         "retrieval_loss=%s | teacher_mode=%s | distance_normalization=%s | "
         "future_increment_weight=%.3f | retrieval_weight=%.3f | "
-        "student_tau=%.3f | teacher_tau=%.3f | adapter=%s | "
-        "adapter_bottleneck=%d | patience=%d",
+        "student_tau=%.3f | teacher_tau=%.3f | patience=%d",
         config.pretrain.epochs,
         config.pretrain.batch_size,
         config.pretrain.learning_rate,
@@ -505,8 +502,6 @@ def train_pretraining(
         config.pretrain.retrieval_weight,
         config.pretrain.relation_student_temperature,
         config.pretrain.relation_teacher_temperature,
-        config.model.dynamics_adapter_mode,
-        config.model.dynamics_bottleneck_dim,
         config.pretrain.patience,
     )
     logger.info(
@@ -611,48 +606,22 @@ def train_pretraining(
             continue
         logger.info(
             "Epoch %03d | train_total=%.6f | val_evaluated=true | val_total=%.6f | val_mask=%.6f | "
-            "train_relation=%.6f | train_rank=%.6f | train_rank_weighted=%.6f | "
-            "val_retrieval_total=%.6f | val_relation=%.6f | val_rank=%.6f | "
-            "val_rank_weighted=%.6f | val_rank_pairs=%d | val_profile=%.6f | val_anchors=%d | val_positive_pairs=%d | "
-            "val_hard_negatives=%d | val_relation_candidates=%d | "
-            "val_teacher_keff=%.3f | val_student_keff=%.3f | "
-            "val_adapter_valid=%.3f | val_adapter_gate=%.3f | "
-            "val_adapter_spatial_gate=%.3f | val_adapter_ratio=%.6f | "
-            "val_adapter_modulation=%.6f | val_adapter_modulation_std=%.6f | "
-            "val_adapter_group_gate_std=%.6f | val_adapter_low_rank=%.6f | "
-            "val_adapter_direct=%.6f | "
+            "train_relation=%.6f | val_retrieval=%.6f | val_relation_candidates=%d | "
+            "val_anchors=%d | val_teacher_keff=%.3f | val_student_keff=%.3f | "
             "val_masked_positions=%d | skipped(train/val)=%d/%d",
             epoch,
             train_result.total,
             val_result.total,
             val_result.reconstruction,
             train_result.relation,
-            train_result.rank,
-            config.pretrain.rank_loss_weight * train_result.rank,
             val_result.retrieval,
-            val_result.relation,
-            val_result.rank,
-            config.pretrain.rank_loss_weight * val_result.rank,
-            val_result.rank_pairs,
-            val_result.profile,
-            val_result.valid_retrieval_anchors,
-            val_result.positive_pairs,
-            val_result.hard_negative_pairs,
             val_result.relation_candidate_pairs,
+            val_result.valid_retrieval_anchors,
             val_result.teacher_effective_support,
             val_result.student_effective_support,
-            val_result.adapter_valid_fraction,
-            val_result.adapter_fusion_gate_mean,
-            val_result.adapter_spatial_gate_mean,
-            val_result.adapter_contribution_ratio,
-            val_result.adapter_modulation_abs_mean,
-            val_result.adapter_modulation_token_std,
-            val_result.adapter_group_gate_std,
-            val_result.adapter_low_rank_ratio,
-            val_result.adapter_direct_ratio,
             val_result.reconstruction_positions,
             train_result.skipped_batches,
-            val_result.skipped_batches,
+            val_result.skipped_batches
         )
         if val_result.total < best_value:
             best_value = val_result.total

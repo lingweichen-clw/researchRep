@@ -106,7 +106,8 @@ target:
   graph_wavenet_adaptive_adj: true
   patience: 10
   risk_hidden_dim: 256
-  fusion_feature_hidden_dim: 128
+  fusion_feature_hidden_dim: 64
+  horizon_aggregation_hidden_dim: 256
   risk_weight: 0.1
   blend_weight: 0.1
   blend_minimum_direction_norm: 0.0001

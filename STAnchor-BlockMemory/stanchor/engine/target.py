@@ -1,4 +1,4 @@
-"""Target calibration, safe fusion training, and evaluation."""
+﻿"""Target calibration, safe fusion training, and evaluation."""
 
 from __future__ import annotations
 
@@ -36,6 +36,7 @@ from stanchor.modes import (
 )
 from stanchor.models.downstream import (
     ConfidenceHead,
+    HorizonAwareAggregationHead,
     LightweightForecastBackbone,
     SafeResidualFusion,
     STAnchorDownstreamModel,
@@ -127,6 +128,11 @@ def build_downstream_model(
         fusion=SafeResidualFusion(config.data.horizon),
         confidence_level_temperature=config.target.confidence_level_temperature,
         mode=config.target.downstream_mode,
+        horizon_aggregator=(
+            HorizonAwareAggregationHead(hidden_dim=config.target.horizon_aggregation_hidden_dim)
+            if error_aware
+            else None
+        ),
         error_corrector=(
             StructuredErrorCorrector(
                 config.data.context_length,
@@ -134,8 +140,9 @@ def build_downstream_model(
                 config.model.input_channels,
                 risk_hidden_dim=config.target.risk_hidden_dim,
                 evidence_hidden_dim=config.target.fusion_feature_hidden_dim,
-                num_features=12,
+                num_features=9,
                 initial_weight=0.1,
+                correction_variant=config.target.validation_correction_variant,
             )
             if error_aware
             else None
@@ -357,6 +364,10 @@ def configure_error_aware_stage(
             raise ValueError("error-aware stages require StructuredErrorCorrector")
         for parameter in downstream.error_corrector.parameters():
             parameter.requires_grad_(True)
+        if downstream.horizon_aggregator is None:
+            raise ValueError("error-aware stages require HorizonAwareAggregationHead")
+        for parameter in downstream.horizon_aggregator.parameters():
+            parameter.requires_grad_(True)
     groups = []
     backbone_parameters = [
         parameter for parameter in downstream.backbone.parameters() if parameter.requires_grad
@@ -369,6 +380,13 @@ def configure_error_aware_stage(
         groups.append({"params": backbone_parameters, "role": "backbone"})
     if calibrator_parameters:
         groups.append({"params": calibrator_parameters, "role": "calibrator"})
+    aggregation_parameters = [
+        parameter
+        for parameter in downstream.horizon_aggregator.parameters()
+        if downstream.horizon_aggregator is not None and parameter.requires_grad
+    ]
+    if aggregation_parameters:
+        groups.append({"params": aggregation_parameters, "role": "aggregation"})
     return groups
 
 
@@ -608,6 +626,7 @@ def run_target_epoch(
                 blend_minimum_direction_norm=(
                     config.target.blend_minimum_direction_norm
                 ),
+                loss_variant=config.target.validation_loss_variant,
             )
             require_finite(losses.total, "downstream loss")
             if training:
@@ -1096,3 +1115,4 @@ def evaluate_downstream(
             pretrained, downstream, retriever, bank, data, loader, graph, config,
             data.scaler, device, None, max_batches
         )
+

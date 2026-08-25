@@ -169,11 +169,15 @@ class TargetConfig:
     patience: int = 10
     early_stopping_enabled: bool = True
     # Current mainline Structured Error Corrector widths (~158k parameters).
+    # Compact post-hoc budget shared by the horizon selector and legacy corrector.
     risk_hidden_dim: int = 256
-    fusion_feature_hidden_dim: int = 128
+    fusion_feature_hidden_dim: int = 64
+    horizon_aggregation_hidden_dim: int = 256
     risk_weight: float = 0.1
     blend_weight: float = 0.1
     blend_minimum_direction_norm: float = 1.0e-4
+    validation_loss_variant: str = "forecast_risk_blend"
+    validation_correction_variant: str = "scalar_gate"
     base_warmup_epochs: int = 0
     calibrator_warmup_epochs: int = 5
     backbone_learning_rate_scale: float = 0.1
@@ -327,9 +331,9 @@ class ExperimentConfig:
             raise ValueError("profile_loss_weight requires a profile-enabled retrieval head")
         if self.model.profile_dim > 0 and self.pretrain.profile_loss_weight <= 0.0:
             raise ValueError("profile-enabled retrieval requires positive profile_loss_weight")
-        if self.pretrain.retrieval_loss_mode not in {"hard_negative", "relation"}:
+        if self.pretrain.retrieval_loss_mode not in {"hard_negative", "relation", "hard_negative_offset_decay"}:
             raise ValueError(
-                "retrieval_loss_mode must be hard_negative or relation"
+                "retrieval_loss_mode must be hard_negative, relation, or hard_negative_offset_decay"
             )
         teacher_mode = self.pretrain.relation_teacher_mode
         if teacher_mode not in {
@@ -446,6 +450,7 @@ class ExperimentConfig:
         for name, value in (
             ("risk_hidden_dim", self.target.risk_hidden_dim),
             ("fusion_feature_hidden_dim", self.target.fusion_feature_hidden_dim),
+            ("horizon_aggregation_hidden_dim", self.target.horizon_aggregation_hidden_dim),
         ):
             if value <= 0:
                 raise ValueError(f"{name} must be positive")
@@ -457,6 +462,10 @@ class ExperimentConfig:
                 raise ValueError(f"{name} must be non-negative")
         if self.target.blend_minimum_direction_norm <= 0:
             raise ValueError("blend_minimum_direction_norm must be positive")
+        if self.target.validation_loss_variant not in {"forecast_risk_blend", "forecast_risk", "forecast_only"}:
+            raise ValueError("unsupported validation_loss_variant")
+        if self.target.validation_correction_variant not in {"scalar_gate", "vector_residual", "residual_additive"}:
+            raise ValueError("unsupported validation_correction_variant")
         if self.target.backbone_name == "stgcn":
             if self.target.stgcn_temporal_kernel < 2:
                 raise ValueError("stgcn_temporal_kernel must be at least 2")
@@ -554,3 +563,4 @@ def project_root() -> Path:
 def resolve_project_path(path: str | Path) -> Path:
     candidate = Path(path)
     return candidate if candidate.is_absolute() else (project_root() / candidate).resolve()
+
