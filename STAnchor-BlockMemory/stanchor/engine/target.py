@@ -736,11 +736,20 @@ def run_target_epoch(
                     batch, x, observed_x, device,
                     candidate_protocol=config.target.candidate_protocol,
                 )
+                def _backbone_forward(inp):
+                    if config.target.backbone_name == "staeformer":
+                        return downstream.backbone(
+                            inp,
+                            tod=batch["slot"].to(device),
+                            dow=batch["weekday"].to(device),
+                        )
+                    return downstream.backbone(inp)
+
                 if config.target.training_protocol == POSTHOC_FROZEN_BASE:
                     with torch.no_grad():
-                        base_prediction = downstream.backbone(x)
+                        base_prediction = _backbone_forward(x)
                 else:
-                    base_prediction = downstream.backbone(x)
+                    base_prediction = _backbone_forward(x)
                 if frozen_cache is not None:
                     frozen_cache.update(
                         _split_frozen_path(

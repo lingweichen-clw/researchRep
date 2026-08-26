@@ -22,10 +22,24 @@ class STAEformerForecastBackbone(nn.Module):
         super().__init__(); self.context_length=context_length; self.horizon=horizon; self.nodes=num_nodes; self.input_dim=input_channels; self.output_channels=output_channels; self.steps_per_day=steps_per_day; self.model_dim=input_embedding_dim+tod_embedding_dim+dow_embedding_dim+spatial_embedding_dim+adaptive_embedding_dim
         self.input_proj=nn.Linear(input_channels,input_embedding_dim); self.tod=nn.Embedding(steps_per_day,tod_embedding_dim); self.dow=nn.Embedding(7,dow_embedding_dim); self.adaptive=nn.Parameter(torch.empty(context_length,num_nodes,adaptive_embedding_dim)); nn.init.xavier_uniform_(self.adaptive)
         self.temporal=nn.ModuleList([SelfAttentionLayer(self.model_dim,feed_forward_dim,heads,dropout) for _ in range(layers)]); self.spatial=nn.ModuleList([SelfAttentionLayer(self.model_dim,feed_forward_dim,heads,dropout) for _ in range(layers)]); self.output_proj=nn.Linear(context_length*self.model_dim,horizon*output_channels)
-    def forward(self,x):
+    def forward(self,x,tod=None,dow=None):
         if x.ndim!=4 or x.shape[1]!=self.context_length or x.shape[2]!=self.nodes: raise ValueError("STAEformer expects [B,T,N,C]")
-        b,t,n,_=x.shape; # Mainline has no covariate channels; use deterministic slot ids and weekday zero.
-        tod_idx=torch.arange(t,device=x.device).view(1,t,1).expand(b,t,n)%self.steps_per_day; dow_idx=torch.zeros((b,t,n),device=x.device,dtype=torch.long)
+        b,t,n,_=x.shape
+        # The official model consumes normalized TOD and integer DOW covariates.
+        # The adapter accepts them explicitly; retaining a deterministic fallback
+        # keeps the generic backbone interface usable for legacy callers.
+        if tod is None:
+            tod_idx=torch.arange(t,device=x.device).view(1,t,1).expand(b,t,n)%self.steps_per_day
+        else:
+            if tod.ndim == 2: tod = tod.unsqueeze(-1)
+            if tod.shape[:3] != (b,t,n): raise ValueError("tod must be [B,T,N] or [B,T]")
+            tod_idx = tod.to(device=x.device).long() % self.steps_per_day
+        if dow is None:
+            dow_idx=torch.zeros((b,t,n),device=x.device,dtype=torch.long)
+        else:
+            if dow.ndim == 2: dow = dow.unsqueeze(-1)
+            if dow.shape[:3] != (b,t,n): raise ValueError("dow must be [B,T,N] or [B,T]")
+            dow_idx = dow.to(device=x.device).long() % 7
         z=torch.cat((self.input_proj(x),self.tod(tod_idx),self.dow(dow_idx),self.adaptive[:t].unsqueeze(0).expand(b,-1,-1,-1)),dim=-1)
         for layer in self.temporal: z=layer(z,dim=1)
         for layer in self.spatial: z=layer(z,dim=2)
