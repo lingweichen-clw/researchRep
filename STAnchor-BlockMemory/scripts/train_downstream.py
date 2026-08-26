@@ -57,6 +57,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run every configured epoch and keep updating the best validation checkpoint.",
     )
+    parser.add_argument(
+        "--frozen-path-cache",
+        action="store_true",
+        help="Cache frozen encoder/retrieval/backbone outputs after first epoch.",
+    )
+    parser.add_argument(
+        "--fixed-batch-order",
+        action="store_true",
+        help="Disable train-loader shuffling for a controlled cache equivalence test.",
+    )
     return parser
 
 
@@ -69,6 +79,10 @@ def main() -> None:
             config,
             target=replace(config.target, early_stopping_enabled=False),
         )
+    if args.frozen_path_cache:
+        config = replace(config, target=replace(config.target, frozen_path_cache=True))
+    if args.fixed_batch_order:
+        config = replace(config, target=replace(config.target, fixed_batch_order=True))
     if args.epochs is not None:
         if args.epochs <= 0:
             raise ValueError("epochs must be positive")

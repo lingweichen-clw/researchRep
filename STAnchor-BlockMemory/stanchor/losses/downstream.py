@@ -25,7 +25,11 @@ class DownstreamLoss:
 def masked_mae(prediction: torch.Tensor, target: torch.Tensor, observed: torch.Tensor) -> torch.Tensor:
     if prediction.shape != target.shape or observed.shape != target.shape:
         raise ValueError("prediction, target, and observed must share a shape")
-    valid = observed.bool()
+    # Missing values may still be present in tensors even when an upstream
+    # observed mask is supplied.  Exclude non-finite prediction/target pairs
+    # before taking the reduction so one invalid sensor value cannot turn the
+    # whole downstream loss into NaN/Inf.
+    valid = observed.bool() & torch.isfinite(prediction) & torch.isfinite(target)
     if not bool(valid.any()):
         raise ValueError("masked MAE has no observed targets")
     return (prediction - target).abs().masked_select(valid).mean()
@@ -91,6 +95,12 @@ def compute_downstream_loss(
 ) -> DownstreamLoss:
     forecast = masked_mae(output.final_prediction, target, observed)
     if use_error_aware:
+        if loss_variant == "forecast_only":
+            connected_zero = output.confidence.sum() * 0.0
+            return DownstreamLoss(
+                total=forecast, forecast=forecast, confidence=connected_zero,
+                confidence_target=torch.zeros_like(output.confidence),
+            )
         if output.predicted_base_risk is None:
             raise ValueError("error-aware loss requires predicted_base_risk")
         risk_target, risk_valid = build_huber_risk_target(

@@ -178,6 +178,8 @@ class TargetConfig:
     blend_minimum_direction_norm: float = 1.0e-4
     validation_loss_variant: str = "forecast_risk_blend"
     validation_correction_variant: str = "scalar_gate"
+    frozen_path_cache: bool = False
+    fixed_batch_order: bool = False
     base_warmup_epochs: int = 0
     calibrator_warmup_epochs: int = 5
     backbone_learning_rate_scale: float = 0.1
@@ -226,8 +228,8 @@ class ExperimentConfig:
             raise ValueError(
                 "posthoc_frozen_base requires learned_topk_error_aware mode"
             )
-        if self.target.backbone_name not in {"lightweight", "stgcn", "graph_wavenet"}:
-            raise ValueError("backbone_name must be lightweight, stgcn, or graph_wavenet")
+        if self.target.backbone_name not in {"lightweight", "stgcn", "graph_wavenet", "argcn", "staeformer"}:
+            raise ValueError("backbone_name must be lightweight, stgcn, graph_wavenet, argcn, or staeformer")
         if self.data.context_length <= 0 or self.data.horizon <= 0:
             raise ValueError("context_length and horizon must be positive")
         if self.data.encoder_context_length < self.data.context_length:
@@ -464,8 +466,10 @@ class ExperimentConfig:
             raise ValueError("blend_minimum_direction_norm must be positive")
         if self.target.validation_loss_variant not in {"forecast_risk_blend", "forecast_risk", "forecast_only"}:
             raise ValueError("unsupported validation_loss_variant")
-        if self.target.validation_correction_variant not in {"scalar_gate", "vector_residual", "residual_additive"}:
+        if self.target.validation_correction_variant not in {"scalar_gate", "vector_residual", "residual_additive", "set_attention_horizon"}:
             raise ValueError("unsupported validation_correction_variant")
+        if self.target.frozen_path_cache and self.target.training_protocol != POSTHOC_FROZEN_BASE:
+            raise ValueError("frozen_path_cache requires posthoc_frozen_base")
         if self.target.backbone_name == "stgcn":
             if self.target.stgcn_temporal_kernel < 2:
                 raise ValueError("stgcn_temporal_kernel must be at least 2")

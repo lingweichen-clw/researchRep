@@ -1,4 +1,4 @@
-﻿"""Target calibration, safe fusion training, and evaluation."""
+"""Target calibration, safe fusion training, and evaluation."""
 
 from __future__ import annotations
 
@@ -41,10 +41,12 @@ from stanchor.models.downstream import (
     SafeResidualFusion,
     STAnchorDownstreamModel,
     StructuredErrorCorrector,
+    CandidateSetHorizonCorrector,
 )
 from stanchor.models.pretraining import STAnchorPretrainModel
 from stanchor.models.stgcn import STGCNForecastBackbone
 from stanchor.models.graph_wavenet import GraphWaveNetForecastBackbone
+from stanchor.models.baseline import ARGCNForecastBackbone, STAEformerForecastBackbone
 from stanchor.retrieval.retriever import AggregationOutput, NodeCandidates, TwoStageRetriever
 from stanchor.retrieval.strategies import (
     calendar_event_candidates,
@@ -67,6 +69,96 @@ class TargetEpochResult:
     batches: int
     risk_loss: float = 0.0
     blend_loss: float = 0.0
+
+
+@dataclass(frozen=True)
+class FrozenPathEntry:
+    base_prediction: torch.Tensor
+    candidates: NodeCandidates | None
+    aggregation: AggregationOutput | None
+
+
+def _node_candidates_device(value: NodeCandidates | None, device: torch.device) -> NodeCandidates | None:
+    if value is None:
+        return None
+    return NodeCandidates(**{name: tensor.to(device) for name, tensor in value.__dict__.items()})
+
+
+def _aggregation_device(value: AggregationOutput | None, device: torch.device) -> AggregationOutput | None:
+    if value is None:
+        return None
+    return AggregationOutput(**{name: tensor.to(device) for name, tensor in value.__dict__.items()})
+
+
+def _freeze_path_entry(
+    base_prediction: torch.Tensor,
+    candidates: NodeCandidates | None,
+    aggregation: AggregationOutput | None,
+) -> FrozenPathEntry:
+    cpu = torch.device("cpu")
+    return FrozenPathEntry(
+        base_prediction=base_prediction.detach().to(cpu),
+        candidates=_node_candidates_device(candidates, cpu),
+        aggregation=_aggregation_device(aggregation, cpu),
+    )
+
+
+def _split_frozen_path(
+    entry: FrozenPathEntry, sample_ids: torch.Tensor
+) -> dict[int, FrozenPathEntry]:
+    """Split a batch path into per-sample CPU cache entries."""
+    ids = [int(value) for value in sample_ids.detach().cpu().tolist()]
+    result: dict[int, FrozenPathEntry] = {}
+    for index, sample_id in enumerate(ids):
+        candidates = None
+        if entry.candidates is not None:
+            candidates = NodeCandidates(**{
+                name: tensor[index:index + 1].detach().cpu()
+                for name, tensor in entry.candidates.__dict__.items()
+            })
+        aggregation = None
+        if entry.aggregation is not None:
+            aggregation = AggregationOutput(**{
+                name: tensor[index:index + 1].detach().cpu()
+                for name, tensor in entry.aggregation.__dict__.items()
+            })
+        result[sample_id] = FrozenPathEntry(
+            base_prediction=entry.base_prediction[index:index + 1].detach().cpu(),
+            candidates=candidates,
+            aggregation=aggregation,
+        )
+    return result
+
+
+def _merge_frozen_paths(
+    entries: list[FrozenPathEntry], device: torch.device
+) -> FrozenPathEntry:
+    """Merge per-sample cache entries in current batch order."""
+    if not entries:
+        raise ValueError("cannot merge an empty frozen path")
+    candidates = None
+    if entries[0].candidates is not None:
+        candidates = NodeCandidates(**{
+            name: torch.cat(
+                [getattr(entry.candidates, name) for entry in entries], dim=0
+            ).to(device)
+            for name in entries[0].candidates.__dict__
+        })
+    aggregation = None
+    if entries[0].aggregation is not None:
+        aggregation = AggregationOutput(**{
+            name: torch.cat(
+                [getattr(entry.aggregation, name) for entry in entries], dim=0
+            ).to(device)
+            for name in entries[0].aggregation.__dict__
+        })
+    return FrozenPathEntry(
+        base_prediction=torch.cat(
+            [entry.base_prediction for entry in entries], dim=0
+        ).to(device),
+        candidates=candidates,
+        aggregation=aggregation,
+    )
 
 
 def build_downstream_model(
@@ -120,6 +212,22 @@ def build_downstream_model(
             adaptive_adj=config.target.graph_wavenet_adaptive_adj,
             adaptive_dim=config.target.graph_wavenet_adaptive_dim,
         )
+    elif config.target.backbone_name in {"argcn", "staeformer"}:
+        if graph is None:
+            raise ValueError("baseline backbone construction requires graph data")
+        adjacency = torch.zeros((graph.num_nodes, graph.num_nodes), device=graph.edge_index.device)
+        target, source = graph.edge_index
+        adjacency[target, source] = graph.edge_weight.float()
+        adjacency.fill_diagonal_(0.0)
+        support = (adjacency / adjacency.sum(-1, keepdim=True).clamp_min(1e-8)).unsqueeze(0)
+        if config.target.backbone_name == "argcn":
+            backbone = ARGCNForecastBackbone(config.data.context_length, config.data.horizon,
+                graph.num_nodes, config.model.input_channels, config.model.output_channels,
+                support, hidden_dim=config.target.backbone_hidden_dim)
+        else:
+            backbone = STAEformerForecastBackbone(config.data.context_length, config.data.horizon,
+                graph.num_nodes, config.model.input_channels, config.model.output_channels,
+                hidden_dim=64, heads=4, layers=2, ff_dim=128, dropout=config.model.dropout)
     else:
         raise ValueError(f"unsupported downstream backbone: {config.target.backbone_name}")
     return STAnchorDownstreamModel(
@@ -130,11 +238,19 @@ def build_downstream_model(
         mode=config.target.downstream_mode,
         horizon_aggregator=(
             HorizonAwareAggregationHead(hidden_dim=config.target.horizon_aggregation_hidden_dim)
-            if error_aware
+            if error_aware and config.target.validation_correction_variant != "set_attention_horizon"
             else None
         ),
         error_corrector=(
-            StructuredErrorCorrector(
+            CandidateSetHorizonCorrector(
+                config.data.context_length,
+                config.data.horizon,
+                config.model.input_channels,
+                hidden_dim=192,
+                state_dim=128,
+            )
+            if error_aware and config.target.validation_correction_variant == "set_attention_horizon"
+            else StructuredErrorCorrector(
                 config.data.context_length,
                 config.data.horizon,
                 config.model.input_channels,
@@ -147,6 +263,7 @@ def build_downstream_model(
             if error_aware
             else None
         ),
+
     )
 
 
@@ -364,10 +481,9 @@ def configure_error_aware_stage(
             raise ValueError("error-aware stages require StructuredErrorCorrector")
         for parameter in downstream.error_corrector.parameters():
             parameter.requires_grad_(True)
-        if downstream.horizon_aggregator is None:
-            raise ValueError("error-aware stages require HorizonAwareAggregationHead")
-        for parameter in downstream.horizon_aggregator.parameters():
-            parameter.requires_grad_(True)
+        if downstream.horizon_aggregator is not None:
+            for parameter in downstream.horizon_aggregator.parameters():
+                parameter.requires_grad_(True)
     groups = []
     backbone_parameters = [
         parameter for parameter in downstream.backbone.parameters() if parameter.requires_grad
@@ -380,11 +496,11 @@ def configure_error_aware_stage(
         groups.append({"params": backbone_parameters, "role": "backbone"})
     if calibrator_parameters:
         groups.append({"params": calibrator_parameters, "role": "calibrator"})
-    aggregation_parameters = [
-        parameter
-        for parameter in downstream.horizon_aggregator.parameters()
-        if downstream.horizon_aggregator is not None and parameter.requires_grad
-    ]
+    aggregation_parameters = (
+        [parameter for parameter in downstream.horizon_aggregator.parameters() if parameter.requires_grad]
+        if downstream.horizon_aggregator is not None
+        else []
+    )
     if aggregation_parameters:
         groups.append({"params": aggregation_parameters, "role": "aggregation"})
     return groups
@@ -581,6 +697,7 @@ def run_target_epoch(
     device: torch.device,
     optimizer: torch.optim.Optimizer | None,
     max_batches: int | None = None,
+    frozen_cache: dict[int, FrozenPathEntry] | None = None,
 ) -> TargetEpochResult:
     training = optimizer is not None
     downstream.train(training)
@@ -598,20 +715,39 @@ def run_target_epoch(
                 optimizer.zero_grad(set_to_none=True)
             x = batch["x"].to(device)
             observed_x = batch["x_observed"].to(device)
-            node_candidates, aggregation = retrieve_for_downstream_mode(
-                config.target.downstream_mode,
-                pretrained,
-                retriever,
-                bank,
-                data,
-                graph,
-                batch,
-                x,
-                observed_x,
-                device,
-                candidate_protocol=config.target.candidate_protocol,
+            sample_ids = batch["sample_id"]
+            cached_entries = (
+                [frozen_cache[int(value)] for value in sample_ids.detach().cpu().tolist()]
+                if frozen_cache is not None
+                and all(int(value) in frozen_cache for value in sample_ids.detach().cpu().tolist())
+                else None
             )
-            output = downstream(x, node_candidates, aggregation)
+            if cached_entries is not None:
+                entry = _merge_frozen_paths(cached_entries, device)
+                node_candidates = entry.candidates
+                aggregation = entry.aggregation
+                base_prediction = entry.base_prediction
+            else:
+                node_candidates, aggregation = retrieve_for_downstream_mode(
+                    config.target.downstream_mode, pretrained, retriever, bank, data, graph,
+                    batch, x, observed_x, device,
+                    candidate_protocol=config.target.candidate_protocol,
+                )
+                if config.target.training_protocol == POSTHOC_FROZEN_BASE:
+                    with torch.no_grad():
+                        base_prediction = downstream.backbone(x)
+                else:
+                    base_prediction = downstream.backbone(x)
+                if frozen_cache is not None:
+                    frozen_cache.update(
+                        _split_frozen_path(
+                            _freeze_path_entry(base_prediction, node_candidates, aggregation),
+                            sample_ids,
+                        )
+                    )
+            output = downstream(
+                x, node_candidates, aggregation, base_override=base_prediction
+            )
             losses = compute_downstream_loss(
                 output,
                 target=batch["y"].to(device),
@@ -723,7 +859,7 @@ def train_downstream(
         train_loader = DataLoader(
             training_dataset,
             batch_size=config.target.batch_size,
-            shuffle=True,
+            shuffle=not config.target.fixed_batch_order,
             num_workers=config.data.num_workers,
         )
         val_loader = DataLoader(
@@ -732,6 +868,8 @@ def train_downstream(
             shuffle=False,
             num_workers=config.data.num_workers,
         )
+        train_cache = {} if config.target.frozen_path_cache else None
+        val_cache = {} if config.target.frozen_path_cache else None
         # Loading a frozen encoder consumes RNG state. Reset before constructing
         # the downstream model so encoder variants share identical initialization.
         set_seed(config.runtime.seed)
@@ -909,7 +1047,8 @@ def train_downstream(
                 ]
                 train_result = run_target_epoch(
                     pretrained, downstream, retriever, bank, data, train_loader, graph,
-                    stage_config, data.scaler, device, optimizer, max_batches
+                    stage_config, data.scaler, device, optimizer, max_batches,
+                    frozen_cache=train_cache,
                 )
                 if base_provenance is not None:
                     current_base_fingerprint = _state_dict_fingerprint(
@@ -921,7 +1060,8 @@ def train_downstream(
                         )
                 val_result = run_target_epoch(
                     pretrained, downstream, retriever, bank, data, val_loader, graph,
-                    stage_config, data.scaler, device, None, max_batches
+                    stage_config, data.scaler, device, None, max_batches,
+                    frozen_cache=val_cache,
                 )
                 if device.type == "cuda":
                     torch.cuda.synchronize(device)

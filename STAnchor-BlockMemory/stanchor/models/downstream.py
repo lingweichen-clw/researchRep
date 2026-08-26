@@ -463,6 +463,81 @@ class StructuredErrorCorrector(nn.Module):
         return base + weight * (memory - base), weight, contributions
 
 
+
+class CandidateSetHorizonCorrector(nn.Module):
+    """Two-module correction head: candidate set attention plus horizon mixer."""
+    def __init__(self, context_length: int, horizon: int, channels: int, hidden_dim: int = 64, state_dim: int = 64):
+        super().__init__()
+        self.context_length, self.horizon, self.channels = context_length, horizon, channels
+        self.num_features = 9
+        self.state_encoder = nn.Sequential(
+            nn.Linear((context_length + horizon) * channels, state_dim), nn.GELU(),
+            nn.Linear(state_dim, state_dim), nn.GELU())
+        self.candidate_encoder = nn.Sequential(nn.Linear(channels * 2 + 3, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, hidden_dim))
+        self.query_proj = nn.Linear(state_dim, hidden_dim)
+        self.key_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.value_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.horizon_dw = nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1, groups=hidden_dim)
+        self.horizon_pw = nn.Linear(hidden_dim, hidden_dim)
+        self.alpha_head = nn.Linear(hidden_dim, 1)
+        self.beta_head = nn.Linear(hidden_dim, 1)
+        self.risk_probe = nn.Linear(state_dim, horizon)
+
+    def _state(self, history, base):
+        b,t,n,c=history.shape
+        h=base.shape[1]
+        node_h=history.permute(0,2,1,3)
+        finite=torch.isfinite(node_h)
+        count=finite.sum(2,keepdim=True).clamp_min(1)
+        safe=torch.where(finite,node_h,torch.zeros_like(node_h))
+        mean=safe.sum(2,keepdim=True)/count.to(node_h.dtype)
+        centered=torch.where(finite,node_h-mean,torch.zeros_like(node_h))
+        variance=centered.square().sum(2,keepdim=True)/count.to(node_h.dtype)
+        normalized=centered/(variance+1.0e-6).sqrt()
+        base_state=torch.nan_to_num(base.permute(0,2,1,3))
+        z=torch.cat((normalized,base_state), dim=2).reshape(b,n,-1)
+        return self.state_encoder(z)
+
+    def predict_risk(self, history, base):
+        state=self._state(history,base); risk=torch.nn.functional.softplus(self.risk_probe(state))
+        return risk.permute(0,2,1).unsqueeze(-1).contiguous(), state
+
+    def forward(self, history, base, memory, features, memory_valid, risk_state=None, candidates=None, aggregation=None):
+        if candidates is None or aggregation is None:
+            raise ValueError("CandidateSetHorizonCorrector requires candidates and aggregation")
+        cand=torch.nan_to_num(aggregation.candidate_futures)
+        mask=aggregation.candidate_masks.bool(); valid=mask.any(-1)
+        b,h,n,k,c=cand.shape
+        if risk_state is None: risk_state=self._state(history,base)
+        delta=cand-base.unsqueeze(3); abs_delta=delta.abs()
+        sim=torch.nan_to_num(
+            candidates.shape_scores[:,None,:,:,None].expand(b,h,n,k,1)
+        )
+        level=torch.nan_to_num(
+            (-candidates.level_distances[:,None,:,:,None]).expand(b,h,n,k,1)
+        )
+        pos=torch.linspace(0,1,h,device=base.device,dtype=base.dtype).view(1,h,1,1,1).expand(b,h,n,k,1)
+        tok=self.candidate_encoder(torch.cat((delta,abs_delta,sim,level,pos),dim=-1))
+        tok=torch.where(valid.unsqueeze(-1),tok,torch.zeros_like(tok))
+        q=self.query_proj(risk_state)[:,None,:,:].expand(b,h,n,-1)
+        logits=(self.key_proj(tok)*q.unsqueeze(3)).sum(-1)/(tok.shape[-1]**0.5)
+        logits=logits.masked_fill(~valid,-1e9); attn=torch.softmax(logits,dim=-1); attn=attn*valid.to(attn.dtype); attn=attn/attn.sum(-1,keepdim=True).clamp_min(1e-8)
+        pooled=(attn.unsqueeze(-1)*tok).sum(3)
+        flat = pooled.permute(0, 2, 3, 1).reshape(b * n, tok.shape[-1], h)
+        mixed = self.horizon_dw(flat).transpose(1, 2)
+        mixed = self.horizon_pw(mixed).reshape(b, n, h, tok.shape[-1]).permute(0, 2, 1, 3)
+        pooled = pooled + mixed
+        alpha=torch.sigmoid(self.alpha_head(pooled))
+        residual_mean=(attn.unsqueeze(-1)*delta).sum(3,keepdim=True)
+        residual_variance=(attn.unsqueeze(-1)*(delta-residual_mean).square()).sum(3)
+        disp=(residual_variance+1.0e-8).sqrt().mean(-1,keepdim=True)
+        beta=0.25*disp*torch.tanh(self.beta_head(pooled))
+        residual=(attn.unsqueeze(-1)*delta).sum(3)
+        final=base+alpha*residual+beta
+        final=torch.where(aggregation.valid.all(-1,keepdim=True),final,base)
+        learned_memory = base + residual
+        return final, alpha, torch.cat((residual.abs().mean(-1,keepdim=True),disp),dim=-1), learned_memory
+
 class SafeResidualFusion(nn.Module):
     def __init__(self, horizon: int, initial_max_weight: float = 0.1) -> None:
         super().__init__()
@@ -541,8 +616,6 @@ class STAnchorDownstreamModel(nn.Module):
         self.horizon_aggregator = horizon_aggregator
         if self.mode == LEARNED_TOPK_ERROR_AWARE and error_corrector is None:
             raise ValueError("error-aware mode requires StructuredErrorCorrector")
-        if self.mode == LEARNED_TOPK_ERROR_AWARE and horizon_aggregator is None:
-            raise ValueError("error-aware mode requires HorizonAwareAggregationHead")
 
     def train(self, mode: bool = True) -> "STAnchorDownstreamModel":
         super().train(mode)
@@ -565,8 +638,11 @@ class STAnchorDownstreamModel(nn.Module):
         x: torch.Tensor,
         candidates: NodeCandidates | None,
         aggregation: AggregationOutput | None,
+        base_override: torch.Tensor | None = None,
     ) -> DownstreamOutput:
-        base = self.backbone(x)
+        base = self.backbone(x) if base_override is None else base_override
+        if base.shape[0] != x.shape[0] or base.shape[2] != x.shape[2]:
+            raise ValueError("base_override must match batch and node dimensions")
         batch, horizon, nodes, _ = base.shape
         node_shape = (batch, horizon, nodes, 1)
         if self.mode == BASE_ONLY:
@@ -613,26 +689,30 @@ class STAnchorDownstreamModel(nn.Module):
         if self.mode == LEARNED_TOPK_ERROR_AWARE:
             if self.error_corrector is None:
                 raise RuntimeError("error-aware corrector is not initialized")
-            aggregation = self.horizon_aggregator(candidates, aggregation, base)
             predicted_risk, risk_state = self.error_corrector.predict_risk(x, base)
-            features, memory_valid = build_error_aware_features(
-                candidates,
-                aggregation,
-                base,
-                predicted_risk,
-                self.confidence_level_temperature,
-            )
-            final, fusion_weight, contributions = self.error_corrector(
-                x,
-                base,
-                aggregation.prediction,
-                features,
-                memory_valid,
-                risk_state=risk_state,
-            )
+            if isinstance(self.error_corrector, CandidateSetHorizonCorrector):
+                memory_valid = aggregation.valid.all(dim=-1, keepdim=True)
+                final, fusion_weight, contributions, learned_memory = self.error_corrector(
+                    x, base, aggregation.prediction, None, memory_valid,
+                    risk_state=risk_state, candidates=candidates, aggregation=aggregation,
+                )
+                features = torch.zeros((*base.shape[:-1], 9), dtype=base.dtype, device=base.device)
+                memory_prediction = learned_memory
+            else:
+                if self.horizon_aggregator is not None:
+                    aggregation = self.horizon_aggregator(candidates, aggregation, base)
+                features, memory_valid = build_error_aware_features(
+                    candidates, aggregation, base, predicted_risk,
+                    self.confidence_level_temperature,
+                )
+                final, fusion_weight, contributions = self.error_corrector(
+                    x, base, aggregation.prediction, features, memory_valid,
+                    risk_state=risk_state,
+                )
+                memory_prediction = aggregation.prediction
             return DownstreamOutput(
                 base_prediction=base,
-                memory_prediction=aggregation.prediction,
+                memory_prediction=memory_prediction,
                 confidence_features=features,
                 confidence=fusion_weight,
                 fusion_weight=fusion_weight,
@@ -663,4 +743,5 @@ class STAnchorDownstreamModel(nn.Module):
             final_prediction=final,
             memory_valid=memory_valid,
         )
+
 

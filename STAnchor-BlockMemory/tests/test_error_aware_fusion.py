@@ -15,6 +15,7 @@ from stanchor.losses.downstream import (
     compute_downstream_loss,
 )
 from stanchor.models.downstream import (
+    CandidateSetHorizonCorrector,
     ConfidenceHead,
     LightweightForecastBackbone,
     SafeResidualFusion,
@@ -83,6 +84,63 @@ class ErrorAwareFusionTest(unittest.TestCase):
         self.assertEqual(tuple(features.shape), (2, 3, 4, 9))
         self.assertTrue(bool(memory_valid.all()))
         self.assertTrue(bool(torch.isfinite(features).all()))
+
+    def test_candidate_set_corrector_handles_missing_history_values(self) -> None:
+        x, base, candidates, aggregation = self._inputs()
+        x[0, 2, 1, 0] = float("nan")
+        x[1, 7, 3, 0] = float("inf")
+        corrector = CandidateSetHorizonCorrector(
+            context_length=12, horizon=3, channels=1, hidden_dim=32, state_dim=24
+        )
+        risk, state = corrector.predict_risk(x, base)
+        final, weight, contributions, learned_memory = corrector(
+            x, base, aggregation.prediction, None,
+            aggregation.valid.all(dim=-1, keepdim=True),
+            risk_state=state, candidates=candidates, aggregation=aggregation,
+        )
+        self.assertTrue(bool(torch.isfinite(risk).all()))
+        self.assertTrue(bool(torch.isfinite(final).all()))
+        self.assertTrue(bool(torch.isfinite(weight).all()))
+        self.assertTrue(bool(torch.isfinite(contributions).all()))
+        self.assertTrue(bool(torch.isfinite(learned_memory).all()))
+
+    def test_candidate_set_corrector_ignores_nonfinite_padded_candidate_scores(self) -> None:
+        x, base, candidates, aggregation = self._inputs()
+        candidates.shape_scores[0, 0, 1] = float("-inf")
+        candidates.level_distances[0, 0, 1] = float("inf")
+        aggregation.candidate_futures[0, :, 0, 1, :] = float("nan")
+        aggregation.candidate_masks[0, :, 0, 1, :] = False
+        corrector = CandidateSetHorizonCorrector(
+            context_length=12, horizon=3, channels=1, hidden_dim=32, state_dim=24
+        )
+        risk, state = corrector.predict_risk(x, base)
+        final, weight, contributions, learned_memory = corrector(
+            x, base, aggregation.prediction, None,
+            aggregation.valid.all(dim=-1, keepdim=True),
+            risk_state=state, candidates=candidates, aggregation=aggregation,
+        )
+        self.assertTrue(bool(torch.isfinite(final).all()))
+        self.assertTrue(bool(torch.isfinite(weight).all()))
+        self.assertTrue(bool(torch.isfinite(contributions).all()))
+        self.assertTrue(bool(torch.isfinite(learned_memory).all()))
+
+    def test_candidate_set_corrector_has_finite_gradients_at_zero_dispersion(self) -> None:
+        x, base, candidates, aggregation = self._inputs()
+        identical = base.unsqueeze(3).expand_as(aggregation.candidate_futures) + 0.2
+        aggregation.candidate_futures.copy_(identical)
+        corrector = CandidateSetHorizonCorrector(
+            context_length=12, horizon=3, channels=1, hidden_dim=32, state_dim=24
+        )
+        risk, state = corrector.predict_risk(x, base)
+        final, _, _, _ = corrector(
+            x, base, aggregation.prediction, None,
+            aggregation.valid.all(dim=-1, keepdim=True),
+            risk_state=state, candidates=candidates, aggregation=aggregation,
+        )
+        final.square().mean().backward()
+        gradients = [parameter.grad for parameter in corrector.parameters() if parameter.grad is not None]
+        self.assertTrue(gradients)
+        self.assertTrue(all(bool(torch.isfinite(gradient).all()) for gradient in gradients))
 
     def test_additive_fusion_starts_at_point_one_and_returns_contributions(self) -> None:
         x, base, candidates, aggregation = self._inputs()

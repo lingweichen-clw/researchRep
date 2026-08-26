@@ -63,7 +63,9 @@ class ForecastMetricAccumulator:
     def update(self, prediction: torch.Tensor, target: torch.Tensor, observed: torch.Tensor) -> None:
         if prediction.shape != target.shape or observed.shape != target.shape:
             raise ValueError("metric tensors must have identical shapes")
-        valid = observed.bool()
+        # Keep metric reductions finite when masked traffic tensors contain
+        # NaN/Inf sentinels for missing values.
+        valid = observed.bool() & torch.isfinite(prediction) & torch.isfinite(target)
         error = prediction - target
         absolute = error.abs()
         self.absolute_sum += float(absolute.masked_select(valid).sum().cpu())
