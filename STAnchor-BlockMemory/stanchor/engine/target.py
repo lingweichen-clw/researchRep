@@ -223,11 +223,14 @@ def build_downstream_model(
         if config.target.backbone_name == "argcn":
             backbone = ARGCNForecastBackbone(config.data.context_length, config.data.horizon,
                 graph.num_nodes, config.model.input_channels, config.model.output_channels,
-                support, hidden_dim=config.target.backbone_hidden_dim)
+                support, hidden_dim=128, num_layers=1, cheb_k=3)
         else:
             backbone = STAEformerForecastBackbone(config.data.context_length, config.data.horizon,
                 graph.num_nodes, config.model.input_channels, config.model.output_channels,
-                hidden_dim=64, heads=4, layers=2, ff_dim=128, dropout=config.model.dropout)
+                steps_per_day=288, input_embedding_dim=24, tod_embedding_dim=24,
+                dow_embedding_dim=24, spatial_embedding_dim=0,
+                adaptive_embedding_dim=80, feed_forward_dim=256,
+                heads=4, layers=3, dropout=0.1)
     else:
         raise ValueError(f"unsupported downstream backbone: {config.target.backbone_name}")
     return STAnchorDownstreamModel(
