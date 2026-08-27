@@ -307,8 +307,8 @@ class DownstreamDiagnosticAccumulator:
                 raise ValueError("risk diagnostics must be [B,H,N,1]")
             if blend_target.shape != expected_node_shape or blend_valid.shape != expected_node_shape:
                 raise ValueError("blend diagnostics must be [B,H,N,1]")
-            if additive_contributions.shape != target.shape[:-1] + (9,):
-                raise ValueError("additive_contributions must be [B,H,N,9]")
+            if additive_contributions.ndim != 4 or additive_contributions.shape[:3] != target.shape[:3]:
+                raise ValueError("additive_contributions must be [B,H,N,F]")
             risk_valid = observed_bool.any(dim=-1)
             self._predicted_risk.append(predicted_risk.squeeze(-1)[risk_valid].float().cpu().numpy())
             self._true_risk.append(true_risk.squeeze(-1)[risk_valid].float().cpu().numpy())
