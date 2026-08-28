@@ -351,14 +351,41 @@ def offset_decay_hard_negative_retrieval_loss(
     valid_anchor = positive.any(dim=1) & torch.isfinite(numerator) & torch.isfinite(denominator)
     if bool(valid_anchor.any()):
         loss = (denominator - numerator).masked_select(valid_anchor).mean()
+        # Report support on the exact candidate pool used by HN-OD.  The
+        # teacher is future-distance based; the student includes the same
+        # hard-negative reweighting as the denominator above.  These are
+        # detached diagnostics and never participate in the training loss.
+        with torch.no_grad():
+            teacher_distribution = _masked_softmax(
+                -targets.future_distance / teacher_temperature,
+                valid,
+                valid_anchor,
+            )
+            student_distribution = _masked_softmax(
+                torch.where(
+                    hard_negative,
+                    logits + hard_log_weight,
+                    logits,
+                ),
+                valid,
+                valid_anchor,
+            )
+            teacher_keff = 1.0 / teacher_distribution.pow(2).sum(dim=1).clamp_min(1.0e-12)
+            student_keff = 1.0 / student_distribution.pow(2).sum(dim=1).clamp_min(1.0e-12)
+            teacher_support = float(teacher_keff.masked_select(valid_anchor).mean())
+            student_support = float(student_keff.masked_select(valid_anchor).mean())
     else:
         loss = node_keys.sum() * 0.0
+        teacher_support = 0.0
+        student_support = 0.0
     return RetrievalLossOutput(
         loss=loss,
         valid_anchors=int(valid_anchor.sum().item()),
         positive_pairs=int(positive.sum().item()),
         hard_negative_pairs=int(hard_negative.sum().item()),
         candidate_pairs=int(valid.sum().item()),
+        teacher_effective_support=teacher_support,
+        student_effective_support=student_support,
     )
 
 

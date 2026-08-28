@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import unittest
 
 import torch
@@ -13,6 +14,7 @@ from stanchor.losses.pretraining import (
     build_offset_decay_signature,
     future_relation_retrieval_loss,
     hard_mirage_ranking_loss,
+    offset_decay_hard_negative_retrieval_loss,
 )
 
 
@@ -346,6 +348,39 @@ class FutureRelationLossTest(unittest.TestCase):
         self.assertIsNotNone(keys.grad)
         self.assertTrue(bool(torch.isfinite(keys.grad).all()))
         self.assertGreater(float(keys.grad.abs().sum()), 0.0)
+
+    def test_hn_offset_decay_reports_effective_support(self) -> None:
+        keys = torch.randn(self.batch, 1, 3, requires_grad=True)
+        context_normalized = torch.zeros(self.batch, 3, 1, 1)
+        context_observed = torch.ones_like(context_normalized, dtype=torch.bool)
+        forecast_context = torch.zeros_like(context_normalized)
+        result = offset_decay_hard_negative_retrieval_loss(
+            node_keys=keys,
+            context_normalized=context_normalized,
+            future_model=self.future,
+            context_statistics=self.statistics,
+            context_observed=context_observed,
+            future_observed=self.future_observed,
+            context_start=self.context_start,
+            future_end=self.future_end,
+            teacher_temperature=0.1,
+            student_temperature=0.1,
+            relation_teacher_mode="offset_decay",
+            forecast_context=forecast_context,
+            forecast_context_observed=context_observed,
+            relation_distance_normalization="anchor_mean",
+        )
+
+        self.assertGreater(result.candidate_pairs, 0)
+        self.assertGreater(result.valid_anchors, 0)
+        self.assertTrue(math.isfinite(result.teacher_effective_support))
+        self.assertTrue(math.isfinite(result.student_effective_support))
+        self.assertGreater(result.teacher_effective_support, 1.0)
+        self.assertGreater(result.student_effective_support, 1.0)
+        self.assertTrue(bool(torch.isfinite(result.loss)))
+        result.loss.backward()
+        self.assertIsNotNone(keys.grad)
+        self.assertTrue(bool(torch.isfinite(keys.grad).all()))
 
     def test_single_candidate_is_excluded_from_relation_gradient(self) -> None:
         future = self.future[:2]
