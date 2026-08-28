@@ -1,4 +1,4 @@
-﻿data:
+data:
   raw_path: ../data/METRLA_data/METR-LA.h5
   adjacency_path: ../data/METRLA_data/adj_mx.pkl
   context_length: 12
@@ -68,7 +68,7 @@ pretrain:
   progress_interval: 10
 
 bank:
-  output_dir: artifacts/metrla_bank_e5_tgge_single_view_masked_relation_v3_seed42
+  output_dir: artifacts/case_bank_hn_offset_decay_v1_seed42
   memory_fraction: 0.7
   event_top_r: 32
   node_top_k: 5

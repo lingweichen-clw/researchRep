@@ -11,7 +11,7 @@
 | Forecast only | 2.845435 |
 | Scalar gate | 2.851374 |
 | Vector residual | 2.858691 |
-| Residual additive | 2.836799 |
+| Residual additive | 2.836799 | To be bought by Please tell me, I I How  To be bought by Please tell me, I I How I I don't Oh, we're No, they didn't. I don't think Yeah, It's kind of This is I don't know.
 | Residual additive + forecast-only，5 epoch | 2.830616 |
 
 因此删除 blend loss；risk loss 不再反向传播，只保留风险诊断统计。主优化目标改为最终预测的 masked MAE。

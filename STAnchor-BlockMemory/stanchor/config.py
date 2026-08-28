@@ -1,4 +1,4 @@
-"""Typed configuration for all STAnchor experiment stages."""
+﻿"""Typed configuration for all STAnchor experiment stages."""
 
 from __future__ import annotations
 
@@ -148,6 +148,11 @@ class TargetConfig:
     help_margin: float = 0.0
     help_temperature: float = 0.1
     backbone_name: str = "lightweight"
+    # STAEformer must use the same temporal-covariate protocol in base-only
+    # pretraining and post-hoc TGGE inference.  ``calendar`` consumes the
+    # dataset-provided slot/weekday; ``fallback`` is kept only for reproducing
+    # legacy checkpoints trained before calendar covariates were wired through.
+    staeformer_time_feature_mode: str = "calendar"
     backbone_hidden_dim: int = 64
     stgcn_temporal_kernel: int = 3
     stgcn_graph_kernel: int = 3
@@ -175,9 +180,15 @@ class TargetConfig:
     horizon_aggregation_hidden_dim: int = 256
     risk_weight: float = 0.1
     blend_weight: float = 0.1
+    candidate_quality_weight: float = 0.0
     blend_minimum_direction_norm: float = 1.0e-4
     validation_loss_variant: str = "forecast_risk_blend"
     validation_correction_variant: str = "scalar_gate"
+    calibrator_arch: str = "legacy"
+    candidate_token_dim: int = 32
+    candidate_attention_heads: int = 4
+    base_logit_init_bias: float = 1.0
+    candidate_quality_temperature: float = 0.2
     frozen_path_cache: bool = False
     fixed_batch_order: bool = False
     base_warmup_epochs: int = 0
@@ -230,6 +241,8 @@ class ExperimentConfig:
             )
         if self.target.backbone_name not in {"lightweight", "stgcn", "graph_wavenet", "argcn", "staeformer"}:
             raise ValueError("backbone_name must be lightweight, stgcn, graph_wavenet, argcn, or staeformer")
+        if self.target.staeformer_time_feature_mode not in {"calendar", "fallback"}:
+            raise ValueError("staeformer_time_feature_mode must be calendar or fallback")
         if self.data.context_length <= 0 or self.data.horizon <= 0:
             raise ValueError("context_length and horizon must be positive")
         if self.data.encoder_context_length < self.data.context_length:
@@ -466,8 +479,16 @@ class ExperimentConfig:
             raise ValueError("blend_minimum_direction_norm must be positive")
         if self.target.validation_loss_variant not in {"forecast_risk_blend", "forecast_risk", "forecast_only"}:
             raise ValueError("unsupported validation_loss_variant")
-        if self.target.validation_correction_variant not in {"scalar_gate", "vector_residual", "residual_additive", "set_attention_horizon"}:
+        if self.target.validation_correction_variant not in {"scalar_gate", "vector_residual", "residual_additive", "set_attention_horizon", "base_as_candidate"}:
             raise ValueError("unsupported validation_correction_variant")
+        if self.target.calibrator_arch not in {"legacy", "base_as_candidate"}:
+            raise ValueError("unsupported calibrator_arch")
+        if self.target.candidate_token_dim <= 0 or self.target.candidate_attention_heads <= 0:
+            raise ValueError("candidate token dimensions must be positive")
+        if self.target.candidate_token_dim % self.target.candidate_attention_heads != 0:
+            raise ValueError("candidate_token_dim must be divisible by candidate_attention_heads")
+        if self.target.candidate_quality_temperature <= 0:
+            raise ValueError("candidate_quality_temperature must be positive")
         if self.target.frozen_path_cache and self.target.training_protocol != POSTHOC_FROZEN_BASE:
             raise ValueError("frozen_path_cache requires posthoc_frozen_base")
         if self.target.backbone_name == "stgcn":
@@ -567,4 +588,8 @@ def project_root() -> Path:
 def resolve_project_path(path: str | Path) -> Path:
     candidate = Path(path)
     return candidate if candidate.is_absolute() else (project_root() / candidate).resolve()
+
+
+
+
 

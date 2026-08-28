@@ -66,7 +66,7 @@ pretrain:
   progress_interval: 10
 
 bank:
-  output_dir: artifacts/convergence/tgge_single_view_v3_higher_order_reconstruction2/bank
+  output_dir: artifacts/case_bank_hn_offset_decay_v1_seed42
   memory_fraction: 0.7
   event_top_r: 32
   node_top_k: 5

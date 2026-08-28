@@ -66,7 +66,7 @@ pretrain:
   progress_interval: 10
 
 bank:
-  output_dir: artifacts/convergence/tgge_single_view_v3_higher_order_reconstruction2/bank
+  output_dir: artifacts/case_bank_hn_offset_decay_v1_seed42
   memory_fraction: 0.7
   event_top_r: 32
   node_top_k: 5
@@ -76,8 +76,8 @@ bank:
   key_dtype: float16
 
 target:
-  downstream_mode: base_only
-  training_protocol: staged_joint
+  downstream_mode: learned_topk_error_aware
+  training_protocol: posthoc_frozen_base
   training_data_scope: full_train
   candidate_protocol: exact_calendar
   batch_size: 32
@@ -94,7 +94,6 @@ target:
   help_margin: 0.0
   help_temperature: 0.1
   backbone_name: stgcn
-  backbone_hidden_dim: 64
   stgcn_temporal_kernel: 3
   stgcn_graph_kernel: 3
   stgcn_block_num: 2
@@ -104,6 +103,17 @@ target:
   stgcn_dropout: 0.5
   patience: 10
   early_stopping_enabled: false
+  risk_hidden_dim: 256
+  fusion_feature_hidden_dim: 64
+  horizon_aggregation_hidden_dim: 256
+  risk_weight: 0.0
+  blend_weight: 0.0
+  candidate_quality_weight: 0.05
+  candidate_quality_temperature: 0.1
+  validation_loss_variant: forecast_only
+  validation_correction_variant: set_attention_horizon
+  frozen_path_cache: true
+  blend_minimum_direction_norm: 0.0001
   base_warmup_epochs: 0
   calibrator_warmup_epochs: 0
   backbone_learning_rate_scale: 0.1
@@ -112,4 +122,7 @@ runtime:
   seed: 42
   device: cuda:0
   output_dir: artifacts
-  run_name: convergence/downstream_tgge_v3_matched_fulltrain_queue/downstream_tgge_v3_stgcn_base_only_fulltrain_seed42
+  run_name: convergence/validation_20260827_hn_candidate_quality_stgcn_3epoch
+
+
+

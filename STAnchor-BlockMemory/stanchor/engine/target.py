@@ -1,4 +1,4 @@
-"""Target calibration, safe fusion training, and evaluation."""
+﻿"""Target calibration, safe fusion training, and evaluation."""
 
 from __future__ import annotations
 
@@ -42,6 +42,7 @@ from stanchor.models.downstream import (
     STAnchorDownstreamModel,
     StructuredErrorCorrector,
     CandidateSetHorizonCorrector,
+    LegacyCandidateSetHorizonCorrector,
 )
 from stanchor.models.pretraining import STAnchorPretrainModel
 from stanchor.models.stgcn import STGCNForecastBackbone
@@ -69,6 +70,7 @@ class TargetEpochResult:
     batches: int
     risk_loss: float = 0.0
     blend_loss: float = 0.0
+    candidate_quality_loss: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -241,18 +243,22 @@ def build_downstream_model(
         mode=config.target.downstream_mode,
         horizon_aggregator=(
             HorizonAwareAggregationHead(hidden_dim=config.target.horizon_aggregation_hidden_dim)
-            if error_aware and config.target.validation_correction_variant != "set_attention_horizon"
+            if error_aware and config.target.validation_correction_variant not in {"set_attention_horizon", "base_as_candidate"}
             else None
         ),
         error_corrector=(
-            CandidateSetHorizonCorrector(
+            (CandidateSetHorizonCorrector(
                 config.data.context_length,
                 config.data.horizon,
                 config.model.input_channels,
-                hidden_dim=192,
-                state_dim=128,
-            )
-            if error_aware and config.target.validation_correction_variant == "set_attention_horizon"
+                hidden_dim=config.target.candidate_token_dim,
+                state_dim=config.target.candidate_token_dim,
+                attention_heads=config.target.candidate_attention_heads,
+                base_logit_init_bias=config.target.base_logit_init_bias,
+            ) if config.target.validation_correction_variant == "base_as_candidate" else LegacyCandidateSetHorizonCorrector(
+                config.data.context_length, config.data.horizon,
+                config.model.input_channels, hidden_dim=192, state_dim=128))
+            if error_aware and config.target.validation_correction_variant in {"set_attention_horizon", "base_as_candidate"}
             else StructuredErrorCorrector(
                 config.data.context_length,
                 config.data.horizon,
@@ -562,14 +568,26 @@ def retrieve_for_downstream_mode(
             graph,
         )
         if candidate_protocol == "exact_calendar":
-            _, candidates, aggregation = retriever.retrieve(
-                query_event_keys=encoding.retrieval.event_keys,
-                query_node_keys=encoding.retrieval.node_keys,
-                query_levels=encoding.statistics.level_features,
+            # The legal exact-calendar pool is already small (about eight
+            # events/query on METR-LA).  Event keys are mean-pooled across
+            # nodes and are not independently supervised, so they are
+            # intentionally bypassed here; node keys perform the actual Top-K
+            # selection over the complete legal pool.
+            events = calendar_event_candidates(
+                bank,
                 weekday=batch["query_weekday"].to(device),
                 slot=batch["query_slot"].to(device),
                 context_start=batch["context_start"].to(device),
+                max_candidates=retriever.event_top_r,
+                device=device,
+                candidate_protocol=candidate_protocol,
             )
+            candidates = retriever.rerank_nodes(
+                encoding.retrieval.node_keys,
+                encoding.statistics.level_features,
+                events,
+            )
+            aggregation = retriever.aggregate(candidates)
         else:
             events = calendar_event_candidates(
                 bank,
@@ -706,7 +724,7 @@ def run_target_epoch(
     downstream.train(training)
     if pretrained is not None:
         pretrained.eval()
-    total = forecast = confidence = risk = blend = 0.0
+    total = forecast = confidence = risk = blend = candidate_quality = 0.0
     batches = 0
     metrics = ForecastMetricAccumulator(config.data.horizon)
     context = torch.enable_grad() if training else torch.no_grad()
@@ -738,6 +756,8 @@ def run_target_epoch(
                 )
                 def _backbone_forward(inp):
                     if config.target.backbone_name == "staeformer":
+                        if config.target.staeformer_time_feature_mode == "fallback":
+                            return downstream.backbone(inp)
                         return downstream.backbone(
                             inp,
                             tod=batch["slot"].to(device),
@@ -775,6 +795,8 @@ def run_target_epoch(
                     config.target.blend_minimum_direction_norm
                 ),
                 loss_variant=config.target.validation_loss_variant,
+                candidate_quality_weight=(config.target.candidate_quality_weight if training else 0.0),
+                candidate_quality_temperature=config.target.candidate_quality_temperature,
             )
             require_finite(losses.total, "downstream loss")
             if training:
@@ -786,6 +808,7 @@ def run_target_epoch(
             confidence += float(losses.confidence.detach())
             risk += float((losses.risk if losses.risk is not None else losses.total * 0.0).detach())
             blend += float((losses.blend if losses.blend is not None else losses.total * 0.0).detach())
+            candidate_quality += float((losses.candidate_quality if losses.candidate_quality is not None else losses.total * 0.0).detach())
             target_model = batch["y"].to(device)
             metrics.update(
                 scaler.inverse_transform_torch(output.final_prediction.detach()),
@@ -803,6 +826,7 @@ def run_target_epoch(
         batches,
         risk / batches,
         blend / batches,
+        candidate_quality / batches,
     )
 
 
@@ -934,6 +958,12 @@ def train_downstream(
             config.target.training_protocol,
             config.target.candidate_protocol,
         )
+        if config.target.backbone_name == "staeformer":
+            logger.info(
+                "STAEformer temporal covariates | mode=%s | source=%s",
+                config.target.staeformer_time_feature_mode,
+                "dataset slot/weekday" if config.target.staeformer_time_feature_mode == "calendar" else "backbone fallback",
+            )
         logger.info(
             "Downstream initialization | seed=%d | state_hash=%s",
             config.runtime.seed,
@@ -1267,4 +1297,16 @@ def evaluate_downstream(
             pretrained, downstream, retriever, bank, data, loader, graph, config,
             data.scaler, device, None, max_batches
         )
+
+
+
+
+
+
+
+
+
+
+
+
 

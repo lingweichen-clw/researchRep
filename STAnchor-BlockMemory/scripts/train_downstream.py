@@ -51,6 +51,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override the node reranking level weight; use 0 for key-only attribution.",
     )
+    parser.add_argument(
+        "--candidate-quality-weight",
+        type=float,
+        default=None,
+        help="Override the candidate-quality teacher loss weight.",
+    )
     parser.add_argument("--seed", type=int, default=None, help="Override only the downstream seed.")
     parser.add_argument(
         "--disable-early-stopping",
@@ -121,6 +127,16 @@ def main() -> None:
         config = replace(
             config,
             bank=replace(config.bank, level_weight=args.level_weight),
+        )
+    if args.candidate_quality_weight is not None:
+        if args.candidate_quality_weight < 0:
+            raise ValueError("candidate-quality-weight must be non-negative")
+        config = replace(
+            config,
+            target=replace(
+                config.target,
+                candidate_quality_weight=args.candidate_quality_weight,
+            ),
         )
     if args.seed is not None:
         config = replace(config, runtime=replace(config.runtime, seed=args.seed))

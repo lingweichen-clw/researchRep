@@ -20,6 +20,7 @@ class DownstreamLoss:
     blend: torch.Tensor | None = None
     risk_target: torch.Tensor | None = None
     blend_target: torch.Tensor | None = None
+    candidate_quality: torch.Tensor | None = None
 
 
 def masked_mae(prediction: torch.Tensor, target: torch.Tensor, observed: torch.Tensor) -> torch.Tensor:
@@ -34,6 +35,25 @@ def masked_mae(prediction: torch.Tensor, target: torch.Tensor, observed: torch.T
         raise ValueError("masked MAE has no observed targets")
     return (prediction - target).abs().masked_select(valid).mean()
 
+
+def candidate_quality_kl_loss(
+    attention: torch.Tensor,
+    candidate_errors: torch.Tensor,
+    valid: torch.Tensor,
+    temperature: float = 0.1,
+) -> torch.Tensor:
+    """Distill lower candidate error into attention weights."""
+    if attention.ndim != 4 or candidate_errors.shape != attention.shape or valid.shape != attention.shape:
+        raise ValueError("attention, candidate_errors, and valid must be [B,H,N,K]")
+    if temperature <= 0:
+        raise ValueError("temperature must be positive")
+    mask = valid.bool() & torch.isfinite(candidate_errors) & torch.isfinite(attention)
+    teacher = torch.softmax((-candidate_errors / temperature).masked_fill(~mask, -torch.inf), dim=-1)
+    teacher = torch.where(mask, teacher, torch.zeros_like(teacher))
+    student = attention.clamp_min(1.0e-8)
+    pointwise = teacher * (teacher.clamp_min(1.0e-8).log() - student.log())
+    locations = mask.any(dim=-1)
+    return pointwise.sum(dim=-1).masked_select(locations).mean() if bool(locations.any()) else attention.sum() * 0.0
 
 def build_huber_risk_target(
     base: torch.Tensor,
@@ -92,14 +112,21 @@ def compute_downstream_loss(
     blend_weight: float = 0.1,
     blend_minimum_direction_norm: float = 1.0e-4,
     loss_variant: str = "forecast_risk_blend",
+    candidate_quality_weight: float = 0.0,
+    candidate_quality_temperature: float = 0.1,
 ) -> DownstreamLoss:
     forecast = masked_mae(output.final_prediction, target, observed)
+    candidate_quality = forecast * 0.0
+    if candidate_quality_weight > 0.0 and output.candidate_attention is not None and output.candidate_futures is not None and output.candidate_masks is not None:
+        candidate_errors = (output.candidate_futures - target.unsqueeze(3)).abs().mean(dim=-1)
+        candidate_quality = candidate_quality_kl_loss(output.candidate_attention, candidate_errors, output.candidate_masks.bool().all(dim=-1), candidate_quality_temperature)
     if use_error_aware:
         if loss_variant == "forecast_only":
             connected_zero = output.confidence.sum() * 0.0
             return DownstreamLoss(
-                total=forecast, forecast=forecast, confidence=connected_zero,
+                total=forecast + candidate_quality_weight * candidate_quality, forecast=forecast, confidence=connected_zero,
                 confidence_target=torch.zeros_like(output.confidence),
+                candidate_quality=candidate_quality,
             )
         if output.predicted_base_risk is None:
             raise ValueError("error-aware loss requires predicted_base_risk")
@@ -132,7 +159,7 @@ def compute_downstream_loss(
         else:
             blend = output.fusion_weight.sum() * 0.0
         return DownstreamLoss(
-            total=(forecast + risk_weight * risk + blend_weight * blend
+            total=(forecast + candidate_quality_weight * candidate_quality + risk_weight * risk + blend_weight * blend
                    if loss_variant == "forecast_risk_blend"
                    else forecast + risk_weight * risk
                    if loss_variant == "forecast_risk"
@@ -144,6 +171,7 @@ def compute_downstream_loss(
             blend=blend,
             risk_target=risk_target,
             blend_target=blend_target,
+            candidate_quality=candidate_quality,
         )
     if not use_confidence:
         connected_zero = output.confidence.sum() * 0.0

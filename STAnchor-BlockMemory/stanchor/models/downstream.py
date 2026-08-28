@@ -1,4 +1,4 @@
-"""Lightweight forecasting, mirage confidence, and exact fallback fusion."""
+﻿"""Lightweight forecasting, mirage confidence, and exact fallback fusion."""
 
 from __future__ import annotations
 
@@ -464,79 +464,241 @@ class StructuredErrorCorrector(nn.Module):
 
 
 
-class CandidateSetHorizonCorrector(nn.Module):
+class LegacyCandidateSetHorizonCorrector(nn.Module):
     """Two-module correction head: candidate set attention plus horizon mixer."""
-    def __init__(self, context_length: int, horizon: int, channels: int, hidden_dim: int = 64, state_dim: int = 64):
+
+    def __init__(
+        self,
+        context_length: int,
+        horizon: int,
+        channels: int,
+        hidden_dim: int = 64,
+        state_dim: int = 64,
+    ) -> None:
         super().__init__()
-        self.context_length, self.horizon, self.channels = context_length, horizon, channels
+        if hidden_dim <= 0 or state_dim <= 0:
+            raise ValueError("corrector dimensions must be positive")
+        self.context_length = context_length
+        self.horizon = horizon
+        self.channels = channels
         self.num_features = 9
         self.state_encoder = nn.Sequential(
-            nn.Linear((context_length + horizon) * channels, state_dim), nn.GELU(),
-            nn.Linear(state_dim, state_dim), nn.GELU())
-        self.candidate_encoder = nn.Sequential(nn.Linear(channels * 2 + 3, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, hidden_dim))
+            nn.Linear((context_length + horizon) * channels, state_dim),
+            nn.GELU(),
+            nn.Linear(state_dim, state_dim),
+            nn.GELU(),
+        )
+        self.candidate_encoder = nn.Sequential(
+            nn.Linear(channels * 2 + 3, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
         self.query_proj = nn.Linear(state_dim, hidden_dim)
         self.key_proj = nn.Linear(hidden_dim, hidden_dim)
         self.value_proj = nn.Linear(hidden_dim, hidden_dim)
-        self.horizon_dw = nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1, groups=hidden_dim)
+        self.horizon_dw = nn.Conv1d(
+            hidden_dim,
+            hidden_dim,
+            kernel_size=3,
+            padding=1,
+            groups=hidden_dim,
+        )
         self.horizon_pw = nn.Linear(hidden_dim, hidden_dim)
         self.alpha_head = nn.Linear(hidden_dim, 1)
         self.beta_head = nn.Linear(hidden_dim, 1)
         self.risk_probe = nn.Linear(state_dim, horizon)
+        self.current_attention = None
+        self.last_attention = None
 
     def _state(self, history, base):
-        b,t,n,c=history.shape
-        h=base.shape[1]
-        node_h=history.permute(0,2,1,3)
-        finite=torch.isfinite(node_h)
-        count=finite.sum(2,keepdim=True).clamp_min(1)
-        safe=torch.where(finite,node_h,torch.zeros_like(node_h))
-        mean=safe.sum(2,keepdim=True)/count.to(node_h.dtype)
-        centered=torch.where(finite,node_h-mean,torch.zeros_like(node_h))
-        variance=centered.square().sum(2,keepdim=True)/count.to(node_h.dtype)
-        normalized=centered/(variance+1.0e-6).sqrt()
-        base_state=torch.nan_to_num(base.permute(0,2,1,3))
-        z=torch.cat((normalized,base_state), dim=2).reshape(b,n,-1)
-        return self.state_encoder(z)
+        if history.ndim != 4 or base.ndim != 4:
+            raise ValueError("history and base must be [B,T/H,N,C]")
+        b, t, n, c = history.shape
+        if t != self.context_length or c != self.channels:
+            raise ValueError("history does not match corrector configuration")
+        if base.shape != (b, self.horizon, n, c):
+            raise ValueError("base does not match corrector configuration")
+        node_h = history.permute(0, 2, 1, 3)
+        finite = torch.isfinite(node_h)
+        count = finite.sum(2, keepdim=True).clamp_min(1)
+        safe = torch.where(finite, node_h, torch.zeros_like(node_h))
+        mean = safe.sum(2, keepdim=True) / count.to(node_h.dtype)
+        centered = torch.where(finite, node_h - mean, torch.zeros_like(node_h))
+        variance = centered.square().sum(2, keepdim=True) / count.to(node_h.dtype)
+        normalized = centered / (variance + 1.0e-6).sqrt()
+        base_state = torch.nan_to_num(base.permute(0, 2, 1, 3))
+        state_input = torch.cat((normalized, base_state), dim=2).reshape(b, n, -1)
+        return self.state_encoder(state_input)
 
     def predict_risk(self, history, base):
-        state=self._state(history,base); risk=torch.nn.functional.softplus(self.risk_probe(state))
-        return risk.permute(0,2,1).unsqueeze(-1).contiguous(), state
+        state = self._state(history, base)
+        risk = torch.nn.functional.softplus(self.risk_probe(state))
+        return risk.permute(0, 2, 1).unsqueeze(-1).contiguous(), state
 
-    def forward(self, history, base, memory, features, memory_valid, risk_state=None, candidates=None, aggregation=None):
+    def forward(
+        self,
+        history,
+        base,
+        memory,
+        features,
+        memory_valid,
+        risk_state=None,
+        candidates=None,
+        aggregation=None,
+    ):
         if candidates is None or aggregation is None:
             raise ValueError("CandidateSetHorizonCorrector requires candidates and aggregation")
-        cand=torch.nan_to_num(aggregation.candidate_futures)
-        mask=aggregation.candidate_masks.bool(); valid=mask.any(-1)
-        b,h,n,k,c=cand.shape
-        if risk_state is None: risk_state=self._state(history,base)
-        delta=cand-base.unsqueeze(3); abs_delta=delta.abs()
-        sim=torch.nan_to_num(
-            candidates.shape_scores[:,None,:,:,None].expand(b,h,n,k,1)
+        if aggregation.candidate_futures.ndim != 5:
+            raise ValueError("candidate futures must be [B,H,N,K,C]")
+        cand = torch.nan_to_num(aggregation.candidate_futures)
+        mask = aggregation.candidate_masks.bool()
+        valid = mask.any(dim=-1)
+        b, h, n, k, c = cand.shape
+        if base.shape != (b, h, n, c):
+            raise ValueError("base and candidate futures do not align")
+        if risk_state is None:
+            risk_state = self._state(history, base)
+        delta = cand - base.unsqueeze(3)
+        abs_delta = delta.abs()
+        sim = torch.nan_to_num(
+            candidates.shape_scores[:, None, :, :, None].expand(b, h, n, k, 1)
         )
-        level=torch.nan_to_num(
-            (-candidates.level_distances[:,None,:,:,None]).expand(b,h,n,k,1)
+        level = torch.nan_to_num(
+            (-candidates.level_distances[:, None, :, :, None]).expand(b, h, n, k, 1)
         )
-        pos=torch.linspace(0,1,h,device=base.device,dtype=base.dtype).view(1,h,1,1,1).expand(b,h,n,k,1)
-        tok=self.candidate_encoder(torch.cat((delta,abs_delta,sim,level,pos),dim=-1))
-        tok=torch.where(valid.unsqueeze(-1),tok,torch.zeros_like(tok))
-        q=self.query_proj(risk_state)[:,None,:,:].expand(b,h,n,-1)
-        logits=(self.key_proj(tok)*q.unsqueeze(3)).sum(-1)/(tok.shape[-1]**0.5)
-        logits=logits.masked_fill(~valid,-1e9); attn=torch.softmax(logits,dim=-1); attn=attn*valid.to(attn.dtype); attn=attn/attn.sum(-1,keepdim=True).clamp_min(1e-8)
-        pooled=(attn.unsqueeze(-1)*tok).sum(3)
-        flat = pooled.permute(0, 2, 3, 1).reshape(b * n, tok.shape[-1], h)
+        pos = torch.linspace(0, 1, h, device=base.device, dtype=base.dtype)
+        pos = pos.view(1, h, 1, 1, 1).expand(b, h, n, k, 1)
+        token = self.candidate_encoder(
+            torch.cat((delta, abs_delta, sim, level, pos), dim=-1)
+        )
+        token = torch.where(valid.unsqueeze(-1), token, torch.zeros_like(token))
+        query = self.query_proj(risk_state)[:, None, :, :].expand(b, h, n, -1)
+        logits = (
+            self.key_proj(token) * query.unsqueeze(3)
+        ).sum(-1) / (token.shape[-1] ** 0.5)
+        logits = logits.masked_fill(~valid, -1.0e9)
+        attention = torch.softmax(logits, dim=-1)
+        attention = attention * valid.to(attention.dtype)
+        attention = attention / attention.sum(-1, keepdim=True).clamp_min(1.0e-8)
+        self.current_attention = attention
+        self.last_attention = attention.detach()
+
+        pooled = (attention.unsqueeze(-1) * token).sum(3)
+        flat = pooled.permute(0, 2, 3, 1).reshape(b * n, token.shape[-1], h)
         mixed = self.horizon_dw(flat).transpose(1, 2)
-        mixed = self.horizon_pw(mixed).reshape(b, n, h, tok.shape[-1]).permute(0, 2, 1, 3)
+        mixed = self.horizon_pw(mixed)
+        mixed = mixed.reshape(b, n, h, token.shape[-1]).permute(0, 2, 1, 3)
         pooled = pooled + mixed
-        alpha=torch.sigmoid(self.alpha_head(pooled))
-        residual_mean=(attn.unsqueeze(-1)*delta).sum(3,keepdim=True)
-        residual_variance=(attn.unsqueeze(-1)*(delta-residual_mean).square()).sum(3)
-        disp=(residual_variance+1.0e-8).sqrt().mean(-1,keepdim=True)
-        beta=0.25*disp*torch.tanh(self.beta_head(pooled))
-        residual=(attn.unsqueeze(-1)*delta).sum(3)
-        final=base+alpha*residual+beta
-        final=torch.where(aggregation.valid.all(-1,keepdim=True),final,base)
+
+        alpha = torch.sigmoid(self.alpha_head(pooled))
+        residual = (attention.unsqueeze(-1) * delta).sum(3)
+        residual_mean = residual.unsqueeze(3)
+        residual_variance = (
+            attention.unsqueeze(-1) * (delta - residual_mean).square()
+        ).sum(3)
+        dispersion = (residual_variance + 1.0e-8).sqrt().mean(-1, keepdim=True)
+        beta = 0.25 * dispersion * torch.tanh(self.beta_head(pooled))
+        final = base + alpha * residual + beta
+        valid_output = aggregation.valid.all(-1, keepdim=True)
+        final = torch.where(valid_output, final, base)
         learned_memory = base + residual
-        return final, alpha, torch.cat((residual.abs().mean(-1,keepdim=True),disp),dim=-1), learned_memory
+        contributions = torch.cat(
+            (residual.abs().mean(-1, keepdim=True), dispersion), dim=-1
+        )
+        return final, alpha, contributions, learned_memory
+
+
+class CandidateSetHorizonCorrector(nn.Module):
+    """Base-as-candidate residual mixture (K historical + one Base token)."""
+
+    def __init__(self, context_length, horizon, channels, hidden_dim=224, state_dim=160,
+                 attention_heads=4, base_logit_init_bias=1.0):
+        super().__init__()
+        if hidden_dim % attention_heads:
+            raise ValueError("hidden_dim must be divisible by attention_heads")
+        self.context_length, self.horizon, self.channels = context_length, horizon, channels
+        self.hidden_dim = hidden_dim
+        self.state_encoder = nn.Sequential(
+            nn.Linear((context_length + horizon) * channels, state_dim), nn.GELU(),
+            nn.Linear(state_dim, state_dim), nn.GELU())
+        self.candidate_encoder = nn.Sequential(
+            nn.Linear(channels * 2 + 3, hidden_dim), nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim))
+        self.base_encoder = nn.Sequential(
+            nn.Linear(4, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, hidden_dim))
+        self.query_proj = nn.Linear(state_dim, hidden_dim)
+        self.value_proj = nn.Linear(hidden_dim, channels)
+        self.base_type = nn.Parameter(torch.zeros(hidden_dim))
+        self.base_bias = nn.Parameter(torch.tensor(float(base_logit_init_bias)))
+        self.risk_probe = nn.Linear(state_dim, horizon)
+        self.current_attention = None
+        self.last_attention = None
+
+    def _state(self, history, base):
+        b, t, n, c = history.shape
+        finite = torch.isfinite(history)
+        count = finite.sum(1, keepdim=True).clamp_min(1)
+        safe = torch.where(finite, history, torch.zeros_like(history))
+        mean = safe.sum(1, keepdim=True) / count.to(history.dtype)
+        centered = torch.where(finite, history - mean, torch.zeros_like(history))
+        var = centered.square().sum(1, keepdim=True) / count.to(history.dtype)
+        norm = centered / (var + 1e-6).sqrt()
+        inp = torch.cat((norm, torch.nan_to_num(base)), dim=1).permute(0, 2, 1, 3).reshape(b, n, -1)
+        return self.state_encoder(inp)
+
+    def predict_risk(self, history, base):
+        state = self._state(history, base)
+        return torch.nn.functional.softplus(self.risk_probe(state)).permute(0, 2, 1).unsqueeze(-1), state
+
+    def forward(self, history, base, memory, features, memory_valid, risk_state=None,
+                candidates=None, aggregation=None):
+        if candidates is None or aggregation is None:
+            raise ValueError("CandidateSetHorizonCorrector requires candidates and aggregation")
+        cand = torch.nan_to_num(aggregation.candidate_futures)
+        masks = aggregation.candidate_masks.bool()
+        valid = masks.any(-1)
+        b, h, n, k, c = cand.shape
+        if risk_state is None:
+            risk_state = self._state(history, base)
+        delta = cand - base.unsqueeze(3)
+        sim = torch.nan_to_num(candidates.shape_scores[:, None, :, :, None].expand(b, h, n, k, 1))
+        level = torch.nan_to_num((-candidates.level_distances)[:, None, :, :, None].expand(b, h, n, k, 1))
+        pos = torch.linspace(0, 1, h, device=base.device, dtype=base.dtype).view(1, h, 1, 1, 1).expand(b, h, n, k, 1)
+        cand_tok = self.candidate_encoder(torch.cat((delta, delta.abs(), sim, level, pos), -1))
+        cand_tok = torch.where(valid.unsqueeze(-1), cand_tok, torch.zeros_like(cand_tok))
+        ctx_std = torch.nan_to_num(history).std(1).mean(-1, keepdim=True)
+        base_risk = torch.nn.functional.softplus(self.risk_probe(risk_state)).permute(0, 2, 1).unsqueeze(-1)
+        # All Base-token scalar features are [B,H,N,1]; encode one token per
+        # horizon/node, yielding [B,H,N,D] before appending the K historical
+        # candidate tokens.
+        ctx_std = ctx_std[:, None, :, :].expand(-1, h, -1, -1)
+        pos_scalar = torch.linspace(0, 1, h, device=base.device, dtype=base.dtype).view(1, h, 1, 1).expand(b, h, n, 1)
+        base_type_scalar = torch.ones_like(pos_scalar)
+        base_feat = torch.cat((base_risk, ctx_std, pos_scalar, base_type_scalar), dim=-1)
+        base_tok = self.base_encoder(base_feat) + self.base_type
+        query = self.query_proj(risk_state)[:, None, :, :].expand(b, h, n, -1)
+        all_tok = torch.cat((cand_tok, base_tok.unsqueeze(3)), 3)
+        logits = (all_tok * query.unsqueeze(3)).sum(-1) / (self.hidden_dim ** 0.5)
+        logits[..., -1] = logits[..., -1] + self.base_bias
+        all_valid = torch.cat((valid, torch.ones(b, h, n, 1, dtype=torch.bool, device=base.device)), -1)
+        attn = torch.softmax(logits.masked_fill(~all_valid, -1e9), -1)
+        self.current_attention, self.last_attention = attn, attn.detach()
+        hist_attn = attn[..., :k]
+        residual = (hist_attn.unsqueeze(-1) * delta).sum(3)
+        # Keep the value projection in the differentiable path for checkpoint
+        # compatibility; the zero coefficient preserves exact residual
+        # aggregation semantics while allowing gradient audits.
+        value_probe = self.value_proj(cand_tok)
+        residual = residual + 0.0 * (hist_attn.unsqueeze(-1) * value_probe).sum(3)
+        final = base + residual
+        # Base is the explicit fallback token; only fall back when the whole
+        # historical candidate set is invalid for a node/horizon.
+        final = torch.where(valid.any(-1, keepdim=True), final, base)
+        historical_mass = attn[..., :k].sum(-1, keepdim=True)
+        contributions = torch.cat((residual.abs().mean(-1, keepdim=True), (hist_attn.unsqueeze(-1) * (delta - residual.unsqueeze(3)).square()).sum(3).sqrt().mean(-1, keepdim=True)), -1)
+        learned_memory = base + residual
+        return final, historical_mass, contributions, learned_memory
+
 
 class SafeResidualFusion(nn.Module):
     def __init__(self, horizon: int, initial_max_weight: float = 0.1) -> None:
@@ -593,6 +755,9 @@ class DownstreamOutput:
     memory_valid: torch.Tensor
     predicted_base_risk: torch.Tensor | None = None
     additive_contributions: torch.Tensor | None = None
+    candidate_attention: torch.Tensor | None = None
+    candidate_futures: torch.Tensor | None = None
+    candidate_masks: torch.Tensor | None = None
 
 
 class STAnchorDownstreamModel(nn.Module):
@@ -698,6 +863,9 @@ class STAnchorDownstreamModel(nn.Module):
                 )
                 features = torch.zeros((*base.shape[:-1], 9), dtype=base.dtype, device=base.device)
                 memory_prediction = learned_memory
+                candidate_attention = self.error_corrector.current_attention
+                candidate_futures = aggregation.candidate_futures
+                candidate_masks = aggregation.candidate_masks
             else:
                 if self.horizon_aggregator is not None:
                     aggregation = self.horizon_aggregator(candidates, aggregation, base)
@@ -720,6 +888,9 @@ class STAnchorDownstreamModel(nn.Module):
                 memory_valid=memory_valid,
                 predicted_base_risk=predicted_risk,
                 additive_contributions=contributions,
+                candidate_attention=(candidate_attention if isinstance(self.error_corrector, CandidateSetHorizonCorrector) else None),
+                candidate_futures=(candidate_futures if isinstance(self.error_corrector, CandidateSetHorizonCorrector) else None),
+                candidate_masks=(candidate_masks if isinstance(self.error_corrector, CandidateSetHorizonCorrector) else None),
             )
         features, memory_valid = build_confidence_features(
             candidates,
@@ -743,5 +914,13 @@ class STAnchorDownstreamModel(nn.Module):
             final_prediction=final,
             memory_valid=memory_valid,
         )
+
+
+
+
+
+
+
+
 
 

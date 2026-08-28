@@ -1,4 +1,4 @@
-﻿data:
+data:
   raw_path: ../data/METRLA_data/METR-LA.h5
   adjacency_path: ../data/METRLA_data/adj_mx.pkl
   context_length: 12
@@ -66,7 +66,7 @@ pretrain:
   progress_interval: 10
 
 bank:
-  output_dir: artifacts/convergence/tgge_single_view_v3_higher_order_reconstruction2/bank
+  output_dir: artifacts/case_bank_hn_offset_decay_v1_seed42
   memory_fraction: 0.7
   event_top_r: 32
   node_top_k: 5
@@ -94,6 +94,7 @@ target:
   help_margin: 0.0
   help_temperature: 0.1
   backbone_name: staeformer
+  staeformer_time_feature_mode: calendar
   graph_wavenet_residual_channels: 32
   graph_wavenet_dilation_channels: 32
   graph_wavenet_skip_channels: 256
