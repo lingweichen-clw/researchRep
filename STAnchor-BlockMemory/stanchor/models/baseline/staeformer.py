@@ -31,13 +31,19 @@ class STAEformerForecastBackbone(nn.Module):
         if tod is None:
             tod_idx=torch.arange(t,device=x.device).view(1,t,1).expand(b,t,n)%self.steps_per_day
         else:
-            if tod.ndim == 2: tod = tod.unsqueeze(-1)
+            if tod.ndim == 2:
+                tod = tod.unsqueeze(-1).expand(b, t, n)
+            elif tod.ndim == 3 and tod.shape[-1] == 1:
+                tod = tod.expand(b, t, n)
             if tod.shape[:3] != (b,t,n): raise ValueError("tod must be [B,T,N] or [B,T]")
             tod_idx = tod.to(device=x.device).long() % self.steps_per_day
         if dow is None:
             dow_idx=torch.zeros((b,t,n),device=x.device,dtype=torch.long)
         else:
-            if dow.ndim == 2: dow = dow.unsqueeze(-1)
+            if dow.ndim == 2:
+                dow = dow.unsqueeze(-1).expand(b, t, n)
+            elif dow.ndim == 3 and dow.shape[-1] == 1:
+                dow = dow.expand(b, t, n)
             if dow.shape[:3] != (b,t,n): raise ValueError("dow must be [B,T,N] or [B,T]")
             dow_idx = dow.to(device=x.device).long() % 7
         z=torch.cat((self.input_proj(x),self.tod(tod_idx),self.dow(dow_idx),self.adaptive[:t].unsqueeze(0).expand(b,-1,-1,-1)),dim=-1)
