@@ -74,6 +74,7 @@ class ModelConfig:
     dynamics_bottleneck_dim: int = 16
     dynamics_gate_bias: float = -2.0
     dynamics_gate_groups: int = 8
+    adapter_bottleneck_dim: int = 0
 
 
 @dataclass(frozen=True)
@@ -338,6 +339,10 @@ class ExperimentConfig:
                 )
         if not 0.0 <= self.model.profile_weight <= 1.0:
             raise ValueError("profile_weight must be in [0, 1]")
+        if self.model.adapter_bottleneck_dim < 0:
+            raise ValueError("adapter_bottleneck_dim must be non-negative")
+        if self.model.adapter_bottleneck_dim > self.model.hidden_dim:
+            raise ValueError("adapter_bottleneck_dim must not exceed hidden_dim")
         if self.pretrain.profile_loss_weight < 0:
             raise ValueError("profile_loss_weight must be non-negative")
         if self.pretrain.profile_scale_floor <= 0:
@@ -588,6 +593,7 @@ def project_root() -> Path:
 def resolve_project_path(path: str | Path) -> Path:
     candidate = Path(path)
     return candidate if candidate.is_absolute() else (project_root() / candidate).resolve()
+
 
 
 

@@ -1,4 +1,4 @@
-"""Node-level and event-level normalized retrieval keys."""
+﻿"""Node-level and event-level normalized retrieval keys."""
 
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ class RetrievalHead(nn.Module):
         profile_dim: int = 0,
         latent_dim: int = 0,
         profile_weight: float = 0.25,
+        adapter_bottleneck_dim: int = 0,
     ) -> None:
         super().__init__()
         if profile_dim < 0 or latent_dim < 0:
@@ -46,6 +47,7 @@ class RetrievalHead(nn.Module):
         self.profile_dim = profile_dim
         self.latent_dim = latent_dim
         self.profile_weight = profile_weight
+        self.domain_adapter = (nn.Sequential(nn.Linear(hidden_dim, adapter_bottleneck_dim), nn.GELU(), nn.Linear(adapter_bottleneck_dim, hidden_dim)) if adapter_bottleneck_dim else None)
         if profile_dim > 0:
             self.profile_head = nn.Linear(hidden_dim, profile_dim)
             self.latent_mlp = nn.Sequential(
@@ -69,6 +71,8 @@ class RetrievalHead(nn.Module):
         logits = self.pool_score(torch.tanh(self.pool_projection(hidden))).squeeze(-1)
         weights = torch.softmax(logits, dim=1)
         node_hidden = (weights.unsqueeze(-1) * hidden).sum(dim=1)
+        if self.domain_adapter is not None:
+            node_hidden = node_hidden + self.domain_adapter(node_hidden)
         if self.profile_head is None or self.latent_mlp is None:
             if self.key_mlp is None:
                 raise RuntimeError("legacy retrieval head is not initialized")
@@ -111,3 +115,6 @@ class RetrievalHead(nn.Module):
             event_profile_keys=event_profile_keys,
             event_latent_keys=event_latent_keys,
         )
+
+
+

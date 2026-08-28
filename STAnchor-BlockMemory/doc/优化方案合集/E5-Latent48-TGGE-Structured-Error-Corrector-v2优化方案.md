@@ -116,6 +116,52 @@ $$
 
 $M_{ijh}$ 表示两个样本在 horizon $h$ 都有有效观测。该 future distance 只在预训练阶段作为 teacher，监督当前历史 key 的相对相似度；future trajectory 不输入 TGGE，也不保存在 query key 中。下游检索和部署阶段只计算历史编码，不再需要当前 query 的 future。
 
+### 2.4.1 当前最终 Relation 分支（逐 horizon、可解释、辅助监督）
+
+Relation 分支不是第二套检索器，也不替代 HN-OD 主损失。对每个事件的节点隐藏表示 $h_{q,n}$ 和 horizon embedding $p_h$，先得到逐 horizon relation 表示：
+
+$$
+r_{q,h,n}=E_{rel}([h_{q,n},p_h])\in\mathbb{R}^{d_r}.
+$$
+
+对 query 事件 $q$ 和候选事件 $j$ 的同一节点、同一 horizon，使用归一化 relation 向量的 cosine distance 作为学生关系距离：
+
+$$
+\widehat d^{rel}_{q,j,h,n}
+=1-\frac{r_{q,h,n}^{\top}r_{j,h,n}}
+{\|r_{q,h,n}\|_2\|r_{j,h,n}\|_2+\epsilon}.
+$$
+
+teacher 为对应的 OffsetDecay 逐 horizon MAE：
+
+$$
+\widetilde d^{OD}_{q,j,h,n}
+=\operatorname{MAE}_C
+\left(\phi^{OD}_{q,h,n,:},\phi^{OD}_{j,h,n,:}\right),
+$$
+
+其中 $\phi^{OD}$ 是未来轨迹减去 context endpoint 后的 OffsetDecay signature。Relation 辅助损失为：
+
+$$
+\mathcal L_{rel}
+=\operatorname{SmoothL1}
+\left(\widehat d^{rel}_{q,j,h,n},
+\widetilde d^{OD}_{q,j,h,n}\right).
+$$
+
+候选按 **query-event** 单位选择：先排除自身事件和时间重叠事件，再按 aggregate OffsetDecay distance 从小到大选取最多 24 个事件；同一组事件候选在各节点和 horizon 上复用，并由有效观测 mask 过滤。这样候选选择与下游 node-level 检索的事件粒度一致，同时避免构造完整的 $[B,B,H,N]$ 学生关系张量。candidate relation representation 保留梯度，不使用无依据的 `detach()`；future 仅在训练阶段构造 teacher，推理阶段不使用。
+
+HN-OD 仍是主检索监督，Relation 仅作为辅助项：
+
+$$
+\mathcal L_{pretrain}
+=\lambda_{rec}\mathcal L_{rec}
++\lambda_{HN}\mathcal L_{HN-OD}
++0.1\mathcal L_{rel}.
+$$
+
+当前实现保留 masked single-view one-forward 路径；Relation 分支只增加候选子集上的逐 horizon 距离回归，不引入 FiLM、双塔 cross-attention、额外 rank loss 或 profile semantic key。
+
 ### 2.5 Relation-only 目标
 
 Relation-only 指只用 clean 历史编码产生 Latent48 key，并用 future relation teacher 监督 key 间的相对排序：

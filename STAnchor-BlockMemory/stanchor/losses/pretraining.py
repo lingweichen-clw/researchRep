@@ -703,10 +703,12 @@ def compute_relation_only_loss(
     rank_margin: float = 0.05,
     rank_temperature: float = 0.1,
 ) -> PretrainingLoss:
-    """Compute a clean-key-only future relation objective.
+    """Compute the legacy clean-key-only future-relation objective.
 
-    The zero reconstruction term is connected to the clean key so callers can
-    reuse the common loss record without constructing a masked view.
+    This compatibility path is separate from the paused horizon relation
+    projection branch.  It is retained so historical relation-only configs
+    and checkpoints can still be inspected without affecting the mainline
+    masked HN-OffsetDecay objective.
     """
     if retrieval_weight < 0.0:
         raise ValueError("retrieval_weight must be non-negative")
@@ -909,4 +911,5 @@ def compute_pretraining_loss(
         rank_pairs=retrieval_output.rank_pairs,
         relation=(retrieval_output.relation_loss if retrieval_output.relation_loss is not None else retrieval_output.loss),
     )
+
 

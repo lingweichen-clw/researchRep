@@ -299,6 +299,9 @@ def run_pretrain_epoch(
             if losses.reconstruction_positions == 0 and losses.valid_retrieval_anchors == 0:
                 skipped_batches += 1
                 emit_progress(batch_index + 1)
+                # Do not keep the previous batch's autograd graph alive while
+                # constructing the next batch.
+                del output, losses
                 continue
             require_finite(losses.total, "pretraining loss")
             if training:
@@ -332,6 +335,9 @@ def run_pretrain_epoch(
                 adapter_batches += 1
             batches += 1
             emit_progress(batch_index + 1)
+            # The metrics above are Python scalars; release graph-bearing
+            # objects before the next forward to avoid peak-memory buildup.
+            del output, losses
     if batches == 0:
         raise ValueError("pretraining epoch processed no batches")
     return PretrainEpochResult(

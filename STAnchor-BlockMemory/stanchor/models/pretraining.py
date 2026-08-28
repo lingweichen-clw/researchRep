@@ -1,4 +1,4 @@
-"""Shared clean/masked encoder flow for source-domain pretraining."""
+﻿"""Shared clean/masked encoder flow for source-domain pretraining."""
 
 from __future__ import annotations
 
@@ -76,6 +76,7 @@ class STAnchorPretrainModel(nn.Module):
             profile_dim=model_config.profile_dim,
             latent_dim=model_config.latent_dim,
             profile_weight=model_config.profile_weight,
+            adapter_bottleneck_dim=model_config.adapter_bottleneck_dim,
         )
         self.reconstruction_head = nn.Linear(
             model_config.hidden_dim,
@@ -346,3 +347,6 @@ class STAnchorPretrainModel(nn.Module):
         values = patch_values.view(batch, patches, nodes, self.model_config.patch_size, channels)
         values = values.permute(0, 1, 3, 2, 4).contiguous()
         return values.view(batch, self.context_length, nodes, channels)
+
+
+
