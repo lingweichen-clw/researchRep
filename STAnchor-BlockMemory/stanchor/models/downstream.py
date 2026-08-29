@@ -615,13 +615,25 @@ class CandidateSetHorizonCorrector(nn.Module):
     both historical and Base tokens before the unified attention decision.
     """
 
-    def __init__(self, context_length, horizon, channels, hidden_dim=224, state_dim=160,
-                 attention_heads=4, base_logit_init_bias=1.0):
+    def __init__(
+        self,
+        context_length,
+        horizon,
+        channels,
+        hidden_dim=224,
+        state_dim=160,
+        attention_heads=4,
+        base_logit_init_bias=1.0,
+        trajectory_hidden_dim=0,
+        use_horizon_embedding=False,
+    ):
         super().__init__()
         if hidden_dim % attention_heads:
             raise ValueError("hidden_dim must be divisible by attention_heads")
         self.context_length, self.horizon, self.channels = context_length, horizon, channels
         self.hidden_dim = hidden_dim
+        self.trajectory_hidden_dim = trajectory_hidden_dim
+        self.use_horizon_embedding = use_horizon_embedding
         self.state_encoder = nn.Sequential(
             nn.Linear((context_length + horizon) * channels, state_dim), nn.GELU(),
             nn.Linear(state_dim, state_dim), nn.GELU())
@@ -631,7 +643,6 @@ class CandidateSetHorizonCorrector(nn.Module):
         self.base_encoder = nn.Sequential(
             nn.Linear(4, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, hidden_dim))
         self.query_proj = nn.Linear(state_dim, hidden_dim)
-        self.value_proj = nn.Linear(hidden_dim, channels)
         self.base_type = nn.Parameter(torch.zeros(hidden_dim))
         self.base_bias = nn.Parameter(torch.tensor(float(base_logit_init_bias)))
         self.token_refiner = nn.Sequential(
@@ -724,11 +735,6 @@ class CandidateSetHorizonCorrector(nn.Module):
         self.current_attention, self.last_attention = attn, attn.detach()
         hist_attn = attn[..., :k]
         residual = (hist_attn.unsqueeze(-1) * delta).sum(3)
-        # Keep the value projection in the differentiable path for checkpoint
-        # compatibility; the zero coefficient preserves exact residual
-        # aggregation semantics while allowing gradient audits.
-        value_probe = self.value_proj(cand_tok)
-        residual = residual + 0.0 * (hist_attn.unsqueeze(-1) * value_probe).sum(3)
         final = base + residual
         # Base is the explicit fallback token; only fall back when the whole
         # historical candidate set is invalid for a node/horizon.

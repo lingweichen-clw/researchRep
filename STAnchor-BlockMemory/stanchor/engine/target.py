@@ -44,6 +44,9 @@ from stanchor.models.downstream import (
     CandidateSetHorizonCorrector,
     LegacyCandidateSetHorizonCorrector,
 )
+from stanchor.models.trajectory_calibrator import (
+    TrajectoryConditionedCandidateSetHorizonCorrector,
+)
 from stanchor.models.pretraining import STAnchorPretrainModel
 from stanchor.models.stgcn import STGCNForecastBackbone
 from stanchor.models.graph_wavenet import GraphWaveNetForecastBackbone
@@ -247,7 +250,9 @@ def build_downstream_model(
             else None
         ),
         error_corrector=(
-            (CandidateSetHorizonCorrector(
+            ((TrajectoryConditionedCandidateSetHorizonCorrector
+              if config.target.calibrator_arch == "trajectory_conditioned_base_as_candidate"
+              else CandidateSetHorizonCorrector)(
                 config.data.context_length,
                 config.data.horizon,
                 config.model.input_channels,
@@ -255,6 +260,16 @@ def build_downstream_model(
                 state_dim=config.target.calibrator_state_dim,
                 attention_heads=config.target.candidate_attention_heads,
                 base_logit_init_bias=config.target.base_logit_init_bias,
+                trajectory_hidden_dim=(
+                    config.target.candidate_trajectory_hidden_dim
+                    if config.target.calibrator_arch == "trajectory_conditioned_base_as_candidate"
+                    else 0
+                ),
+                use_horizon_embedding=(
+                    config.target.use_horizon_embedding
+                    if config.target.calibrator_arch == "trajectory_conditioned_base_as_candidate"
+                    else False
+                ),
             ) if config.target.validation_correction_variant == "base_as_candidate" else LegacyCandidateSetHorizonCorrector(
                 config.data.context_length, config.data.horizon,
                 config.model.input_channels, hidden_dim=192, state_dim=128))
