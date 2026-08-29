@@ -77,7 +77,7 @@ bank:
 
 target:
   downstream_mode: learned_topk_error_aware
-  training_protocol: staged_joint
+  training_protocol: posthoc_frozen_base
   training_data_scope: full_train
   candidate_protocol: exact_calendar
   batch_size: 32
@@ -112,7 +112,15 @@ target:
   risk_weight: 0.0
   blend_weight: 0.0
   validation_loss_variant: forecast_only
-  validation_correction_variant: set_attention_horizon
+  validation_correction_variant: base_as_candidate
+  calibrator_arch: base_as_candidate
+  candidate_token_dim: 384
+  calibrator_state_dim: 320
+  candidate_attention_heads: 4
+  base_logit_init_bias: 1.0
+  candidate_quality_weight: 0.05
+  candidate_quality_temperature: 0.2
+  frozen_path_cache: true
   blend_minimum_direction_norm: 0.0001
   base_warmup_epochs: 0
   calibrator_warmup_epochs: 0

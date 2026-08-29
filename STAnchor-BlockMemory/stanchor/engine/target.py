@@ -252,7 +252,7 @@ def build_downstream_model(
                 config.data.horizon,
                 config.model.input_channels,
                 hidden_dim=config.target.candidate_token_dim,
-                state_dim=config.target.candidate_token_dim,
+                state_dim=config.target.calibrator_state_dim,
                 attention_heads=config.target.candidate_attention_heads,
                 base_logit_init_bias=config.target.base_logit_init_bias,
             ) if config.target.validation_correction_variant == "base_as_candidate" else LegacyCandidateSetHorizonCorrector(

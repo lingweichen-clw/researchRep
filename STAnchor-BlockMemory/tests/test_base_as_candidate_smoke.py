@@ -22,8 +22,8 @@ def test_forward_shape():
         context_length=T,
         horizon=H,
         channels=C,
-        hidden_dim=256,
-        state_dim=256,
+        hidden_dim=384,
+        state_dim=320,
         attention_heads=4,
         base_logit_init_bias=1.0
     )
@@ -90,8 +90,8 @@ def test_attention_shape():
         context_length=T,
         horizon=H,
         channels=C,
-        hidden_dim=256,
-        state_dim=256,
+        hidden_dim=384,
+        state_dim=320,
         attention_heads=4,
         base_logit_init_bias=1.0
     )
@@ -162,8 +162,8 @@ def test_no_candidate_fallback():
         context_length=T,
         horizon=H,
         channels=C,
-        hidden_dim=256,
-        state_dim=256,
+        hidden_dim=384,
+        state_dim=320,
         attention_heads=4,
         base_logit_init_bias=1.0
     )
@@ -233,8 +233,8 @@ def test_backward():
         context_length=T,
         horizon=H,
         channels=C,
-        hidden_dim=256,
-        state_dim=256,
+        hidden_dim=384,
+        state_dim=320,
         attention_heads=4,
         base_logit_init_bias=1.0
     )
@@ -310,15 +310,15 @@ def test_backward():
 def test_parameter_count():
     """测试5: 参数量符合预期"""
     print("\n" + "="*80)
-    print("Test 5: Parameter count in target range (25-30w)")
+    print("Test 5: Parameter count in target range (60-70w)")
     print("="*80)
 
     model = CandidateSetHorizonCorrector(
         context_length=12,
         horizon=12,
         channels=1,
-        hidden_dim=256,
-        state_dim=256,
+        hidden_dim=384,
+        state_dim=320,
         attention_heads=4,
         base_logit_init_bias=1.0
     )
@@ -327,7 +327,7 @@ def test_parameter_count():
 
     print(f"[OK] Total parameters: {total_params:,} ({total_params/10000:.2f}w)")
 
-    assert 250000 <= total_params <= 300000, f"Params {total_params} not in [250000, 300000]"
+    assert 600000 <= total_params <= 700000, f"Params {total_params} not in [600000, 700000]"
 
     return True
 

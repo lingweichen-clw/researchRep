@@ -110,7 +110,8 @@ target:
   validation_loss_variant: forecast_only
   validation_correction_variant: base_as_candidate
   calibrator_arch: base_as_candidate
-  candidate_token_dim: 256
+  candidate_token_dim: 384
+  calibrator_state_dim: 320
   candidate_attention_heads: 4
   base_logit_init_bias: 1.0
   base_warmup_epochs: 0

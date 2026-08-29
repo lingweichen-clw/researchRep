@@ -1,10 +1,16 @@
-# HN-OffsetDecay v2：约 70 万参数、batch=16 的扩容方案
+# HN-OffsetDecay v2：历史约 70 万对照与当前约 96 万主线扩容方案
 
 更新时间：2026-08-28
 
+> **修订说明（2026-08-28）：** 后续主线容量实验改用 `hidden_dim=128、encoder_layers=4、ffn_multiplier=2、batch_size=16`，旧的 `96/4/FFN4` 配置保留为可复现的约 70 万参数对照，不覆盖其 Bank 或实验产物。新配置的代码实测参数量为 **958,704**；本次切换不改变 HN-OffsetDecay 监督、采样协议、单次前向和索引/缓存策略。
+
+本修订同时补充 HN-OffsetDecay 的 `teacher/student K_eff` 日志统计。该统计在实际有效候选池上计算，仅用于诊断和曲线记录，不进入总损失，也不向模型参数回传梯度。
+
+其中 \(K_{\mathrm{eff}}=1/\sum_j p_j^2\) 是分布的有效支持数：teacher 使用 future-distance 分布，student 使用加入 hard-negative 权重后的 key-logit 分布。数值越大表示权重越分散，不能直接解释为真实候选数量。
+
 ## 1. 决策摘要
 
-本方案的目标是只增加检索编码器的有效表达容量，同时把批次大小固定为 `16`，使容量效应与批内采样规模、显存分页效应分离。当前建议的主配置为：
+本方案的目标是只增加检索编码器的有效表达容量，同时把批次大小固定为 `16`，使容量效应与批内采样规模、显存分页效应分离。原始约 70 万参数候选为：
 
 ```yaml
 model:
@@ -18,9 +24,11 @@ pretrain:
   batch_size: 16
 ```
 
-按当前代码和 METR-LA 的 `retrieval_context_length=288` 重新实例化统计，主配置共有 **713,744 个可训练参数**，属于“约 70 万”范围。该版本不重新加入 relation projection、rank loss、event-key 改造或新的 Bank 字段；HN-OffsetDecay、masked single-view one-forward、route/index/cache、数据切分、归一化和优化器保持不变。
+按当前代码和 METR-LA 的 `retrieval_context_length=288` 重新实例化统计，该候选共有 **713,744 个可训练参数**。经进一步容量评估，当前主线改用独立配置 `metrla_e5_tgge_hn_offset_decay_v2_transfer_hidden128_ffn2_b16.yaml`：`hidden_dim=128、encoder_layers=4、ffn_multiplier=2、retrieval_dim=64、adapter_bottleneck_dim=96、batch_size=16`，代码实测 **958,704 个可训练参数**。原始 `96/4/FFN4` 配置和 Bank 仅作为历史对照保留。
 
-扩容点只放在每个时空块的 FFN 宽度（`2D -> 4D`）。这样可以增加非线性关系建模能力，但不会扩大 token 的 hidden 维度，也不会把批内 pairwise 关系张量进一步放大。
+两种配置都不重新加入 relation projection、rank loss、event-key 改造或新的 Bank 字段；HN-OffsetDecay、masked single-view one-forward、route/index/cache、数据切分、归一化和优化器保持不变。
+
+原始约 70 万参数候选只扩大每个时空块的 FFN 宽度（`2D -> 4D`）；当前主方案改为扩大 token hidden（`96 -> 128`）并回到 FFN2（`D -> 2D -> D`）。两者都不改变 retrieval key 的 64 维接口或批内 pairwise 候选协议。
 
 ## 2. 现象与证据边界
 
@@ -41,9 +49,9 @@ pretrain:
 
 ### 2.2 当前扩容日志不能直接作为公平对照
 
-当前配置文件 `configs/metrla_e5_tgge_hn_offset_decay_v2_transfer.yaml` 是 `hidden=96、layers=4、retrieval_dim=64、adapter_bottleneck=96、batch=24`，按当前代码为 565,520 参数。
+已清理的 B24 原型配置使用 `hidden=96、layers=4、retrieval_dim=64、adapter_bottleneck=96、batch=24`，按当前代码为 565,520 参数；该配置只用于扩容边界诊断，不再作为可运行方案保留。
 
-但目录 `artifacts/metrla_e5_tgge_hn_offset_decay_v2_transfer_seed42/pretrain.log` 中实际启动的版本是 `hidden=120、batch=16、690,655` 参数，只运行到第 1 轮的 batch 120/1,418，并非当前配置的正式完整日志。因此该日志的约 49--53 分钟/轮 ETA 不能归因于当前 565,520 参数配置。
+已清理的旧中断日志实际启动的是 `hidden=120、batch=16、690,655` 参数版本，只运行到第 1 轮的 batch 120/1,418，并非正式完整实验。因此其约 49--53 分钟/轮 ETA 不能归因于 565,520 参数原型。
 
 ### 2.3 受控测速结果（诊断证据，不作为模型效果结果）
 
@@ -76,29 +84,33 @@ HN-OffsetDecay 的关系监督对每个 batch 的样本两两计算距离。核�
 
 参数也并非只增加了一点：v1 到当前 v2 是 303,727 -> 565,520，增加约 86.2%；实际旧日志中的 hidden=120 版本则为 690,655，增加约 127.4%。
 
-## 4. 为什么选择 FFN 扩容
+## 4. 为什么选择 hidden 扩张与 FFN2
 
-### 4.1 保持 hidden=96 和四层 encoder
+### 4.1 保持四层 encoder，并控制 FFN 宽度
 
-hidden 维度同时出现在 temporal attention、稀疏 graph attention、route value projection 和所有中间残差中。扩大 hidden 会扩大每层的激活和 attention 投影，直接增加显存风险。额外增加 encoder 层也会保留更多层级激活；实测接近 70 万参数的 `hidden=96、layers=5、FFN=2` 虽然只有 688,065 参数，但峰值约 7.53 GiB，已经接近本机分页阈值。
+hidden 维度同时出现在 temporal attention、稀疏 graph attention、route value projection 和所有中间残差中。扩大 hidden 会扩大每层的激活和 attention 投影，直接增加显存风险，因此仍固定四层 encoder；FFN 使用 2 倍宽度控制额外计算量。新主方案需要在 16 GB 显存设备上正式验证，不能把本机 8 GB smoke 的耗时外推为正式训练耗时。
 
-### 4.2 把容量放在 FFN
+### 4.2 采用 hidden 扩张配合 FFN2
 
-当前每个 `FactorizedSTBlock` 的 FFN 是：
+当前主方案每个 `FactorizedSTBlock` 的 FFN 为 `D=128` 的 2 倍扩展：
 
 \[
 \operatorname{Linear}(D,2D)\rightarrow\operatorname{GELU}
 \rightarrow\operatorname{Linear}(2D,D).
 \]
 
-主方案改为：
+这里当前主方案取 `D=128`，即 `128 -> 256 -> 128`。
+
+历史 FFN4 候选使用 `D=96` 的 4 倍扩展：
 
 \[
 \operatorname{Linear}(D,4D)\rightarrow\operatorname{GELU}
 \rightarrow\operatorname{Linear}(4D,D).
 \]
 
-FFN 位于 temporal/spatial 信息融合之后，增加它可以提高非线性组合和关系判别能力，适合当前“context 相似但 future 不同”等细粒度检索关系；同时 token 仍为 `[B,P,N,96]`，pairwise loss 的输入形状不变。
+历史 FFN4 候选取 `D=96`，即 `96 -> 384 -> 96`。
+
+FFN 位于 temporal/spatial 信息融合之后；hidden 扩张提高了所有通道投影的表示容量，FFN2 保持每层非线性变换的成本可控。新 token 形状为 `[B,P,N,128]`，但 retrieval key 接口仍为 64 维，pairwise 候选协议和 loss 形状不变。
 
 ### 4.3 参数预算
 
@@ -106,11 +118,12 @@ FFN 位于 temporal/spatial 信息融合之后，增加它可以提高非线性�
 |---|---:|---|
 | v1：80/3/FFN2/key48 | 303,727 | 已有正式 50 轮证据 |
 | 当前 v2：96/4/FFN2/key64/adapter96 | 565,520 | 容量对照候选，batch 必须为 16 |
-| **主方案：96/4/FFN4/key64/adapter96** | **713,744** | 首选，约 70 万，峰值留有余量 |
+| 历史扩容方案：96/4/FFN4/key64/adapter96 | 713,744 | 保留作约 70 万参数对照 |
+| **当前主方案：128/4/FFN2/key64/adapter96** | **958,704** | 当前主线容量实验；需在 16 GB 显存设备验证 |
 | 96/5/FFN2/key64/adapter96 | 688,065 | 本机不首选，显存过于接近上限 |
 | 108/4/FFN2/key64/adapter108 | 703,568 | 扩大所有 attention 激活，需更大显存后再考虑 |
 
-主方案组件统计：embedding 30,432；encoder 638,596；retrieval head 43,552；reconstruction head 1,164。
+当前主方案组件统计：embedding 40,576；encoder 850,372（其中 route attention 54,980）；retrieval head 66,208；reconstruction head 1,548。
 
 ## 5. 不变项与明确不做项
 
@@ -134,8 +147,8 @@ FFN 位于 temporal/spatial 信息融合之后，增加它可以提高非线性�
 
 ### 阶段 A：静态契约检查
 
-1. 在新配置中设置 `ffn_multiplier=4`、`pretrain.batch_size=16`，使用新的 `runtime.run_name`，避免覆盖任何旧产物。
-2. 启动前打印并核对 `hidden/layers/ffn/retrieval_dim/batch`、总参数量和各组件参数量；总量必须为 713,744（若代码有其他未预期模块，立即停止并查明）。
+1. 使用新配置设置 `hidden_dim=128`、`ffn_multiplier=2`、`pretrain.batch_size=16`，并使用独立的 `runtime.run_name`，避免覆盖任何旧产物。
+2. 启动前打印并核对 `hidden/layers/ffn/retrieval_dim/batch`、总参数量和各组件参数量；新主线总量必须为 958,704（旧 FFN4 对照仍应为 713,744）。
 3. 检查 checkpoint 的 retrieval fingerprint；新模型不得加载旧 v1/v2 Bank 的 key 作为同一实验结果。
 
 ### 阶段 B：数值与显存验收
@@ -154,8 +167,9 @@ FFN 位于 temporal/spatial 信息融合之后，增加它可以提高非线性�
 固定 seed、数据顺序和所有监督配置，比较：
 
 1. v1 303,727 / batch16；
-2. 当前 v2 565,520 / batch16；
-3. 主方案 713,744 / batch16。
+2. 原始 v2 565,520 / batch16；
+3. 历史 FFN4 对照 713,744 / batch16；
+4. 当前主方案 958,704 / batch16。
 
 先跑 3 轮或固定少量 batch，仅用于检查收敛方向、峰值显存和每轮时间；短训结果不能写成最终精度结论。主方案只有在不崩溃且时间符合预算后才进入完整 50 轮。
 

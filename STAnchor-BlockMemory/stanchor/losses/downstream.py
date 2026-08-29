@@ -44,7 +44,7 @@ def candidate_quality_kl_loss(
 ) -> torch.Tensor:
     """Distill lower candidate error into attention weights."""
     if attention.ndim != 4 or candidate_errors.shape != attention.shape or valid.shape != attention.shape:
-        raise ValueError("attention, candidate_errors, and valid must be [B,H,N,K]")
+        raise ValueError("attention, candidate_errors, and valid must be [B,H,N,K] with matching K")
     if temperature <= 0:
         raise ValueError("temperature must be positive")
     mask = valid.bool() & torch.isfinite(candidate_errors) & torch.isfinite(attention)
@@ -118,8 +118,25 @@ def compute_downstream_loss(
     forecast = masked_mae(output.final_prediction, target, observed)
     candidate_quality = forecast * 0.0
     if candidate_quality_weight > 0.0 and output.candidate_attention is not None and output.candidate_futures is not None and output.candidate_masks is not None:
-        candidate_errors = (output.candidate_futures - target.unsqueeze(3)).abs().mean(dim=-1)
-        candidate_quality = candidate_quality_kl_loss(output.candidate_attention, candidate_errors, output.candidate_masks.bool().all(dim=-1), candidate_quality_temperature)
+        candidate_futures = output.candidate_futures
+        candidate_masks = output.candidate_masks.bool()
+        candidate_errors = (candidate_futures - target.unsqueeze(3)).abs().mean(dim=-1)
+        candidate_valid = candidate_masks.all(dim=-1)
+        attention = output.candidate_attention
+        # Base-as-candidate exposes K+1 attention entries but keeps only the K
+        # historical futures in the output payload.  Append Base's future
+        # error and an always-present token mask for teacher supervision.
+        if attention.shape[-1] == candidate_errors.shape[-1] + 1:
+            base_error = (output.base_prediction - target).abs().mean(dim=-1, keepdim=True)
+            base_mask = torch.ones_like(output.base_prediction, dtype=torch.bool).unsqueeze(3)
+            candidate_errors = torch.cat((candidate_errors, base_error), dim=3)
+            candidate_valid = torch.cat((candidate_valid, base_mask.all(dim=-1)), dim=3)
+        candidate_quality = candidate_quality_kl_loss(
+            attention,
+            candidate_errors,
+            candidate_valid,
+            candidate_quality_temperature,
+        )
     if use_error_aware:
         if loss_variant == "forecast_only":
             connected_zero = output.confidence.sum() * 0.0

@@ -24,9 +24,57 @@ from stanchor.diagnostics.retrieval_visualization import (
     teacher_candidate_distances,
     validate_aligned_bank_axes,
 )
+from scripts.extract_spatiotemporal_mirages import (
+    build_trend_signature,
+    masked_rms_distance,
+    select_compact_pairs,
+    select_min_size_clusters,
+    summarize_trend_clusters,
+)
 
 
 class RetrievalVisualizationTest(unittest.TestCase):
+    def test_mirage_masked_distance_ignores_invalid_zero_values(self) -> None:
+        left = np.asarray([1.0, 99.0, 3.0])
+        right = np.asarray([1.0, -77.0, 5.0])
+        distance = masked_rms_distance(left, right, np.asarray([True, False, True]))
+        self.assertAlmostEqual(distance, np.sqrt(2.0))
+
+    def test_mirage_trend_signature_preserves_direction(self) -> None:
+        signature = build_trend_signature(
+            np.asarray([10.0, 12.0, 14.0]), np.ones(3, dtype=bool)
+        )
+        self.assertEqual(signature.shape, (3,))
+        self.assertGreater(float(signature[-1]), float(signature[0]))
+
+    def test_mirage_cluster_filter_drops_small_clusters(self) -> None:
+        labels = np.asarray([0] * 3 + [1] * 60)
+        kept = select_min_size_clusters(labels, min_cluster_size=60)
+        self.assertEqual(kept.tolist(), [False] * 3 + [True] * 60)
+
+    def test_mirage_cluster_summary_contains_within_between_metrics(self) -> None:
+        signatures = np.vstack((
+            np.tile(np.asarray([0.0, 1.0, 2.0]), (60, 1)),
+            np.tile(np.asarray([2.0, 1.0, 0.0]), (60, 1)),
+        ))
+        labels = np.asarray([0] * 60 + [1] * 60)
+        summary = summarize_trend_clusters(signatures, labels)
+        self.assertEqual(len(summary), 2)
+        self.assertEqual(summary[0]["size"], 60)
+        self.assertIn("within_trend_cosine_mean", summary[0])
+        self.assertIn("between_trend_cosine_mean", summary[0])
+
+    def test_compact_pair_selection_prefers_class_centre(self) -> None:
+        rows = [
+            {"node": 0, "i": 0, "j": 1, "context_distance": 0.10, "future_distance": 9.0, "key_distance": 0.90},
+            {"node": 1, "i": 2, "j": 3, "context_distance": 0.20, "future_distance": 8.0, "key_distance": 0.80},
+            {"node": 2, "i": 4, "j": 5, "context_distance": 0.30, "future_distance": 7.0, "key_distance": 0.70},
+            {"node": 3, "i": 6, "j": 7, "context_distance": 0.40, "future_distance": 6.0, "key_distance": 0.60},
+            {"node": 4, "i": 8, "j": 9, "context_distance": 0.50, "future_distance": 5.0, "key_distance": 0.50},
+        ]
+        selected = select_compact_pairs(rows, count=2)
+        self.assertEqual([(row["i"], row["j"]) for row in selected], [(4, 5), (6, 7)])
+
     def test_anchor_wise_ranking_metrics_perfect_and_reversed(self) -> None:
         key_distance = np.asarray([[[0.0, 1.0, 2.0, 3.0, 4.0]]])
         teacher_distance = np.asarray([[[0.0, 1.0, 2.0, 3.0, 4.0]]])

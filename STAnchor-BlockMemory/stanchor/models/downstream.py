@@ -609,7 +609,11 @@ class LegacyCandidateSetHorizonCorrector(nn.Module):
 
 
 class CandidateSetHorizonCorrector(nn.Module):
-    """Base-as-candidate residual mixture (K historical + one Base token)."""
+    """Base-as-candidate residual mixture (K historical + one Base token).
+
+    The shared token refiner adds one bounded nonlinear interaction block for
+    both historical and Base tokens before the unified attention decision.
+    """
 
     def __init__(self, context_length, horizon, channels, hidden_dim=224, state_dim=160,
                  attention_heads=4, base_logit_init_bias=1.0):
@@ -630,6 +634,15 @@ class CandidateSetHorizonCorrector(nn.Module):
         self.value_proj = nn.Linear(hidden_dim, channels)
         self.base_type = nn.Parameter(torch.zeros(hidden_dim))
         self.base_bias = nn.Parameter(torch.tensor(float(base_logit_init_bias)))
+        self.token_refiner = nn.Sequential(
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+        )
+        # Start as an exact identity refinement so the wider model does not
+        # perturb the established Base fallback before receiving gradients.
+        nn.init.zeros_(self.token_refiner[1].weight)
+        nn.init.zeros_(self.token_refiner[1].bias)
         self.risk_probe = nn.Linear(state_dim, horizon)
         self.current_attention = None
         self.last_attention = None
@@ -643,7 +656,8 @@ class CandidateSetHorizonCorrector(nn.Module):
         centered = torch.where(finite, history - mean, torch.zeros_like(history))
         var = centered.square().sum(1, keepdim=True) / count.to(history.dtype)
         norm = centered / (var + 1e-6).sqrt()
-        inp = torch.cat((norm, torch.nan_to_num(base)), dim=1).permute(0, 2, 1, 3).reshape(b, n, -1)
+        safe_base = torch.nan_to_num(base, nan=0.0, posinf=0.0, neginf=0.0)
+        inp = torch.cat((norm, safe_base), dim=1).permute(0, 2, 1, 3).reshape(b, n, -1)
         return self.state_encoder(inp)
 
     def predict_risk(self, history, base):
@@ -654,19 +668,43 @@ class CandidateSetHorizonCorrector(nn.Module):
                 candidates=None, aggregation=None):
         if candidates is None or aggregation is None:
             raise ValueError("CandidateSetHorizonCorrector requires candidates and aggregation")
-        cand = torch.nan_to_num(aggregation.candidate_futures)
+        cand = torch.nan_to_num(
+            aggregation.candidate_futures, nan=0.0, posinf=0.0, neginf=0.0
+        )
         masks = aggregation.candidate_masks.bool()
         valid = masks.any(-1)
         b, h, n, k, c = cand.shape
         if risk_state is None:
             risk_state = self._state(history, base)
         delta = cand - base.unsqueeze(3)
-        sim = torch.nan_to_num(candidates.shape_scores[:, None, :, :, None].expand(b, h, n, k, 1))
-        level = torch.nan_to_num((-candidates.level_distances)[:, None, :, :, None].expand(b, h, n, k, 1))
+        sim = torch.nan_to_num(
+            candidates.shape_scores[:, None, :, :, None].expand(b, h, n, k, 1),
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        )
+        level = torch.nan_to_num(
+            (-candidates.level_distances)[:, None, :, :, None].expand(b, h, n, k, 1),
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        )
         pos = torch.linspace(0, 1, h, device=base.device, dtype=base.dtype).view(1, h, 1, 1, 1).expand(b, h, n, k, 1)
         cand_tok = self.candidate_encoder(torch.cat((delta, delta.abs(), sim, level, pos), -1))
         cand_tok = torch.where(valid.unsqueeze(-1), cand_tok, torch.zeros_like(cand_tok))
-        ctx_std = torch.nan_to_num(history).std(1).mean(-1, keepdim=True)
+        # Compute context volatility from observed values only.  Replacing an
+        # Inf with torch.nan_to_num's default maximum would overflow this
+        # statistic before the candidate mask can remove the affected token.
+        history_finite = torch.isfinite(history)
+        history_safe = torch.where(history_finite, history, torch.zeros_like(history))
+        history_count = history_finite.sum(1).clamp_min(1).to(history.dtype)
+        history_mean = history_safe.sum(1) / history_count
+        history_centered = (
+            history_safe - history_mean.unsqueeze(1)
+        ) * history_finite.to(history.dtype)
+        ctx_std = (
+            history_centered.square().sum(1) / history_count
+        ).clamp_min(0.0).sqrt().mean(-1, keepdim=True)
         base_risk = torch.nn.functional.softplus(self.risk_probe(risk_state)).permute(0, 2, 1).unsqueeze(-1)
         # All Base-token scalar features are [B,H,N,1]; encode one token per
         # horizon/node, yielding [B,H,N,D] before appending the K historical
@@ -678,6 +716,7 @@ class CandidateSetHorizonCorrector(nn.Module):
         base_tok = self.base_encoder(base_feat) + self.base_type
         query = self.query_proj(risk_state)[:, None, :, :].expand(b, h, n, -1)
         all_tok = torch.cat((cand_tok, base_tok.unsqueeze(3)), 3)
+        all_tok = all_tok + self.token_refiner(all_tok)
         logits = (all_tok * query.unsqueeze(3)).sum(-1) / (self.hidden_dim ** 0.5)
         logits[..., -1] = logits[..., -1] + self.base_bias
         all_valid = torch.cat((valid, torch.ones(b, h, n, 1, dtype=torch.bool, device=base.device)), -1)
