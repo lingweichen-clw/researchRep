@@ -115,6 +115,67 @@ class RetrievalStrategiesTest(unittest.TestCase):
         self.assertTrue(torch.equal(result.event_ids, torch.tensor([[0, 1, 2, -1, -1]])))
         self.assertTrue(torch.equal(result.valid, torch.tensor([[True, True, True, False, False]])))
 
+    def test_relaxed_calendar_diverse_removes_overlapping_windows(self) -> None:
+        class Calendar:
+            @staticmethod
+            def lookup(weekday: int, slot: int) -> np.ndarray:
+                return {
+                    9: np.asarray([0, 1], dtype=np.int64),
+                    10: np.asarray([2], dtype=np.int64),
+                    11: np.asarray([3], dtype=np.int64),
+                }[slot]
+
+        class Bank:
+            calendar = Calendar()
+            future_end = np.asarray([10, 20, 30, 40], dtype=np.int64)
+            context_end = np.asarray([100, 110, 450, 760], dtype=np.int64)
+            manifest = SimpleNamespace(
+                slots_per_day=288,
+                context_length=288,
+                horizon=12,
+            )
+
+        result = calendar_event_candidates(
+            Bank(),
+            weekday=torch.tensor([2]),
+            slot=torch.tensor([10]),
+            context_start=torch.tensor([1000]),
+            max_candidates=5,
+            device=torch.device("cpu"),
+            candidate_protocol="relaxed_calendar_diverse",
+        )
+
+        self.assertTrue(torch.equal(result.event_ids, torch.tensor([[2, 0, 3, -1, -1]])))
+        self.assertTrue(torch.equal(result.valid, torch.tensor([[True, True, True, False, False]])))
+
+    def test_weekday_radius1_overlap_uses_adjacent_weekdays_and_context_end_boundary(self) -> None:
+        class Calendar:
+            @staticmethod
+            def lookup(weekday: int, slot: int) -> np.ndarray:
+                return {
+                    (1, 84): np.asarray([0], dtype=np.int64),
+                    (2, 84): np.asarray([1], dtype=np.int64),
+                    (3, 84): np.asarray([2, 3], dtype=np.int64),
+                }.get((weekday, slot), np.asarray([], dtype=np.int64))
+
+        class Bank:
+            calendar = Calendar()
+            future_end = np.asarray([90, 100, 110, 130], dtype=np.int64)
+            context_end = np.asarray([78, 88, 98, 118], dtype=np.int64)
+            manifest = SimpleNamespace(slots_per_day=288, context_length=21)
+
+        result = calendar_event_candidates(
+            Bank(),
+            weekday=torch.tensor([2]),
+            slot=torch.tensor([84]),
+            context_start=torch.tensor([90]),
+            max_candidates=8,
+            device=torch.device("cpu"),
+            candidate_protocol="weekday_radius1_overlap",
+        )
+
+        self.assertTrue(torch.equal(result.event_ids, torch.tensor([[0, 1, 2, -1, -1, -1, -1, -1]])))
+        self.assertTrue(torch.equal(result.valid, torch.tensor([[True, True, True, False, False, False, False, False]])))
     def test_uniform_aggregation_ignores_missing_candidate_and_computes_variance(self) -> None:
         # [B, H, N, K, C]
         candidates = torch.tensor([[[[[1.0], [3.0], [100.0]]]]])

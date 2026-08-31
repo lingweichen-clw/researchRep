@@ -33,6 +33,8 @@ def main() -> None:
         choices=(
             "exact_calendar",
             "relaxed_calendar",
+            "relaxed_calendar_diverse",
+            "weekday_radius1_overlap",
             "broad_causal",
             "pretrain_broad_causal",
         ),
@@ -60,6 +62,12 @@ def main() -> None:
             "with broad_causal/pretrain_broad_causal; exact_calendar remains bounded "
             "by its legal calendar pool."
         ),
+    )
+    parser.add_argument(
+        "--node-top-k",
+        type=int,
+        default=None,
+        help="Validation-only node-level Top-K override.",
     )
     parser.add_argument(
         "--max-batches",
@@ -106,6 +114,7 @@ def main() -> None:
         max_batches=args.max_batches,
         candidate_protocol=args.candidate_protocol,
         profile_weight_override=args.profile_weight_override,
+        node_top_k_override=args.node_top_k,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     print(f"visualization output: {Path(args.output_dir).resolve()}")

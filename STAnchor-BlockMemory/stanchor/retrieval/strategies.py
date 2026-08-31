@@ -10,7 +10,7 @@ import torch
 from stanchor.retrieval.retriever import AggregationOutput, EventCandidates, NodeCandidates
 from stanchor.retrieval.trend_residual import estimate_local_trend
 
-CANDIDATE_PROTOCOLS = ("exact_calendar", "relaxed_calendar")
+CANDIDATE_PROTOCOLS = ("exact_calendar", "relaxed_calendar", "relaxed_calendar_diverse", "weekday_radius1_overlap")
 
 
 def validate_candidate_protocol(protocol: str) -> str:
@@ -33,8 +33,10 @@ def calendar_event_candidates(
     """Return causal events from the configured calendar candidate protocol.
 
     ``exact_calendar`` selects the same weekday and slot. ``relaxed_calendar``
-    selects the same weekday and slots in ``slot - 1, slot, slot + 1``. Both
-    protocols use only historical events whose future has ended before the
+    selects the same weekday and slots in ``slot - 1, slot, slot + 1``.
+    ``relaxed_calendar_diverse`` uses the same relaxed pool but greedily removes
+    overlapping event windows, retaining the exact slot before adjacent slots.
+    All protocols use only historical events whose future has ended before the
     query context starts.
     """
     candidate_protocol = validate_candidate_protocol(candidate_protocol)
@@ -87,27 +89,70 @@ def calendar_event_candidates(
             )
         return EventCandidates(ids, scores, valid)
     future_end = np.asarray(bank.future_end)
+    context_end = np.asarray(
+        getattr(bank, "context_end", np.arange(future_end.shape[0])), dtype=np.int64
+    )
     for batch_index in range(batch):
         query_weekday = int(weekday[batch_index].item())
         query_slot = int(slot[batch_index].item())
-        radius = 1 if candidate_protocol == "relaxed_calendar" else 0
-        collected: list[int] = []
-        seen: set[int] = set()
-        for slot_offset in range(-radius, radius + 1):
-            candidate_slot = query_slot + slot_offset
-            if not 0 <= candidate_slot < slots_per_day:
-                continue
-            calendar_ids = np.asarray(
-                bank.calendar.lookup(query_weekday, candidate_slot),
-                dtype=np.int64,
-            )
-            for event_id in calendar_ids.tolist():
-                event_id = int(event_id)
-                if event_id in seen or future_end[event_id] >= int(context_start[batch_index].item()):
+        query_context_start = int(context_start[batch_index].item())
+        if candidate_protocol == "weekday_radius1_overlap":
+            manifest = getattr(bank, "manifest", None)
+            context_length = int(getattr(manifest, "context_length", 0))
+            if context_length <= 0:
+                raise ValueError("weekday_radius1_overlap requires bank.manifest.context_length")
+            query_context_end = query_context_start + context_length - 1
+            collected: list[tuple[int, int]] = []
+            seen: set[int] = set()
+            for weekday_offset in (-1, 0, 1):
+                candidate_weekday = (query_weekday + weekday_offset) % 7
+                calendar_ids = np.asarray(
+                    bank.calendar.lookup(candidate_weekday, query_slot), dtype=np.int64
+                )
+                for event_id in calendar_ids.tolist():
+                    event_id = int(event_id)
+                    if event_id in seen or future_end[event_id] > query_context_end:
+                        continue
+                    seen.add(event_id)
+                    collected.append((event_id, weekday_offset))
+            legal = np.asarray([event_id for event_id, _ in collected], dtype=np.int64)
+        else:
+            radius = 1 if candidate_protocol != "exact_calendar" else 0
+            collected: list[tuple[int, int]] = []
+            seen: set[int] = set()
+            offsets = list(range(-radius, radius + 1))
+            if candidate_protocol == "relaxed_calendar_diverse":
+                offsets.sort(key=abs)
+            for slot_offset in offsets:
+                candidate_slot = query_slot + slot_offset
+                if not 0 <= candidate_slot < slots_per_day:
                     continue
-                seen.add(event_id)
-                collected.append(event_id)
-        legal = np.asarray(collected, dtype=np.int64)
+                calendar_ids = np.asarray(
+                    bank.calendar.lookup(query_weekday, candidate_slot),
+                    dtype=np.int64,
+                )
+                for event_id in calendar_ids.tolist():
+                    event_id = int(event_id)
+                    if event_id in seen or future_end[event_id] >= query_context_start:
+                        continue
+                    seen.add(event_id)
+                    collected.append((event_id, slot_offset))
+            if candidate_protocol == "relaxed_calendar_diverse":
+                manifest = getattr(bank, "manifest", None)
+                min_gap = int(getattr(manifest, "context_length", 0)) + int(
+                    getattr(manifest, "horizon", 0)
+                )
+                min_gap = max(min_gap, 1)
+                selected: list[int] = []
+                for event_id, _ in collected:
+                    if all(
+                        abs(int(context_end[event_id]) - int(context_end[other])) >= min_gap
+                        for other in selected
+                    ):
+                        selected.append(event_id)
+                legal = np.asarray(selected, dtype=np.int64)
+            else:
+                legal = np.asarray([event_id for event_id, _ in collected], dtype=np.int64)
         if legal.size > max_candidates:
             raise ValueError(
                 "event_top_r truncates the legal calendar pool; increase it for a fair ablation"

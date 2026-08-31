@@ -1,4 +1,4 @@
-﻿"""Lightweight forecasting, mirage confidence, and exact fallback fusion."""
+"""Lightweight forecasting, mirage confidence, and exact fallback fusion."""
 
 from __future__ import annotations
 
@@ -803,6 +803,10 @@ class DownstreamOutput:
     candidate_attention: torch.Tensor | None = None
     candidate_futures: torch.Tensor | None = None
     candidate_masks: torch.Tensor | None = None
+    routing_weights: torch.Tensor | None = None
+    mha_attention_weights: torch.Tensor | None = None
+    base_usage: torch.Tensor | None = None
+    routing_entropy: torch.Tensor | None = None
 
 
 class STAnchorDownstreamModel(nn.Module):
@@ -900,7 +904,11 @@ class STAnchorDownstreamModel(nn.Module):
             if self.error_corrector is None:
                 raise RuntimeError("error-aware corrector is not initialized")
             predicted_risk, risk_state = self.error_corrector.predict_risk(x, base)
-            if isinstance(self.error_corrector, CandidateSetHorizonCorrector):
+            is_candidate_router = (
+                isinstance(self.error_corrector, CandidateSetHorizonCorrector)
+                or bool(getattr(self.error_corrector, "uses_candidate_routing", False))
+            )
+            if is_candidate_router:
                 memory_valid = aggregation.valid.all(dim=-1, keepdim=True)
                 final, fusion_weight, contributions, learned_memory = self.error_corrector(
                     x, base, aggregation.prediction, None, memory_valid,
@@ -933,9 +941,13 @@ class STAnchorDownstreamModel(nn.Module):
                 memory_valid=memory_valid,
                 predicted_base_risk=predicted_risk,
                 additive_contributions=contributions,
-                candidate_attention=(candidate_attention if isinstance(self.error_corrector, CandidateSetHorizonCorrector) else None),
-                candidate_futures=(candidate_futures if isinstance(self.error_corrector, CandidateSetHorizonCorrector) else None),
-                candidate_masks=(candidate_masks if isinstance(self.error_corrector, CandidateSetHorizonCorrector) else None),
+                candidate_attention=(candidate_attention if is_candidate_router else None),
+                candidate_futures=(candidate_futures if is_candidate_router else None),
+                candidate_masks=(candidate_masks if is_candidate_router else None),
+                routing_weights=(getattr(self.error_corrector, "last_routing_weights", None) if is_candidate_router else None),
+                mha_attention_weights=(getattr(self.error_corrector, "last_mha_attention", None) if is_candidate_router else None),
+                base_usage=(getattr(self.error_corrector, "last_base_usage", None) if is_candidate_router else None),
+                routing_entropy=(getattr(self.error_corrector, "last_routing_entropy", None) if is_candidate_router else None),
             )
         features, memory_valid = build_confidence_features(
             candidates,

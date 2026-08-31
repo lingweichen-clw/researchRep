@@ -1,4 +1,4 @@
-﻿"""Typed configuration for all STAnchor experiment stages."""
+"""Typed configuration for all STAnchor experiment stages."""
 
 from __future__ import annotations
 
@@ -190,6 +190,8 @@ class TargetConfig:
     calibrator_state_dim: int = 256
     candidate_attention_heads: int = 4
     candidate_trajectory_hidden_dim: int = 96
+    routing_hidden_dim: int = 128
+    mha_dropout: float = 0.05
     use_horizon_embedding: bool = True
     base_logit_init_bias: float = 1.0
     candidate_quality_temperature: float = 0.2
@@ -489,12 +491,16 @@ class ExperimentConfig:
             raise ValueError("unsupported validation_loss_variant")
         if self.target.validation_correction_variant not in {"scalar_gate", "vector_residual", "residual_additive", "set_attention_horizon", "base_as_candidate"}:
             raise ValueError("unsupported validation_correction_variant")
-        if self.target.calibrator_arch not in {"legacy", "base_as_candidate", "trajectory_conditioned_base_as_candidate"}:
+        if self.target.calibrator_arch not in {"legacy", "base_as_candidate", "trajectory_conditioned_base_as_candidate", "transformer_candidate_router"}:
             raise ValueError("unsupported calibrator_arch")
         if self.target.candidate_token_dim <= 0 or self.target.candidate_attention_heads <= 0:
             raise ValueError("candidate token dimensions must be positive")
         if self.target.calibrator_state_dim <= 0:
             raise ValueError("calibrator_state_dim must be positive")
+        if self.target.routing_hidden_dim <= 0:
+            raise ValueError("routing_hidden_dim must be positive")
+        if not 0.0 <= self.target.mha_dropout < 1.0:
+            raise ValueError("mha_dropout must be in [0,1)")
         if self.target.candidate_trajectory_hidden_dim < 0:
             raise ValueError("candidate_trajectory_hidden_dim must be non-negative")
         if self.target.candidate_token_dim % self.target.candidate_attention_heads != 0:

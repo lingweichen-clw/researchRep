@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -35,6 +36,8 @@ SUPPORTED_VERSIONS = {"e2", "e3", "e5a", "tgge_joint"}
 SUPPORTED_CANDIDATE_PROTOCOLS = {
     "exact_calendar",
     "relaxed_calendar",
+    "relaxed_calendar_diverse",
+    "weekday_radius1_overlap",
     "broad_causal",
     "pretrain_broad_causal",
 }
@@ -640,10 +643,23 @@ def build_diagnostic_event_candidates(
         if protocol == "broad_causal":
             legal = np.flatnonzero(future_end < query_start).astype(np.int64)
             if legal.size > max_candidates:
-                positions = np.rint(
-                    np.linspace(0, legal.size - 1, max_candidates)
-                ).astype(np.int64)
+                positions = np.rint(np.linspace(0, legal.size - 1, max_candidates)).astype(np.int64)
                 legal = legal[positions]
+        elif protocol == "weekday_radius1_overlap":
+            query_context_end = query_start + int(bank.manifest.context_length) - 1
+            collected: list[int] = []
+            seen: set[int] = set()
+            for weekday_offset in (-1, 0, 1):
+                candidate_weekday = (query_weekday + weekday_offset) % 7
+                for event_id in np.asarray(
+                    bank.calendar.lookup(candidate_weekday, query_slot), dtype=np.int64
+                ).tolist():
+                    event_id = int(event_id)
+                    if event_id in seen or future_end[event_id] > query_context_end:
+                        continue
+                    seen.add(event_id)
+                    collected.append(event_id)
+            legal = np.asarray(collected, dtype=np.int64)
         else:
             radius = 0 if protocol == "exact_calendar" else 1
             collected: list[int] = []
@@ -652,21 +668,32 @@ def build_diagnostic_event_candidates(
                 candidate_slot = query_slot + offset
                 if not 0 <= candidate_slot < slots_per_day:
                     continue
-                calendar_ids = np.asarray(
-                    bank.calendar.lookup(query_weekday, candidate_slot),
-                    dtype=np.int64,
-                )
-                for event_id in calendar_ids.tolist():
+                for event_id in np.asarray(
+                    bank.calendar.lookup(query_weekday, candidate_slot), dtype=np.int64
+                ).tolist():
                     event_id = int(event_id)
                     if event_id in seen or future_end[event_id] >= query_start:
                         continue
                     seen.add(event_id)
                     collected.append(event_id)
             legal = np.asarray(collected, dtype=np.int64)
-            if legal.size > max_candidates:
-                raise ValueError(
-                    f"{protocol} candidate pool ({legal.size}) exceeds max_candidates={max_candidates}"
+            if protocol == "relaxed_calendar_diverse":
+                min_gap = int(getattr(bank.manifest, "context_length", 0)) + int(
+                    getattr(bank.manifest, "horizon", 0)
                 )
+                min_gap = max(min_gap, 1)
+                selected: list[int] = []
+                for event_id in legal.tolist():
+                    if all(
+                        abs(int(bank.context_end[event_id]) - int(bank.context_end[other])) >= min_gap
+                        for other in selected
+                    ):
+                        selected.append(event_id)
+                legal = np.asarray(selected, dtype=np.int64)
+        if legal.size > max_candidates:
+            raise ValueError(
+                f"{protocol} candidate pool ({legal.size}) exceeds max_candidates={max_candidates}"
+            )
         if legal.size == 0:
             continue
         count = int(legal.size)
@@ -1010,6 +1037,7 @@ def run_retrieval_visualization(
     max_batches: int | None = None,
     candidate_protocol: str = "exact_calendar",
     profile_weight_override: float | None = None,
+    node_top_k_override: int | None = None,
 ) -> dict[str, Any]:
     """Run the leakage-safe E2/E3/E5A validation visualization experiment."""
     if split != "val":
@@ -1024,6 +1052,11 @@ def run_retrieval_visualization(
         )
     if config is None:
         raise ValueError("config is required")
+    if node_top_k_override is not None:
+        if node_top_k_override <= 0:
+            raise ValueError("node_top_k_override must be positive")
+        config = replace(config, bank=replace(config.bank, node_top_k=node_top_k_override))
+        config.validate()
     if profile_weight_override is not None:
         if config.model.profile_dim <= 0:
             raise ValueError("profile_weight_override requires a profile-enabled model")
@@ -1491,7 +1524,25 @@ def run_retrieval_visualization(
                 "name": candidate_protocol,
                 "same_weekday": candidate_protocol
                 not in {"broad_causal", "pretrain_broad_causal"},
-                "slot_radius": 1 if candidate_protocol == "relaxed_calendar" else 0,
+                "slot_radius": (
+                    1
+                    if candidate_protocol in {"relaxed_calendar", "relaxed_calendar_diverse"}
+                    else 0
+                ),
+                "weekday_radius": 1 if candidate_protocol == "weekday_radius1_overlap" else 0,
+                "allow_context_overlap": candidate_protocol == "weekday_radius1_overlap",
+                "causal_boundary": (
+                    "query_context_end"
+                    if candidate_protocol == "weekday_radius1_overlap"
+                    else "query_context_start"
+                ),
+                "deduplicate_overlapping_windows": candidate_protocol == "relaxed_calendar_diverse",
+                "min_event_gap_steps": (
+                    int(pretrained_bank.manifest.context_length)
+                    + int(pretrained_bank.manifest.horizon)
+                    if candidate_protocol == "relaxed_calendar_diverse"
+                    else None
+                ),
                 "strict_causal": True,
                 "shared_pretrained_random_event_axis": True,
                 "broad_sampling": (
