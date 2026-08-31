@@ -68,10 +68,10 @@ pretrain:
   early_stopping_enabled: false
 
 bank:
-  output_dir: artifacts/case_bank_hn_offset_decay_v1_seed42
+  output_dir: artifacts/case_bank_hn_offset_decay_v2_transfer_hidden128_ffn2_b16_seed42
   memory_fraction: 0.7
   event_top_r: 32
-  node_top_k: 5
+  node_top_k: 12
   level_weight: 0.0
   level_temperature: 1.0
   search_temperature: 0.1
@@ -81,7 +81,7 @@ target:
   downstream_mode: learned_topk_error_aware
   training_protocol: posthoc_frozen_base
   training_data_scope: full_train
-  candidate_protocol: exact_calendar
+  candidate_protocol: weekday_radius1_overlap
   batch_size: 32
   epochs: 50
   learning_rate: 0.001

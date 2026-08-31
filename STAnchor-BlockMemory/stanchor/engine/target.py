@@ -306,7 +306,7 @@ def build_downstream_model(
         horizon_aggregator=(
             HorizonAwareAggregationHead(hidden_dim=config.target.horizon_aggregation_hidden_dim)
             if error_aware and config.target.validation_correction_variant not in {"set_attention_horizon", "base_as_candidate"}
-            else None,
+            else None
         ),
         error_corrector=error_corrector,
     )
