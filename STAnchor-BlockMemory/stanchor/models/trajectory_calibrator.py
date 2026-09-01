@@ -11,6 +11,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from stanchor.models.downstream import CandidateSetHorizonCorrector
+from stanchor.models.retrieval_router import RetrievalAwareMHAResidualRouter
 
 
 class TrajectoryConditionedCandidateSetHorizonCorrector(CandidateSetHorizonCorrector):

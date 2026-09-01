@@ -114,7 +114,7 @@ target:
   blend_weight: 0.0
   validation_loss_variant: forecast_only
   validation_correction_variant: base_as_candidate
-  calibrator_arch: transformer_candidate_router
+  calibrator_arch: retrieval_aware_mha_router
   candidate_token_dim: 256
   calibrator_state_dim: 256
   candidate_attention_heads: 4

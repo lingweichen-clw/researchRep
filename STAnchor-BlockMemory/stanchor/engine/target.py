@@ -1,4 +1,4 @@
-﻿"""Target calibration, safe fusion training, and evaluation."""
+"""Target calibration, safe fusion training, and evaluation."""
 
 from __future__ import annotations
 
@@ -48,6 +48,7 @@ from stanchor.models.trajectory_calibrator import (
     TrajectoryConditionedCandidateSetHorizonCorrector,
     TransformerCandidateRouter,
 )
+from stanchor.models.retrieval_router import RetrievalAwareMHAResidualRouter
 from stanchor.models.pretraining import STAnchorPretrainModel
 from stanchor.models.stgcn import STGCNForecastBackbone
 from stanchor.models.graph_wavenet import GraphWaveNetForecastBackbone
@@ -82,6 +83,7 @@ class FrozenPathEntry:
     base_prediction: torch.Tensor
     candidates: NodeCandidates | None
     aggregation: AggregationOutput | None
+    retrieval_node_keys: torch.Tensor | None = None
 
 
 def _node_candidates_device(value: NodeCandidates | None, device: torch.device) -> NodeCandidates | None:
@@ -100,12 +102,14 @@ def _freeze_path_entry(
     base_prediction: torch.Tensor,
     candidates: NodeCandidates | None,
     aggregation: AggregationOutput | None,
+    retrieval_node_keys: torch.Tensor | None = None,
 ) -> FrozenPathEntry:
     cpu = torch.device("cpu")
     return FrozenPathEntry(
         base_prediction=base_prediction.detach().to(cpu),
         candidates=_node_candidates_device(candidates, cpu),
         aggregation=_aggregation_device(aggregation, cpu),
+        retrieval_node_keys=(None if retrieval_node_keys is None else retrieval_node_keys.detach().to(cpu)),
     )
 
 
@@ -132,6 +136,7 @@ def _split_frozen_path(
             base_prediction=entry.base_prediction[index:index + 1].detach().cpu(),
             candidates=candidates,
             aggregation=aggregation,
+            retrieval_node_keys=(None if entry.retrieval_node_keys is None else entry.retrieval_node_keys[index:index + 1].detach().cpu()),
         )
     return result
 
@@ -164,6 +169,7 @@ def _merge_frozen_paths(
         ).to(device),
         candidates=candidates,
         aggregation=aggregation,
+        retrieval_node_keys=(None if entries[0].retrieval_node_keys is None else torch.cat([entry.retrieval_node_keys for entry in entries], dim=0).to(device)),
     )
 
 
@@ -242,7 +248,21 @@ def build_downstream_model(
     error_corrector = None
     if error_aware:
         if config.target.validation_correction_variant == "base_as_candidate":
-            if config.target.calibrator_arch == "transformer_candidate_router":
+            if config.target.calibrator_arch == "retrieval_aware_mha_router":
+                error_corrector = RetrievalAwareMHAResidualRouter(
+                    config.data.context_length,
+                    config.data.horizon,
+                    config.model.input_channels,
+                    retrieval_dim=64,
+                    hidden_dim=config.target.candidate_token_dim,
+                    fusion_hidden_dim=config.target.calibrator_state_dim,
+                    candidate_hidden_dim=config.target.candidate_trajectory_hidden_dim,
+                    routing_dim=config.target.routing_hidden_dim,
+                    attention_heads=config.target.candidate_attention_heads,
+                    base_logit_init_bias=config.target.base_logit_init_bias,
+                    mha_dropout=config.target.mha_dropout,
+                )
+            elif config.target.calibrator_arch == "transformer_candidate_router":
                 error_corrector = TransformerCandidateRouter(
                     config.data.context_length,
                     config.data.horizon,
@@ -587,11 +607,12 @@ def retrieve_for_downstream_mode(
     observed_x: torch.Tensor,
     device: torch.device,
     candidate_protocol: str = "exact_calendar",
-) -> tuple[NodeCandidates | None, AggregationOutput | None]:
+    include_query_keys: bool = False,
+) -> tuple[NodeCandidates | None, AggregationOutput | None] | tuple[NodeCandidates | None, AggregationOutput | None, torch.Tensor | None]:
     mode = validate_downstream_mode(mode)
     candidate_protocol = validate_candidate_protocol(candidate_protocol)
     if mode == BASE_ONLY:
-        return None, None
+        return (None, None, None) if include_query_keys else (None, None)
     if pretrained is None or retriever is None or bank is None:
         raise ValueError(f"downstream mode {mode!r} requires retrieval assets")
     if mode in {LEARNED_TOPK_CONFIDENCE, LEARNED_TOPK_ERROR_AWARE}:
@@ -650,7 +671,7 @@ def retrieve_for_downstream_mode(
                 data.train.context_length,
                 device,
             )
-        return candidates, aggregation
+        return (candidates, aggregation, encoding.retrieval.node_keys.detach()) if include_query_keys else (candidates, aggregation)
 
     events = calendar_event_candidates(
         bank,
@@ -699,7 +720,7 @@ def retrieve_for_downstream_mode(
                 data.train.context_length,
                 device,
             )
-        return candidates, retriever.aggregate(candidates)
+        return (candidates, retriever.aggregate(candidates), encoding.retrieval.node_keys.detach()) if include_query_keys else (candidates, retriever.aggregate(candidates))
     raise AssertionError(f"unhandled downstream mode: {mode}")
 
 
@@ -783,12 +804,19 @@ def run_target_epoch(
                 node_candidates = entry.candidates
                 aggregation = entry.aggregation
                 base_prediction = entry.base_prediction
+                retrieval_node_keys = entry.retrieval_node_keys
             else:
-                node_candidates, aggregation = retrieve_for_downstream_mode(
+                retrieved = retrieve_for_downstream_mode(
                     config.target.downstream_mode, pretrained, retriever, bank, data, graph,
                     batch, x, observed_x, device,
                     candidate_protocol=config.target.candidate_protocol,
+                    include_query_keys=(config.target.calibrator_arch == "retrieval_aware_mha_router"),
                 )
+                if config.target.calibrator_arch == "retrieval_aware_mha_router":
+                    node_candidates, aggregation, retrieval_node_keys = retrieved
+                else:
+                    node_candidates, aggregation = retrieved
+                    retrieval_node_keys = None
                 def _backbone_forward(inp):
                     if config.target.backbone_name == "staeformer":
                         if config.target.staeformer_time_feature_mode == "fallback":
@@ -808,12 +836,13 @@ def run_target_epoch(
                 if frozen_cache is not None:
                     frozen_cache.update(
                         _split_frozen_path(
-                            _freeze_path_entry(base_prediction, node_candidates, aggregation),
+                            _freeze_path_entry(base_prediction, node_candidates, aggregation, retrieval_node_keys),
                             sample_ids,
                         )
                     )
             output = downstream(
-                x, node_candidates, aggregation, base_override=base_prediction
+                x, node_candidates, aggregation, base_override=base_prediction,
+                retrieval_node_keys=retrieval_node_keys,
             )
             losses = compute_downstream_loss(
                 output,

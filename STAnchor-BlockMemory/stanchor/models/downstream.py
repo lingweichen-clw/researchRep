@@ -853,6 +853,7 @@ class STAnchorDownstreamModel(nn.Module):
         candidates: NodeCandidates | None,
         aggregation: AggregationOutput | None,
         base_override: torch.Tensor | None = None,
+        retrieval_node_keys: torch.Tensor | None = None,
     ) -> DownstreamOutput:
         base = self.backbone(x) if base_override is None else base_override
         if base.shape[0] != x.shape[0] or base.shape[2] != x.shape[2]:
@@ -910,9 +911,16 @@ class STAnchorDownstreamModel(nn.Module):
             )
             if is_candidate_router:
                 memory_valid = aggregation.valid.all(dim=-1, keepdim=True)
+                router_kwargs = dict(
+                    risk_state=risk_state,
+                    candidates=candidates,
+                    aggregation=aggregation,
+                )
+                if getattr(self.error_corrector, "uses_retrieval_node_keys", False):
+                    router_kwargs["retrieval_node_keys"] = retrieval_node_keys
                 final, fusion_weight, contributions, learned_memory = self.error_corrector(
                     x, base, aggregation.prediction, None, memory_valid,
-                    risk_state=risk_state, candidates=candidates, aggregation=aggregation,
+                    **router_kwargs,
                 )
                 features = torch.zeros((*base.shape[:-1], 9), dtype=base.dtype, device=base.device)
                 memory_prediction = learned_memory
