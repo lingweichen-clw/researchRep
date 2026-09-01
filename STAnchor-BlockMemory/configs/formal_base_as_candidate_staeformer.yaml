@@ -96,7 +96,7 @@ target:
   help_margin: 0.0
   help_temperature: 0.1
   backbone_name: staeformer
-  patience: 10
+  patience: 20
   early_stopping_enabled: false
   risk_hidden_dim: 512
   fusion_feature_hidden_dim: 64

@@ -106,7 +106,7 @@ target:
   graph_wavenet_dropout: 0.3
   graph_wavenet_adaptive_dim: 10
   graph_wavenet_adaptive_adj: true
-  patience: 10
+  patience: 20
   early_stopping_enabled: false
   risk_hidden_dim: 512
   fusion_feature_hidden_dim: 64

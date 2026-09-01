@@ -99,7 +99,7 @@ target:
   stgcn_temporal_kernel: 3
   stgcn_block_num: 2
   stgcn_dropout: 0.5
-  patience: 10
+  patience: 20
   early_stopping_enabled: false
   risk_hidden_dim: 512
   fusion_feature_hidden_dim: 64
