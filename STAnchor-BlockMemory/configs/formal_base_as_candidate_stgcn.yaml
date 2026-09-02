@@ -109,6 +109,7 @@ target:
   candidate_quality_weight: 0.0
   candidate_quality_temperature: 0.2
   validation_loss_variant: forecast_only
+  forecast_loss_space: physical
   validation_correction_variant: base_as_candidate
   calibrator_arch: retrieval_aware_mha_router
   candidate_token_dim: 256

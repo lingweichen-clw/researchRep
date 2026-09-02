@@ -114,8 +114,14 @@ def compute_downstream_loss(
     loss_variant: str = "forecast_risk_blend",
     candidate_quality_weight: float = 0.0,
     candidate_quality_temperature: float = 0.1,
+    forecast_prediction: torch.Tensor | None = None,
+    forecast_target: torch.Tensor | None = None,
 ) -> DownstreamLoss:
-    forecast = masked_mae(output.final_prediction, target, observed)
+    forecast = masked_mae(
+        output.final_prediction if forecast_prediction is None else forecast_prediction,
+        target if forecast_target is None else forecast_target,
+        observed,
+    )
     candidate_quality = forecast * 0.0
     if candidate_quality_weight > 0.0 and output.candidate_attention is not None and output.candidate_futures is not None and output.candidate_masks is not None:
         candidate_futures = output.candidate_futures

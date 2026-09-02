@@ -844,9 +844,17 @@ def run_target_epoch(
                 x, node_candidates, aggregation, base_override=base_prediction,
                 retrieval_node_keys=retrieval_node_keys,
             )
+            target_model = batch["y"].to(device)
+            forecast_prediction = output.final_prediction
+            forecast_target = target_model
+            if config.target.forecast_loss_space == "physical":
+                forecast_prediction = scaler.inverse_transform_torch(
+                    output.final_prediction
+                )
+                forecast_target = scaler.inverse_transform_torch(target_model)
             losses = compute_downstream_loss(
                 output,
-                target=batch["y"].to(device),
+                target=target_model,
                 observed=batch["y_observed"].to(device),
                 confidence_weight=config.target.confidence_weight,
                 help_margin=config.target.help_margin,
@@ -861,6 +869,8 @@ def run_target_epoch(
                 loss_variant=config.target.validation_loss_variant,
                 candidate_quality_weight=(config.target.candidate_quality_weight if training else 0.0),
                 candidate_quality_temperature=config.target.candidate_quality_temperature,
+                forecast_prediction=forecast_prediction,
+                forecast_target=forecast_target,
             )
             require_finite(losses.total, "downstream loss")
             if training:
@@ -873,7 +883,6 @@ def run_target_epoch(
             risk += float((losses.risk if losses.risk is not None else losses.total * 0.0).detach())
             blend += float((losses.blend if losses.blend is not None else losses.total * 0.0).detach())
             candidate_quality += float((losses.candidate_quality if losses.candidate_quality is not None else losses.total * 0.0).detach())
-            target_model = batch["y"].to(device)
             metrics.update(
                 scaler.inverse_transform_torch(output.final_prediction.detach()),
                 scaler.inverse_transform_torch(target_model),

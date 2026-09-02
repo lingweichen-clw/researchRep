@@ -17,6 +17,7 @@ from stanchor.losses.downstream import compute_downstream_loss
 from stanchor.modes import LEARNED_TOPK_OFFSET_DECAY_HORIZON
 from stanchor.models.downstream import (
     ConfidenceHead,
+    DownstreamOutput,
     LightweightForecastBackbone,
     SafeResidualFusion,
     STAnchorDownstreamModel,
@@ -27,6 +28,31 @@ from scripts.train_downstream import build_parser
 
 
 class DownstreamFlowTest(unittest.TestCase):
+    def test_forecast_loss_accepts_physical_space_inputs(self) -> None:
+        zeros = torch.zeros(1, 1, 2, 1)
+        output = DownstreamOutput(
+            base_prediction=zeros,
+            memory_prediction=zeros,
+            confidence_features=zeros,
+            confidence=zeros,
+            fusion_weight=zeros,
+            final_prediction=zeros,
+            memory_valid=torch.ones_like(zeros, dtype=torch.bool),
+        )
+        physical_prediction = torch.tensor([[[[2.0], [4.0]]]])
+        losses = compute_downstream_loss(
+            output,
+            target=zeros,
+            observed=torch.ones_like(zeros, dtype=torch.bool),
+            confidence_weight=0.0,
+            help_margin=0.0,
+            help_temperature=0.1,
+            use_confidence=False,
+            forecast_prediction=physical_prediction,
+            forecast_target=zeros,
+        )
+        self.assertAlmostEqual(float(losses.forecast), 3.0, places=6)
+
     def test_target_early_stopping_can_be_disabled_for_formal_runs(self) -> None:
         self.assertFalse(should_stop_target_stage(50, 10, enabled=False))
         self.assertTrue(should_stop_target_stage(10, 10, enabled=True))

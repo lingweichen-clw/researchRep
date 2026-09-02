@@ -183,6 +183,9 @@ class TargetConfig:
     blend_weight: float = 0.1
     candidate_quality_weight: float = 0.0
     blend_minimum_direction_norm: float = 1.0e-4
+    # Space used by the primary forecast loss; reported metrics remain in
+    # physical units after inverse transformation.
+    forecast_loss_space: str = 'normalized'
     validation_loss_variant: str = "forecast_risk_blend"
     validation_correction_variant: str = "scalar_gate"
     calibrator_arch: str = "legacy"
@@ -489,6 +492,8 @@ class ExperimentConfig:
             raise ValueError("blend_minimum_direction_norm must be positive")
         if self.target.validation_loss_variant not in {"forecast_risk_blend", "forecast_risk", "forecast_only"}:
             raise ValueError("unsupported validation_loss_variant")
+        if self.target.forecast_loss_space not in {"normalized", "physical"}:
+            raise ValueError("unsupported forecast_loss_space")
         if self.target.validation_correction_variant not in {"scalar_gate", "vector_residual", "residual_additive", "set_attention_horizon", "base_as_candidate"}:
             raise ValueError("unsupported validation_correction_variant")
         if self.target.calibrator_arch not in {"legacy", "base_as_candidate", "trajectory_conditioned_base_as_candidate", "transformer_candidate_router", "retrieval_aware_mha_router"}:
