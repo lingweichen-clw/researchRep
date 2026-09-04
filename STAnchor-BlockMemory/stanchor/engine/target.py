@@ -36,17 +36,9 @@ from stanchor.modes import (
 )
 from stanchor.models.downstream import (
     ConfidenceHead,
-    HorizonAwareAggregationHead,
     LightweightForecastBackbone,
     SafeResidualFusion,
     STAnchorDownstreamModel,
-    StructuredErrorCorrector,
-    CandidateSetHorizonCorrector,
-    LegacyCandidateSetHorizonCorrector,
-)
-from stanchor.models.trajectory_calibrator import (
-    TrajectoryConditionedCandidateSetHorizonCorrector,
-    TransformerCandidateRouter,
 )
 from stanchor.models.retrieval_router import RetrievalAwareMHAResidualRouter
 from stanchor.models.pretraining import STAnchorPretrainModel
@@ -247,87 +239,35 @@ def build_downstream_model(
         raise ValueError(f"unsupported downstream backbone: {config.target.backbone_name}")
     error_corrector = None
     if error_aware:
-        if config.target.validation_correction_variant == "base_as_candidate":
-            if config.target.calibrator_arch == "retrieval_aware_mha_router":
-                error_corrector = RetrievalAwareMHAResidualRouter(
-                    config.data.context_length,
-                    config.data.horizon,
-                    config.model.input_channels,
-                    retrieval_dim=64,
-                    hidden_dim=config.target.candidate_token_dim,
-                    fusion_hidden_dim=config.target.calibrator_state_dim,
-                    candidate_hidden_dim=config.target.candidate_trajectory_hidden_dim,
-                    routing_dim=config.target.routing_hidden_dim,
-                    attention_heads=config.target.candidate_attention_heads,
-                    base_logit_init_bias=config.target.base_logit_init_bias,
-                    mha_dropout=config.target.mha_dropout,
-                )
-            elif config.target.calibrator_arch == "transformer_candidate_router":
-                error_corrector = TransformerCandidateRouter(
-                    config.data.context_length,
-                    config.data.horizon,
-                    config.model.input_channels,
-                    hidden_dim=config.target.candidate_token_dim,
-                    state_dim=config.target.calibrator_state_dim,
-                    attention_heads=config.target.candidate_attention_heads,
-                    base_logit_init_bias=config.target.base_logit_init_bias,
-                    trajectory_hidden_dim=config.target.candidate_trajectory_hidden_dim,
-                    routing_hidden_dim=config.target.routing_hidden_dim,
-                    mha_dropout=config.target.mha_dropout,
-                    use_horizon_embedding=config.target.use_horizon_embedding,
-                )
-            elif config.target.calibrator_arch == "trajectory_conditioned_base_as_candidate":
-                error_corrector = TrajectoryConditionedCandidateSetHorizonCorrector(
-                    config.data.context_length,
-                    config.data.horizon,
-                    config.model.input_channels,
-                    hidden_dim=config.target.candidate_token_dim,
-                    state_dim=config.target.calibrator_state_dim,
-                    attention_heads=config.target.candidate_attention_heads,
-                    base_logit_init_bias=config.target.base_logit_init_bias,
-                    trajectory_hidden_dim=config.target.candidate_trajectory_hidden_dim,
-                    use_horizon_embedding=config.target.use_horizon_embedding,
-                )
-            else:
-                error_corrector = CandidateSetHorizonCorrector(
-                    config.data.context_length,
-                    config.data.horizon,
-                    config.model.input_channels,
-                    hidden_dim=config.target.candidate_token_dim,
-                    state_dim=config.target.calibrator_state_dim,
-                    attention_heads=config.target.candidate_attention_heads,
-                    base_logit_init_bias=config.target.base_logit_init_bias,
-                )
-        elif config.target.validation_correction_variant == "set_attention_horizon":
-            error_corrector = LegacyCandidateSetHorizonCorrector(
-                config.data.context_length,
-                config.data.horizon,
-                config.model.input_channels,
-                hidden_dim=192,
-                state_dim=128,
+        if (
+            config.target.validation_correction_variant != "base_as_candidate"
+            or config.target.calibrator_arch != "retrieval_aware_mha_router"
+        ):
+            raise ValueError(
+                "learned_topk_error_aware now requires "
+                "validation_correction_variant='base_as_candidate' and "
+                "calibrator_arch='retrieval_aware_mha_router'"
             )
-        else:
-            error_corrector = StructuredErrorCorrector(
-                config.data.context_length,
-                config.data.horizon,
-                config.model.input_channels,
-                risk_hidden_dim=config.target.risk_hidden_dim,
-                evidence_hidden_dim=config.target.fusion_feature_hidden_dim,
-                num_features=9,
-                initial_weight=0.1,
-                correction_variant=config.target.validation_correction_variant,
-            )
+        error_corrector = RetrievalAwareMHAResidualRouter(
+            config.data.context_length,
+            config.data.horizon,
+            config.model.input_channels,
+            retrieval_dim=64,
+            hidden_dim=config.target.candidate_token_dim,
+            fusion_hidden_dim=config.target.calibrator_state_dim,
+            candidate_hidden_dim=config.target.candidate_trajectory_hidden_dim,
+            routing_dim=config.target.routing_hidden_dim,
+            attention_heads=config.target.candidate_attention_heads,
+            base_logit_init_bias=config.target.base_logit_init_bias,
+            mha_dropout=config.target.mha_dropout,
+        )
     return STAnchorDownstreamModel(
         backbone=backbone,
         confidence_head=ConfidenceHead(config.target.confidence_hidden_dim),
         fusion=SafeResidualFusion(config.data.horizon),
         confidence_level_temperature=config.target.confidence_level_temperature,
         mode=config.target.downstream_mode,
-        horizon_aggregator=(
-            HorizonAwareAggregationHead(hidden_dim=config.target.horizon_aggregation_hidden_dim)
-            if error_aware and config.target.validation_correction_variant not in {"set_attention_horizon", "base_as_candidate"}
-            else None
-        ),
+        horizon_aggregator=None,
         error_corrector=error_corrector,
     )
 
@@ -542,7 +482,7 @@ def configure_error_aware_stage(
             parameter.requires_grad_(True)
     if stage in {"calibrator", "posthoc_calibrator", "joint"}:
         if downstream.error_corrector is None:
-            raise ValueError("error-aware stages require StructuredErrorCorrector")
+            raise ValueError("error-aware stages require RetrievalAwareMHAResidualRouter")
         for parameter in downstream.error_corrector.parameters():
             parameter.requires_grad_(True)
         if downstream.horizon_aggregator is not None:

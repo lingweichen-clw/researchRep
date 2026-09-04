@@ -15,7 +15,6 @@ from torch.utils.data import DataLoader, Dataset, default_collate
 
 from stanchor.bank.storage import MemoryBank
 from stanchor.config import ExperimentConfig, resolve_project_path
-from stanchor.data.normalization import normalize_future_with_context, normalize_window
 from stanchor.engine.common import build_data_and_graph, load_pretrained_model
 from stanchor.engine.target import _validate_bank
 from stanchor.losses.pretraining import (
@@ -28,11 +27,13 @@ from stanchor.retrieval.strategies import (
     candidate_contexts,
     event_candidate_futures,
     offset_decay_aggregation,
+    raw_l1_node_candidates,
 )
 from stanchor.utils import resolve_device, save_json
 
 
-SUPPORTED_VERSIONS = {"e2", "e3", "e5a", "tgge_joint"}
+CURRENT_VISUALIZATION_VERSION = "hn_offset_decay_v2"
+SUPPORTED_VERSIONS = {CURRENT_VISUALIZATION_VERSION}
 SUPPORTED_CANDIDATE_PROTOCOLS = {
     "exact_calendar",
     "relaxed_calendar",
@@ -41,7 +42,6 @@ SUPPORTED_CANDIDATE_PROTOCOLS = {
     "broad_causal",
     "pretrain_broad_causal",
 }
-OFFSET_ALIGNED_VERSIONS = {"e5a", "tgge_joint"}
 
 
 def validate_aligned_bank_axes(
@@ -83,7 +83,7 @@ def build_teacher_aligned_signature(
     context: torch.Tensor,
     context_observed: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Build the future representation used by one version's pretraining teacher."""
+    """Build the current HN-OffsetDecay v2 future representation."""
     version = version.lower()
     if version not in SUPPORTED_VERSIONS:
         raise ValueError(f"version must be one of {sorted(SUPPORTED_VERSIONS)}")
@@ -94,11 +94,6 @@ def build_teacher_aligned_signature(
     if future.shape[0] != context.shape[0] or future.shape[2:] != context.shape[2:]:
         raise ValueError("future and context batch/node/channel dimensions must align")
 
-    if version in {"e2", "e3"}:
-        context_statistics = normalize_window(context, context_observed)
-        signature = normalize_future_with_context(future, context_statistics)
-        valid = future_observed.bool() & torch.isfinite(signature)
-        return torch.where(valid, signature, torch.zeros_like(signature)), valid
     return build_offset_decay_signature(
         future,
         future_observed,
@@ -609,7 +604,7 @@ def build_diagnostic_event_candidates(
     context_start: torch.Tensor,
     max_candidates: int,
     device: torch.device,
-    protocol: str = "exact_calendar",
+    protocol: str = "weekday_radius1_overlap",
 ) -> EventCandidates:
     """Build a shared, causal candidate pool for protocol attribution.
 
@@ -715,7 +710,6 @@ def _candidate_node_keys(
 
 
 def _candidate_teacher_signatures(
-    version: str,
     bank: MemoryBank,
     events: EventCandidates,
     candidate_future: torch.Tensor,
@@ -726,38 +720,41 @@ def _candidate_teacher_signatures(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Build candidate signatures as [B, R, H, N, C]."""
     batch, candidate_count, horizon, nodes, channels = candidate_future.shape
-    if version in {"e2", "e3"}:
-        safe_ids = events.event_ids.clamp_min(0).cpu().numpy()
-        levels = torch.from_numpy(
-            np.asarray(bank.level_features[safe_ids], dtype=np.float32)
-        ).to(device)
-        context_mean = levels[..., :channels]
-        context_std = levels[..., channels : 2 * channels]
-        signature = (
-            candidate_future - context_mean[:, :, None]
-        ) / (context_std[:, :, None] + 1.0e-6)
-        valid = candidate_observed.bool() & torch.isfinite(signature)
-        return torch.where(valid, signature, torch.zeros_like(signature)), valid
-
-    contexts, context_valid = candidate_contexts(
-        bank,
-        events.event_ids,
-        data.series,
-        data.scaler,
-        context_length,
-        device,
-    )
-    signature, valid = build_teacher_aligned_signature(
-        version,
-        candidate_future.reshape(batch * candidate_count, horizon, nodes, channels),
-        candidate_observed.reshape(batch * candidate_count, horizon, nodes, channels),
-        contexts.reshape(batch * candidate_count, context_length, nodes, channels),
-        context_valid.reshape(batch * candidate_count, context_length, nodes, channels),
-    )
-    return (
-        signature.reshape(batch, candidate_count, horizon, nodes, channels),
-        valid.reshape(batch, candidate_count, horizon, nodes, channels),
-    )
+    signature_chunks: list[torch.Tensor] = []
+    valid_chunks: list[torch.Tensor] = []
+    chunk_size = 8
+    for start in range(0, candidate_count, chunk_size):
+        stop = min(start + chunk_size, candidate_count)
+        contexts, context_valid = candidate_contexts(
+            bank,
+            events.event_ids[:, start:stop],
+            data.series,
+            data.scaler,
+            context_length,
+            device,
+        )
+        chunk_signature, chunk_valid = build_teacher_aligned_signature(
+            CURRENT_VISUALIZATION_VERSION,
+            candidate_future[:, start:stop].reshape(
+                batch * (stop - start), horizon, nodes, channels
+            ),
+            candidate_observed[:, start:stop].reshape(
+                batch * (stop - start), horizon, nodes, channels
+            ),
+            contexts.reshape(
+                batch * (stop - start), context_length, nodes, channels
+            ),
+            context_valid.reshape(
+                batch * (stop - start), context_length, nodes, channels
+            ),
+        )
+        signature_chunks.append(
+            chunk_signature.reshape(batch, stop - start, horizon, nodes, channels)
+        )
+        valid_chunks.append(
+            chunk_valid.reshape(batch, stop - start, horizon, nodes, channels)
+        )
+    return torch.cat(signature_chunks, dim=1), torch.cat(valid_chunks, dim=1)
 
 
 def _array_summary(values: Sequence[float] | np.ndarray) -> dict[str, float | int]:
@@ -826,7 +823,6 @@ def _physical_node_series(
 
 def _collect_case_payloads(
     selected: dict[str, Any],
-    version: str,
     dataset: Dataset,
     data: Any,
     graph: Any,
@@ -882,32 +878,40 @@ def _collect_case_payloads(
             random_encoding.statistics.level_features,
             events,
         )
+        raw_l1_candidates, _, _ = raw_l1_node_candidates(
+            batch["retrieval_x"].to(device),
+            batch["retrieval_observed"].to(device),
+            pretrained_bank,
+            events,
+            data.series,
+            data.scaler,
+            config.data.encoder_context_length,
+            config.bank.node_top_k,
+            device,
+        )
+        raw_l1_memory = pretrained_retriever.aggregate(raw_l1_candidates)
         pretrained_raw = pretrained_retriever.aggregate(pretrained_candidates)
         random_raw = random_retriever.aggregate(random_candidates)
-        if version in OFFSET_ALIGNED_VERSIONS:
-            pretrained_deployed = offset_decay_aggregation(
-                pretrained_candidates,
-                batch["x"].to(device),
-                batch["x_observed"].to(device),
-                pretrained_bank,
-                data.series,
-                data.scaler,
-                config.data.context_length,
-                device,
-            )
-            random_deployed = offset_decay_aggregation(
-                random_candidates,
-                batch["x"].to(device),
-                batch["x_observed"].to(device),
-                random_bank,
-                data.series,
-                data.scaler,
-                config.data.context_length,
-                device,
-            )
-        else:
-            pretrained_deployed = pretrained_raw
-            random_deployed = random_raw
+        pretrained_deployed = offset_decay_aggregation(
+            pretrained_candidates,
+            batch["x"].to(device),
+            batch["x_observed"].to(device),
+            pretrained_bank,
+            data.series,
+            data.scaler,
+            config.data.context_length,
+            device,
+        )
+        random_deployed = offset_decay_aggregation(
+            random_candidates,
+            batch["x"].to(device),
+            batch["x_observed"].to(device),
+            random_bank,
+            data.series,
+            data.scaler,
+            config.data.context_length,
+            device,
+        )
 
     payloads: dict[str, Any] = {}
     for batch_index, case_name in enumerate(case_names):
@@ -942,7 +946,7 @@ def _collect_case_payloads(
                 data.scaler,
             ).T
             event_ids = candidates.event_ids[batch_index, node_id].detach().cpu().tolist()
-            sample_ids = [int(pretrained_bank.sample_id[event_id]) for event_id in event_ids]
+            sample_ids = [int(pretrained_bank.sample_id[event_id]) if event_id >= 0 else -1 for event_id in event_ids]
             return (
                 memory.tolist(),
                 candidate_physical.tolist(),
@@ -968,6 +972,14 @@ def _collect_case_payloads(
             random_weights,
             random_scores,
         ) = aggregation_payload(random_candidates, random_deployed)
+        (
+            raw_l1_prediction,
+            raw_l1_futures,
+            raw_l1_event_ids,
+            raw_l1_sample_ids,
+            raw_l1_weights,
+            raw_l1_scores,
+        ) = aggregation_payload(raw_l1_candidates, raw_l1_memory)
         case = dict(selected[case_name])
         case.update(
             {
@@ -988,15 +1000,20 @@ def _collect_case_payloads(
                 "random_weights": random_weights,
                 "pretrained_key_cosine_scores": pretrained_scores,
                 "random_key_cosine_scores": random_scores,
+                "raw_l1_memory": raw_l1_prediction,
+                "raw_l1_candidate_futures": raw_l1_futures,
+                "raw_l1_event_ids": raw_l1_event_ids,
+                "raw_l1_candidate_sample_ids": raw_l1_sample_ids,
+                "raw_l1_weights": raw_l1_weights,
+                "raw_l1_context_l1_scores": raw_l1_scores,
             }
         )
-        if version in OFFSET_ALIGNED_VERSIONS:
-            case["pretrained_raw_memory"] = _physical_node_series(
-                pretrained_raw.prediction[batch_index, :, node_id, channel_id],
-                node_id,
-                data.scaler,
-            ).tolist()
-            case["pretrained_offset_decay_memory"] = pretrained_memory
+        case["pretrained_raw_memory"] = _physical_node_series(
+            pretrained_raw.prediction[batch_index, :, node_id, channel_id],
+            node_id,
+            data.scaler,
+        ).tolist()
+        case["pretrained_offset_decay_memory"] = pretrained_memory
         payloads[case_name] = case
     payloads["selection_rule"] = selected["selection_rule"]
     return payloads
@@ -1035,11 +1052,11 @@ def run_retrieval_visualization(
     split: str,
     output_dir: str | Path,
     max_batches: int | None = None,
-    candidate_protocol: str = "exact_calendar",
+    candidate_protocol: str = "weekday_radius1_overlap",
     profile_weight_override: float | None = None,
     node_top_k_override: int | None = None,
 ) -> dict[str, Any]:
-    """Run the leakage-safe E2/E3/E5A validation visualization experiment."""
+    """Run the leakage-safe HN-OffsetDecay v2 validation visualization experiment."""
     if split != "val":
         raise ValueError("retrieval visualization is restricted to the validation split")
     version = version.lower()
@@ -1109,9 +1126,13 @@ def run_retrieval_visualization(
     payload_case_records: list[dict[str, Any]] = []
     query_count = 0
     batch_count = 0
-    metric_names = ["pretrained_memory", "random_memory"]
-    if version in OFFSET_ALIGNED_VERSIONS:
-        metric_names.extend(("pretrained_raw_memory", "random_raw_memory"))
+    metric_names = [
+        "pretrained_memory",
+        "random_memory",
+        "raw_l1_memory",
+        "pretrained_raw_memory",
+        "random_raw_memory",
+    ]
     metrics = {
         name: ForecastMetricAccumulator(config.data.horizon) for name in metric_names
     }
@@ -1197,21 +1218,14 @@ def run_retrieval_visualization(
             )
             candidate_future = event_future.permute(0, 3, 1, 2, 4).contiguous()
             candidate_future_valid = event_future_valid.permute(0, 3, 1, 2, 4).contiguous()
-            if version in {"e2", "e3"}:
-                query_context = batch["retrieval_x"].to(device)
-                query_context_valid = batch["retrieval_observed"].to(device)
-            else:
-                query_context = batch["x"].to(device)
-                query_context_valid = batch["x_observed"].to(device)
             query_signature, query_signature_valid = build_teacher_aligned_signature(
                 version,
                 batch["y"].to(device),
                 batch["y_observed"].to(device),
-                query_context,
-                query_context_valid,
+                batch["x"].to(device),
+                batch["x_observed"].to(device),
             )
             candidate_signature, candidate_signature_valid = _candidate_teacher_signatures(
-                version,
                 pretrained_bank,
                 events,
                 candidate_future,
@@ -1220,11 +1234,7 @@ def run_retrieval_visualization(
                 config.data.context_length,
                 device,
             )
-            normalization = (
-                config.pretrain.relation_distance_normalization
-                if version in OFFSET_ALIGNED_VERSIONS
-                else "none"
-            )
+            normalization = config.pretrain.relation_distance_normalization
             future_distance, future_valid = teacher_candidate_distances(
                 query_signature,
                 query_signature_valid,
@@ -1283,42 +1293,47 @@ def run_retrieval_visualization(
                 random_encoding.statistics.level_features,
                 events,
             )
+            raw_l1_candidates, _, _ = raw_l1_node_candidates(
+                batch["retrieval_x"].to(device),
+                batch["retrieval_observed"].to(device),
+                pretrained_bank,
+                events,
+                data.series,
+                data.scaler,
+                config.data.encoder_context_length,
+                config.bank.node_top_k,
+                device,
+            )
+            raw_l1_memory = pretrained_retriever.aggregate(raw_l1_candidates)
             pretrained_raw = pretrained_retriever.aggregate(pretrained_candidates)
             random_raw = random_retriever.aggregate(random_candidates)
-            if version in OFFSET_ALIGNED_VERSIONS:
-                pretrained_deployed = offset_decay_aggregation(
-                    pretrained_candidates,
-                    batch["x"].to(device),
-                    batch["x_observed"].to(device),
-                    pretrained_bank,
-                    data.series,
-                    data.scaler,
-                    config.data.context_length,
-                    device,
-                )
-                random_deployed = offset_decay_aggregation(
-                    random_candidates,
-                    batch["x"].to(device),
-                    batch["x_observed"].to(device),
-                    random_bank,
-                    data.series,
-                    data.scaler,
-                    config.data.context_length,
-                    device,
-                )
-                aggregations = {
-                    "pretrained_memory": pretrained_deployed,
-                    "random_memory": random_deployed,
-                    "pretrained_raw_memory": pretrained_raw,
-                    "random_raw_memory": random_raw,
-                }
-            else:
-                pretrained_deployed = pretrained_raw
-                random_deployed = random_raw
-                aggregations = {
-                    "pretrained_memory": pretrained_deployed,
-                    "random_memory": random_deployed,
-                }
+            pretrained_deployed = offset_decay_aggregation(
+                pretrained_candidates,
+                batch["x"].to(device),
+                batch["x_observed"].to(device),
+                pretrained_bank,
+                data.series,
+                data.scaler,
+                config.data.context_length,
+                device,
+            )
+            random_deployed = offset_decay_aggregation(
+                random_candidates,
+                batch["x"].to(device),
+                batch["x_observed"].to(device),
+                random_bank,
+                data.series,
+                data.scaler,
+                config.data.context_length,
+                device,
+            )
+            aggregations = {
+                "pretrained_memory": pretrained_deployed,
+                "random_memory": random_deployed,
+                "raw_l1_memory": raw_l1_memory,
+                "pretrained_raw_memory": pretrained_raw,
+                "random_raw_memory": random_raw,
+            }
             target = batch["y"].to(device)
             target_valid = batch["y_observed"].to(device).bool()
             common_metric_valid = target_valid.clone()
@@ -1341,9 +1356,15 @@ def run_retrieval_visualization(
                 target_physical,
                 common_metric_valid,
             )
+            raw_l1_anchor_mae, raw_l1_anchor_valid = memory_mae_by_anchor(
+                physical_predictions["raw_l1_memory"],
+                target_physical,
+                common_metric_valid,
+            )
             case_valid = (
                 pretrained_anchor_valid
                 & random_anchor_valid
+                & raw_l1_anchor_valid
                 & complete_anchor_mask(common_metric_valid)
             )
             gains = random_anchor_mae - pretrained_anchor_mae
@@ -1359,42 +1380,44 @@ def run_retrieval_visualization(
                         "random_mae": float(
                             random_anchor_mae[local_query, node_id].detach().cpu()
                         ),
+                        "raw_l1_mae": float(
+                            raw_l1_anchor_mae[local_query, node_id].detach().cpu()
+                        ),
                     }
                 )
-            if version in OFFSET_ALIGNED_VERSIONS:
-                pretrained_raw_anchor_mae, pretrained_raw_anchor_valid = memory_mae_by_anchor(
-                    physical_predictions["pretrained_raw_memory"],
-                    target_physical,
-                    common_metric_valid,
+            pretrained_raw_anchor_mae, pretrained_raw_anchor_valid = memory_mae_by_anchor(
+                physical_predictions["pretrained_raw_memory"],
+                target_physical,
+                common_metric_valid,
+            )
+            payload_valid = (
+                pretrained_anchor_valid
+                & pretrained_raw_anchor_valid
+                & complete_anchor_mask(common_metric_valid)
+            )
+            payload_gain = pretrained_raw_anchor_mae - pretrained_anchor_mae
+            for local_query, node_id in payload_valid.nonzero(
+                as_tuple=False
+            ).detach().cpu().tolist():
+                payload_case_records.append(
+                    {
+                        "sample_id": int(batch["sample_id"][local_query]),
+                        "node_id": int(node_id),
+                        "mae_gain": float(
+                            payload_gain[local_query, node_id].detach().cpu()
+                        ),
+                        "raw_mae": float(
+                            pretrained_raw_anchor_mae[local_query, node_id]
+                            .detach()
+                            .cpu()
+                        ),
+                        "offset_decay_mae": float(
+                            pretrained_anchor_mae[local_query, node_id]
+                            .detach()
+                            .cpu()
+                        ),
+                    }
                 )
-                payload_valid = (
-                    pretrained_anchor_valid
-                    & pretrained_raw_anchor_valid
-                    & complete_anchor_mask(common_metric_valid)
-                )
-                payload_gain = pretrained_raw_anchor_mae - pretrained_anchor_mae
-                for local_query, node_id in payload_valid.nonzero(
-                    as_tuple=False
-                ).detach().cpu().tolist():
-                    payload_case_records.append(
-                        {
-                            "sample_id": int(batch["sample_id"][local_query]),
-                            "node_id": int(node_id),
-                            "mae_gain": float(
-                                payload_gain[local_query, node_id].detach().cpu()
-                            ),
-                            "raw_mae": float(
-                                pretrained_raw_anchor_mae[
-                                    local_query, node_id
-                                ].detach().cpu()
-                            ),
-                            "offset_decay_mae": float(
-                                pretrained_anchor_mae[
-                                    local_query, node_id
-                                ].detach().cpu()
-                            ),
-                        }
-                    )
             query_count += int(target.shape[0])
             batch_count += 1
             if batch_count == 1 or batch_count % 10 == 0:
@@ -1459,7 +1482,6 @@ def run_retrieval_visualization(
         selected = select_quantile_cases(case_records)
         cases = _collect_case_payloads(
             selected,
-            version,
             dataset,
             data,
             graph_cpu,
@@ -1473,28 +1495,25 @@ def run_retrieval_visualization(
             device,
             candidate_protocol,
         )
-        payload_selected: dict[str, Any] | None = None
-        if version in OFFSET_ALIGNED_VERSIONS:
-            payload_selected = select_quantile_cases(payload_case_records)
-            payload_selected["selection_rule"]["score"] = (
-                "rawfuture_memory_mae_minus_offset_decay_memory_mae"
-            )
-            cases["offset_decay_payload_cases"] = _collect_case_payloads(
-                payload_selected,
-                version,
-                dataset,
-                data,
-                graph_cpu,
-                config,
-                pretrained_model,
-                random_model,
-                pretrained_retriever,
-                random_retriever,
-                pretrained_bank,
-                random_bank,
-                device,
-                candidate_protocol,
-            )
+        payload_selected = select_quantile_cases(payload_case_records)
+        payload_selected["selection_rule"]["score"] = (
+            "rawfuture_memory_mae_minus_offset_decay_memory_mae"
+        )
+        cases["offset_decay_payload_cases"] = _collect_case_payloads(
+            payload_selected,
+            dataset,
+            data,
+            graph_cpu,
+            config,
+            pretrained_model,
+            random_model,
+            pretrained_retriever,
+            random_retriever,
+            pretrained_bank,
+            random_bank,
+            device,
+            candidate_protocol,
+        )
 
         candidate_counts = np.concatenate(candidate_count_chunks).astype(np.float64)
         positive_candidate_counts = candidate_counts[candidate_counts > 0]
@@ -1559,17 +1578,9 @@ def run_retrieval_visualization(
                 ),
             },
             "teacher_signature": {
-                "name": (
-                    "ContextNormalizedFutureSignature"
-                    if version in {"e2", "e3"}
-                    else "DeploymentAlignedOffsetDecaySignature"
-                ),
-                "context_steps": (
-                    config.data.encoder_context_length
-                    if version in {"e2", "e3"}
-                    else config.data.context_length
-                ),
-                "anchor_mean_distance_normalization": version in OFFSET_ALIGNED_VERSIONS,
+                "name": "DeploymentAlignedOffsetDecaySignature",
+                "context_steps": config.data.context_length,
+                "distance_normalization": config.pretrain.relation_distance_normalization,
             },
             "future_information_boundary": future_information_boundary(),
             "alignment": {
@@ -1686,28 +1697,32 @@ def _plot_cases(cases: dict[str, Any], output_path: Path) -> None:
     import matplotlib.pyplot as plt
 
     case_names = ("strong_win", "representative", "failure")
-    figure, axes = plt.subplots(3, 2, figsize=(12.0, 10.0), constrained_layout=True)
-    colors = {"Pretrained": "#C43C39", "Random": "#4C78A8", "Truth": "#111111"}
+    methods = (
+        ("Learned", "pretrained", "#C43C39"),
+        ("Raw-L1", "raw_l1", "#E69F00"),
+        ("Matched Random", "random", "#4C78A8"),
+    )
+    figure, axes = plt.subplots(3, 3, figsize=(17.0, 10.0), constrained_layout=True)
+    top_k = len(cases["strong_win"]["pretrained_candidate_futures"])
     for row, case_name in enumerate(case_names):
         case = cases[case_name]
         truth = np.asarray(case["query_future"], dtype=np.float64)
-        for column, label in enumerate(("Pretrained", "Random")):
+        for column, (label, prefix, color) in enumerate(methods):
             axis = axes[row, column]
-            prefix = label.lower()
-            candidate_values = case[f"{prefix}_candidate_futures"]
+            candidate_values = np.asarray(case[f"{prefix}_candidate_futures"])
             for candidate in candidate_values:
-                axis.plot(candidate, color=colors[label], alpha=0.22, linewidth=1.0)
+                axis.plot(candidate, color=color, alpha=0.20, linewidth=1.0)
             axis.plot(
                 case[f"{prefix}_memory"],
-                color=colors[label],
+                color=color,
                 linewidth=2.4,
                 marker="o",
                 label=f"{label} memory",
             )
-            axis.plot(truth, color=colors["Truth"], linewidth=2.6, marker="s", label="True future")
+            axis.plot(truth, color="#111111", linewidth=2.6, marker="s", label="True future")
             axis.set_title(
                 f"{case_name.replace('_', ' ').title()} | {label} | "
-                f"MAE={case[f'{prefix}_mae']:.3f}"
+                f"MAE={np.mean(np.abs(np.asarray(case[f'{prefix}_memory']) - truth)):.3f}"
             )
             axis.set_xlabel("Forecast step")
             axis.set_ylabel("Traffic speed")
@@ -1717,15 +1732,20 @@ def _plot_cases(cases: dict[str, Any], output_path: Path) -> None:
             truth,
             np.asarray(case["pretrained_memory"]),
             np.asarray(case["random_memory"]),
+            np.asarray(case["raw_l1_memory"]),
         ]
         row_values.extend(np.asarray(value) for value in case["pretrained_candidate_futures"])
+        row_values.extend(np.asarray(value) for value in case["raw_l1_candidate_futures"])
         row_values.extend(np.asarray(value) for value in case["random_candidate_futures"])
         lower = min(float(value.min()) for value in row_values)
         upper = max(float(value.max()) for value in row_values)
         margin = max((upper - lower) * 0.08, 0.5)
-        for column in range(2):
+        for column in range(3):
             axes[row, column].set_ylim(lower - margin, upper + margin)
-    figure.suptitle("Deterministic Top-5 Retrieval Cases", fontsize=14)
+    figure.suptitle(
+        f"Deterministic Top-{top_k} Retrieval Cases on a Shared Legal Pool",
+        fontsize=14,
+    )
     figure.savefig(output_path, dpi=220, facecolor="white")
     plt.close(figure)
 
@@ -1785,13 +1805,17 @@ def _plot_top5_error_profiles(cases: dict[str, Any], output_path: Path) -> None:
 
     case_names = ("strong_win", "representative", "failure")
     figure, axes = plt.subplots(3, 1, figsize=(8.5, 9.0), constrained_layout=True)
+    methods = (
+        ("Learned", "pretrained", "#C43C39"),
+        ("Raw-L1", "raw_l1", "#E69F00"),
+        ("Matched Random", "random", "#4C78A8"),
+    )
     colors = {"Pretrained": "#C43C39", "Random": "#4C78A8"}
     for axis, case_name in zip(axes, case_names):
         case = cases[case_name]
         truth = np.asarray(case["query_future"], dtype=np.float64)
         profiles: dict[str, np.ndarray] = {}
-        for label in ("Pretrained", "Random"):
-            prefix = label.lower()
+        for label, prefix, color in methods:
             candidates = np.asarray(case[f"{prefix}_candidate_futures"], dtype=np.float64)
             profiles[label] = np.mean(np.abs(candidates - truth[None, :]), axis=1)
             ranks = np.arange(1, profiles[label].size + 1)
@@ -1800,13 +1824,13 @@ def _plot_top5_error_profiles(cases: dict[str, Any], output_path: Path) -> None:
                 profiles[label],
                 marker="o",
                 linewidth=2.0,
-                color=colors[label],
+                color=color,
                 label=f"{label} candidate MAE",
             )
             memory = np.asarray(case[f"{prefix}_memory"], dtype=np.float64)
             axis.axhline(
                 np.mean(np.abs(memory - truth)),
-                color=colors[label],
+                color=color,
                 linestyle="--",
                 linewidth=1.1,
                 alpha=0.75,
@@ -1822,7 +1846,7 @@ def _plot_top5_error_profiles(cases: dict[str, Any], output_path: Path) -> None:
         axis.set_ylabel("Future MAE")
         axis.grid(axis="y", alpha=0.25)
         axis.legend(frameon=False, fontsize=8, ncol=2)
-    figure.suptitle("Top-5 Candidate Error Profiles", fontsize=14)
+    figure.suptitle(f"Top-{profiles['Learned'].size} Candidate Error Profiles", fontsize=14)
     figure.savefig(output_path, dpi=220, facecolor="white")
     plt.close(figure)
 
@@ -1890,8 +1914,7 @@ def render_visualization_figures(
         ranking_path = output_dir / "ranking_metrics.png"
         _plot_ranking_metrics(result, ranking_path)
         paths.append(ranking_path)
-    if str(result["version"]).lower() in OFFSET_ALIGNED_VERSIONS:
-        offset_path = output_dir / "offset_decay_payload_cases.png"
-        _plot_offset_decay_cases(cases, offset_path)
-        paths.append(offset_path)
+    offset_path = output_dir / "offset_decay_payload_cases.png"
+    _plot_offset_decay_cases(cases, offset_path)
+    paths.append(offset_path)
     return paths

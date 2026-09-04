@@ -11,15 +11,15 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from stanchor.config import load_config
-from stanchor.diagnostics.retrieval_visualization import run_retrieval_visualization
+from stanchor.diagnostics.retrieval_visualization import (
+    CURRENT_VISUALIZATION_VERSION,
+    run_retrieval_visualization,
+)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Visualize teacher-aligned historical retrieval for E2, E3, E5A, or TGGE Joint v2."
-    )
-    parser.add_argument(
-        "--version", required=True, choices=("e2", "e3", "e5a", "tgge_joint")
+        description="Visualize teacher-aligned historical retrieval for HN-OffsetDecay v2."
     )
     parser.add_argument("--config", required=True)
     parser.add_argument("--checkpoint", required=True)
@@ -38,7 +38,7 @@ def main() -> None:
             "broad_causal",
             "pretrain_broad_causal",
         ),
-        default="exact_calendar",
+        default="weekday_radius1_overlap",
         help=(
             "Validation-only candidate attribution protocol. broad_causal uses "
             "model-independent chronological quantile sampling up to event_top_r."
@@ -58,9 +58,9 @@ def main() -> None:
         type=int,
         default=None,
         help=(
-            "Validation-only candidate-pool width override. Use a larger value "
-            "with broad_causal/pretrain_broad_causal; exact_calendar remains bounded "
-            "by its legal calendar pool."
+            "Validation-only candidate-pool width override. Use 96 for "
+            "weekday_radius1_overlap and broad_causal/pretrain_broad_causal "
+            "to avoid truncating the current analysis pool."
         ),
     )
     parser.add_argument(
@@ -103,7 +103,7 @@ def main() -> None:
         )
         config.validate()
     result = run_retrieval_visualization(
-        version=args.version,
+        version=CURRENT_VISUALIZATION_VERSION,
         config=config,
         checkpoint_path=args.checkpoint,
         bank_path=args.bank,

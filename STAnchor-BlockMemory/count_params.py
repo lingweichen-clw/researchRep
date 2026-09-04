@@ -1,8 +1,8 @@
 import torch
-from stanchor.models.trajectory_calibrator import TransformerCandidateRouter
+from stanchor.models.retrieval_router import RetrievalAwareMHAResidualRouter
 
 # Count parameters
-model = TransformerCandidateRouter(
+model = RetrievalAwareMHAResidualRouter(
     context_length=12,
     horizon=12,
     channels=1,
@@ -14,7 +14,7 @@ model = TransformerCandidateRouter(
 )
 total = sum(p.numel() for p in model.parameters())
 trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-print(f'TransformerCandidateRouter total params: {total:,}')
+print(f'RetrievalAwareMHAResidualRouter total params: {total:,}')
 print(f'Trainable: {trainable:,}')
 
 # Breakdown

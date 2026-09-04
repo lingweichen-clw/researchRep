@@ -125,17 +125,20 @@ class STGCNBackboneTest(unittest.TestCase):
         self.assertEqual(scheduler.step_size, 10)
         self.assertEqual(scheduler.gamma, 0.95)
 
-    def test_stgcn_config_uses_reference_training_protocol(self) -> None:
-        config = load_config("configs/metrla_stgcn_base_only_v1.yaml")
+    def test_current_stgcn_router_config_uses_formal_training_protocol(self) -> None:
+        config = load_config("configs/formal_base_as_candidate_stgcn.yaml")
 
         self.assertEqual(config.target.training_data_scope, "full_train")
-        self.assertEqual(config.target.batch_size, 16)
-        self.assertEqual(config.target.epochs, 100)
+        self.assertEqual(config.target.batch_size, 32)
+        self.assertEqual(config.target.epochs, 50)
         self.assertEqual(config.target.optimizer_name, "adam")
         self.assertEqual(config.target.scheduler_name, "step_lr")
         self.assertEqual(config.target.scheduler_step_size, 10)
-        self.assertEqual(config.target.scheduler_gamma, 0.95)
-        self.assertEqual(config.target.weight_decay, 5.0e-4)
+        self.assertEqual(config.target.scheduler_gamma, 0.5)
+        self.assertEqual(config.target.weight_decay, 1.0e-4)
+        self.assertEqual(
+            config.target.calibrator_arch, "retrieval_aware_mha_router"
+        )
 
     def test_base_only_does_not_require_a_bank(self) -> None:
         self.assertIsNone(validate_downstream_bank_path(BASE_ONLY, None))
