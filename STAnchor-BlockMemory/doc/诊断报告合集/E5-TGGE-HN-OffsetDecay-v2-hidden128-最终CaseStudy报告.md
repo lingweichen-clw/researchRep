@@ -7,10 +7,10 @@
 主要结论如下：
 
 1. 预训练完整运行 50 轮，无跳过 batch、NaN 或中途退出；验证总损失在第 41 轮达到最佳 `1.971686`，第 50 轮为 `1.976423`，说明训练已收敛。
-2. 在与预训练监督语义一致的 `pretrain_broad_causal` 协议下，trained key 的 Pair Spearman 为 `0.6419`，matched-random 为 `0.0814`；OffsetDecay memory MAE 为 `3.4713`，random 为 `4.7592`。这说明 64 维 key 学到了与 future dynamics 相关的可检索结构。
-3. 在部署约束更强的 `exact_calendar` 协议下，trained key 仍优于 random：Spearman `0.3291` 对 `0.1957`，Recall@5 `0.7382` 对 `0.6977`，OffsetDecay memory MAE `3.5106` 对 `3.6641`。绝对增益收缩是候选池变小、随机 Top-5 覆盖率自然升高的预期结果。
-4. OffsetDecay 在 broad-causal 中将 trained raw-future memory MAE 从 `3.8413` 降至 `3.4713`；在 exact-calendar 中从 `3.8129` 降至 `3.5106`，说明水平偏移校正能减少候选事件的 level mismatch。
-5. 两类时空海市蜃楼案例均由固定分位数规则自动选择。案例图只用于解释机制；整体有效性由全量候选统计、分箱曲线和 matched-random 对照承担。PCA 在全体有限 Bank key 的确定性子样本上拟合，彩色 cluster 点仅显示每类距中心最近的最多 80 个代表点；图例仍报告每类的真实统计规模，不把显示点数冒充总体证据。
+2. 在与预训练监督语义一致的 `pretrain_broad_causal` 协议下，trained key 的 Pair Spearman 为 `0.6693`，matched-random 为 `0.0611`；OffsetDecay memory MAE 为 `3.2033`，random 为 `4.0984`。这说明 64 维 key 学到了与 future dynamics 相关的可检索结构。
+3. 在当前部署侧 `weekday_radius1_overlap` 协议下，候选事件池平均为 `23.98` 个（范围 `19--27`），trained key 的 Pair Spearman 为 `0.4399`，matched-random 为 `0.1337`；OffsetDecay memory MAE 为 `3.2215`，random 为 `3.5674`。候选池相较旧的单 weekday 协议明显扩大，但排序增益仍保持。
+4. 在两个协议中都加入独立的 `Raw-L1 Top-12` 对照。该基线使用同一合法事件池、masked 288-step context、节点级原始 L1 排序和原始 future 等权聚合，不使用 learned key、learned weight 或 OffsetDecay；其 memory MAE 分别为 broad-causal `5.2695`、weekday-radius `4.3296`，明显高于 learned retrieval。
+5. OffsetDecay 在 learned 候选上继续降低绝对 level mismatch：broad-causal 的 raw-future MAE `3.5344` 降至 `3.2033`，weekday-radius 的 raw-future MAE `3.4351` 降至 `3.2215`。两类时空海市蜃楼案例均由固定分位数规则自动选择；整体有效性由全量候选统计、分箱曲线、Raw-L1 和 matched-random 对照承担。
 
 ## 2. 数据、张量与信息边界
 
@@ -87,125 +87,120 @@ Teacher effective support 是 teacher 分布的有效候选数，v2 验证阶段
 
 ## 5. Broad-causal：与预训练语义一致的主结果
 
-`pretrain_broad_causal` 要求候选严格早于 query，但不强制相同 weekday 或 slot；每个 query 通过时间分位抽样最多保留 32 个候选。完整验证集包含 2,993 个 query、19,020,445 个有效 query-candidate pairs，平均候选数为 32.0。
+`pretrain_broad_causal` 要求候选严格早于 query，但不强制相同 weekday 或 slot；每个 query 从合法历史事件中按时间分位抽样，最多保留 96 个候选。完整验证集包含 2,993 个 query、56,694,054 个有效 query-candidate pairs，事件候选池平均为 96.0。
 
 | 指标 | HN-OffsetDecay v2 | Matched random | 差值 |
 |---|---:|---:|---:|
-| Pair Spearman | 0.6419 | 0.0814 | +0.5605 |
-| Anchor Spearman | 0.5804 | 0.1083 | +0.4721 |
-| Anchor Kendall | 0.4355 | 0.0752 | +0.3603 |
-| Recall@1 | 0.1351 | 0.0547 | +0.0804 |
-| NDCG@5 | 0.4650 | 0.2647 | +0.2004 |
-| Recall@5 | 0.4094 | 0.2224 | +0.1870 |
-| OffsetDecay memory MAE | 3.4713 | 4.7592 | -1.2879 |
-| OffsetDecay memory RMSE | 6.6101 | 8.2870 | -1.6769 |
+| Pair Spearman | 0.6693 | 0.0611 | +0.6083 |
+| Anchor Spearman | 0.5989 | 0.0926 | +0.5063 |
+| Anchor Kendall | 0.4443 | 0.0625 | +0.3817 |
+| Recall@1 | 0.0661 | 0.0289 | +0.0373 |
+| NDCG@5 | 0.3408 | 0.2013 | +0.1396 |
+| Recall@5 | 0.2131 | 0.1052 | +0.1080 |
+| OffsetDecay memory MAE | 3.2033 | 4.0984 | -0.8952 |
+| OffsetDecay memory RMSE | 6.2482 | 7.4150 | -1.1669 |
+| Raw-L1 Top-12 memory MAE | 5.2695 | — | — |
 
 Pair Spearman 汇总所有合法 query-candidate 对的单调关系；Anchor Spearman/Kendall 先在每个 query 内计算再平均；Recall@K 衡量 future 近邻是否进入 key 排名前 K；NDCG@5 同时考虑 Top-5 候选的位置质量。trained key 的排名指标和 memory 误差均明显优于同一事件轴上的 random key。
 
-![图 2：全量 key-future 分箱关系](../../artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/report_figures/aggregate_rank_profile.png)
+![图 2：broad-causal 全量 key-future 分箱关系](../../artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/visualization_pretrain_broad_causal/key_future_alignment.png)
 
-图 2 左侧显示 broad-causal 中 key-distance decile 从近到远增加时，trained future distance 从 `0.478` 上升到约 `1.59`，random 曲线仅在约 `0.76--1.03` 间小幅波动。这个分箱曲线是“key 学到 future dynamics 关系”的主要总体证据；它不要求关系严格线性，但要求整体单调趋势可观察。
+图 2 显示 broad-causal 中 key-distance decile 从近到远增加时，trained future distance 从 `0.488` 上升到约 `1.690`，random 曲线仅在约 `0.784--0.996` 间波动。这个分箱曲线是“key 学到 future dynamics 关系”的主要总体证据；它不要求关系严格线性，但要求整体单调趋势可观察。
 
-![图 3：全量 ranking 对照与绝对增益](../../artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/report_figures/full_validation_ranking_gain.png)
+![图 3：broad-causal 全量 ranking 对照与绝对增益](../../artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/visualization_pretrain_broad_causal/ranking_metrics.png)
 
 图 3 同时给出 trained/random 的原始分数和绝对增益，避免只展示一侧曲线造成视觉误读。
 
-![图 4：不同预测 horizon 的 memory 误差与增益](../../artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/report_figures/horizon_wise_gain.png)
+![图 4：broad-causal Top-12 候选误差 profile](../../artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/visualization_pretrain_broad_causal/top5_error_profiles.png)
 
-图 4 显示 trained memory 在 5 分钟到 60 分钟全部 horizon 上低于 random；随着 horizon 变长，绝对误差整体上升，但 trained 相对 random 的优势仍保持。
+图 4 展示固定 strong-win、representative 和 failure 三类 anchor 中，12 个 retrieved rank 的候选误差与聚合误差。它同时给出 Raw-L1、learned 和 matched-random 曲线，避免把单一 rank 或单一案例误认为总体结论。
 
-## 6. Exact-calendar：部署侧候选约束复核
+## 6. Weekday-radius：当前部署侧候选协议
 
-`exact_calendar` 同时要求候选与 query 具有相同 weekday、相同 slot，并满足严格因果约束。完整验证集平均候选数为 `8.014`，范围为 `5--9`。候选池较小会使 random Recall@5 的自然期望升高，因此 exact-calendar 只在同一协议内比较 trained 与 random，不能与 broad-causal 的绝对数值直接比较。
+`weekday_radius1_overlap` 要求候选与 query 具有相同日内 slot、weekday 差不超过 1，并满足候选事件的 context end 不晚于 query context end；允许 288-step context 窗口重叠，不再额外去重。完整验证集事件候选池平均为 `23.984`，范围为 `19--27`；节点级有效候选数平均为 `23.494`。该协议正是“query 前后相邻一天的同一时段”扩展，Raw-L1 与 learned/random 使用完全相同的事件轴。
 
 | 指标 | HN-OffsetDecay v2 | Matched random | 差值 |
 |---|---:|---:|---:|
-| Pair Spearman | 0.3725 | 0.2126 | +0.1599 |
-| Anchor Spearman | 0.3291 | 0.1957 | +0.1334 |
-| Anchor Kendall | 0.2578 | 0.1509 | +0.1069 |
-| Recall@1 | 0.2298 | 0.1897 | +0.0400 |
-| NDCG@5 | 0.6354 | 0.5765 | +0.0590 |
-| Recall@5 | 0.7382 | 0.6977 | +0.0404 |
-| OffsetDecay memory MAE | 3.5106 | 3.6641 | -0.1535 |
-| OffsetDecay memory RMSE | 6.6333 | 6.7853 | -0.1520 |
+| Pair Spearman | 0.4399 | 0.1337 | +0.3063 |
+| Anchor Spearman | 0.3994 | 0.1167 | +0.2828 |
+| Anchor Kendall | 0.2951 | 0.0828 | +0.2123 |
+| Recall@1 | 0.1061 | 0.0754 | +0.0307 |
+| NDCG@5 | 0.3947 | 0.3062 | +0.0884 |
+| Recall@5 | 0.3660 | 0.2771 | +0.0890 |
+| OffsetDecay memory MAE | 3.2215 | 3.5674 | -0.3459 |
+| OffsetDecay memory RMSE | 6.1163 | 6.5171 | -0.4009 |
+| Raw-L1 Top-12 memory MAE | 4.3296 | — | — |
 
-![图 5：exact-calendar 的 key-future 分箱关系](../../artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/report_figures/aggregate_rank_profile.png)
+![图 5：weekday-radius 的 key-future 分箱关系](../../artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/visualization_weekday_radius1_overlap/key_future_alignment.png)
 
-图 5 与图 2 共用布局，右侧是部署约束下的 exact-calendar 结果。trained 曲线在近 key-distance 区间给出更低的 future distance，并随 key distance 增长呈更明显的上升趋势；差距比 broad-causal 小，说明候选过滤是部署侧主要限制因素之一。
+图 5 与图 2 共用布局，展示当前部署候选约束下的结果。trained 曲线在近 key-distance 区间给出更低的 future distance，并随 key distance 增长呈明显上升趋势；相较 broad-causal，绝对相关性收缩是候选范围和 weekday 约束共同作用的结果，但 trained/random 方向保持一致。
 
-## 7. 与 HN-OffsetDecay v1 的同协议对照
+![图 6：weekday-radius ranking 对照](../../artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/visualization_weekday_radius1_overlap/ranking_metrics.png)
 
-v1 和 v2 都使用 METR-LA、`pretrain_broad_causal`、32 候选和 OffsetDecay memory 定义。v1 的 hidden/retrieval dimension 为 `80/48`，v2 为 `128/64`；两者的比较用于描述扩容后的关系学习变化，不替代多 seed 显著性检验。
+![图 7：weekday-radius Top-12 候选误差 profile](../../artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/visualization_weekday_radius1_overlap/top5_error_profiles.png)
 
-| 指标（broad-causal） | v1 | v2 | v2 - v1 |
-|---|---:|---:|---:|
-| Pair Spearman | 0.6212 | 0.6419 | +0.0207 |
-| Anchor Spearman | 0.5599 | 0.5804 | +0.0205 |
-| Anchor Kendall | 0.4173 | 0.4355 | +0.0182 |
-| NDCG@5 | 0.4566 | 0.4650 | +0.0084 |
-| Recall@5 | 0.3997 | 0.4094 | +0.0097 |
-| OffsetDecay memory MAE | 3.5060 | 3.4713 | -0.0347 |
-
-v2 在该匹配协议下的全局和局部排序指标均有小幅提高，memory MAE 也降低 `0.0347`。这说明扩容后的表示容量至少没有破坏 v1 已验证的机制，并在当前单 seed 上取得有限增益；由于训练配置、随机性和数据划分仍需多 seed 复核，报告不把这些差值表述为统计显著提升。
-
-## 8. Raw future 与 OffsetDecay 聚合
+## 7. Raw future、Raw-L1 与 OffsetDecay 聚合
 
 在相同 trained/random 候选和权重下，直接聚合绝对 future 会把事件 level 差异带入 memory；OffsetDecay 先对齐历史末端 level，再聚合动态变化。
 
-| 协议 | trained raw MAE | trained OffsetDecay MAE | 降低 |
-|---|---:|---:|---:|
-| broad-causal | 3.8413 | 3.4713 | 0.3699 |
-| exact-calendar | 3.8129 | 3.5106 | 0.3023 |
+| 协议 | learned raw-future MAE | learned OffsetDecay MAE | OffsetDecay 降低 | Raw-L1 Top-12 MAE | matched-random raw MAE |
+|---|---:|---:|---:|---:|---:|
+| pretrain_broad_causal | 3.5344 | 3.2033 | 0.3312 | 5.2695 | 4.5092 |
+| weekday_radius1_overlap | 3.4351 | 3.2215 | 0.2136 | 4.3296 | 3.7843 |
+
+这里的 `Raw-L1 Top-12` 是独立的非学习检索基线：它只在共享合法事件池中按节点 raw context L1 排序，并对原始 Bank future 等权平均；它不使用 learned key、learned attention、OffsetDecay 或真实 query future。表中的 learned raw-future 与 OffsetDecay 只改变 payload alignment，候选事件轴和 learned key 排序保持不变。
 
 该对照只改变 payload alignment，不改变 encoder、候选事件轴或 key 排序，因此可将误差降低归因于 OffsetDecay 的水平校正。对应的案例图保存在两组 visualization 目录下的 `offset_decay_payload_cases.png`，案例选择遵循 strong-win/representative/failure 三个固定增益分位数。
 
-## 9. 时空海市蜃楼案例
+## 8. 时空海市蜃楼案例
 
 **时空海市蜃楼**指 context 相似性与 future 相似性不一致的事件对。案例候选从 Bank 的 5,000 个事件和全部 207 个节点中构造，context/future 在节点内进行 robust 标准化。A 类满足 context distance `<=P8`、future distance `>=P92`、key distance `>=P92`；B 类满足 context distance `>=P92`、future distance `<=P8`、key distance `<=P8`。阈值为：
 
 | 距离 | P8 | P92 |
 |---|---:|---:|
-| context | 0.3246 | 4.3998 |
-| future trend | 0.3976 | 3.0130 |
+| context | 0.3240 | 4.4118 |
+| future trend | 0.3978 | 3.0270 |
 | key | 0.0452 | 0.1285 |
 
-### 9.1 A 类：context 相似、future 不相似、key 分散
+### 8.1 A 类：context 相似、future 不相似、key 分散
 
-选择规则不是手工挑图：先用 `context <= P8`、`future trend >= P92`、`key >= P92` 定义 A 类，再在合格候选中按三项距离相对该类中位数的标准化距离排序，优先选择类中心附近的样本；随后施加不重复事件和同一节点最多 2 对的约束。本次 3 对分别位于 node 187、144、91，context distance 为 `0.246/0.275/0.279`，future trend distance 为 `3.559/3.622/3.523`，key distance 为 `0.139/0.138/0.134`。因此图中的样本仍满足 A 类的“context 相似、future 趋势不同、key 分散”条件，同时避免极端值造成曲线和 PCA 连线过度拉伸。
+选择规则不是手工挑图：先用 `context <= P8`、`future trend >= P92`、`key >= P92` 定义 A 类，再在合格候选中按三项距离相对该类中位数的标准化距离排序，优先选择类中心附近的样本；随后施加不重复事件和同一节点最多 2 对的约束。本次 3 对分别位于 node 120、191、155，context distance 为 `0.279/0.285/0.258`，future trend distance 为 `3.487/3.467/3.580`，key distance 为 `0.140/0.137/0.143`。因此图中的样本仍满足 A 类的“context 相似、future 趋势不同、key 分散”条件，同时避免极端值造成曲线和 PCA 连线过度拉伸。
 
-![图 6：A 类 mirage 的 3 对 context/future 曲线与局部 key](../../artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/mirage_analysis/context_similar_future_different_cluster.png)
+![图 8：A 类 mirage 的 3 对 context/future 曲线与局部 key](../../artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/mirage_analysis/context_similar_future_different_cluster.png)
 
 这些样本的完整 24 小时 context 曲线在节点内接近，而 60 分钟 future 轨迹明显分叉；对应 key 点通过连线呈现为相对分离。它们说明只用历史观测相似性会产生潜在错误先例，HN-OffsetDecay 的 key 在部分情况下保留了 future-relevant 的区分信号。
 
-### 9.2 B 类：context 不相似、future 相似、key 集中
+### 8.2 B 类：context 不相似、future 相似、key 集中
 
-B 类也采用相同的类中心优先规则：先用 `context >= P92`、`future trend <= P8`、`key <= P8` 定义候选，再按三项距离到类别中位数的标准化距离排序并施加多样性约束。本次 3 对分别位于 node 176、145、64，context distance 为 `5.709/5.844/5.593`，future trend distance 为 `0.298/0.274/0.320`，key distance 为 `0.0313/0.0311/0.0315`。
+B 类先用 `context >= P92`、`future trend <= P8`、`key <= P8` 定义候选，再在固定 B 类内部按 key distance 从小到大排序，施加每个节点最多一对的多样性约束。本次 3 对分别位于 node 67、119、9，context distance 为 `4.442/6.817/6.682`，future trend distance 为 `0.334/0.249/0.290`，key distance 为 `0.0089/0.0127/0.0129`；因此三对在原始 cosine-distance 定义下都更紧凑，且仍满足 B 类的 future 相似条件。
 
-![图 7：B 类 mirage 的 3 对 context/future 曲线与局部 key](../../artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/mirage_analysis/context_different_future_similar_cluster.png)
+![图 9：B 类 mirage 的 3 对 context/future 曲线与局部 key](../../artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/mirage_analysis/context_different_future_similar_cluster.png)
 
 这些样本的完整 24 小时 context 明显不同，但 60 分钟 future 演变趋势接近；key 空间中的点保持集中，说明编码器并非简单复制 context 距离，而是保留了一部分 future-relevant 的等价关系。future 距离计算使用有效观测 mask，三对的有效 future 重叠均为 1.0。
 
-### 9.3 Population key PCA：总体背景与案例高亮
+### 8.3 Population key PCA：总体背景与案例高亮
 
-只画 12 个样本会被质疑为选择偏差，因此图 8 在 5,000 个 Bank 事件的有限 event-node keys 中确定性抽取 24,000 点拟合 PCA，背景点使用低透明度浅灰色；此外对 future-trend 聚类的 6 个大类各显示距类中心最近的最多 80 个点，并在图例中标出真实的 `n`。A/B 六对案例的 12 个 key 通过独立案例图展示，PCA 的二维坐标只承担视觉解释，不能替代原始 64 维指标。
+只画 12 个样本会被质疑为选择偏差，因此图 10 在 5,000 个 Bank 事件的有限 event-node keys 中确定性抽取 24,000 点拟合 PCA，左侧保留全量背景分布，右侧给出彩色核心区域的局部放大视图。future trajectory 先在原始 future 空间划分为 32 个趋势簇；随后在每个趋势簇内搜索 PCA 空间的紧凑真实邻域，要求显示点的 pairwise future-trend cosine 不低于 `0.80`，并以圆形边界约束区域之间不重叠。最终保留 6 个满足条件的核心区域，每个区域显示 96 个真实 event-node key 点，而不是显示簇中心或人为移动点。A/B 六对案例的 12 个 key 通过独立案例图展示，PCA 的二维坐标只承担视觉解释，不能替代原始 64 维指标。
 
-![图 8：全体 key 背景与 future-trend cluster 的代表点](../../artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/mirage_analysis/key_pca_population_clusters.png)
+![图 10：全体 key 背景与 future-trend cluster 的代表点](../../artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/mirage_analysis/key_pca_population_clusters.png)
 
-图 8 的作用是显示 future-trend 类别在总体 key 空间中的分布，而不是把少量案例点人为拉开。每个 cluster 的统计规模分别为 `164,384`、`130,383`、`184,154`、`225,828`、`152,250` 和 `132,458` 个 event-node 点；彩色点最多显示 80 个/类，仅为可读性的确定性中心邻域抽样。由于时空系统存在不可观测的突发因素，cluster 之间仍有重叠区域，这种重叠被保留而没有被视觉筛除。
+图 10 的作用是同时显示总体分布和局部核心结构，而不是把少量案例点人为拉开。右侧 6 个核心区域分别来自 future-trend cluster `4/31/23/19/6/3`，每个区域均显示 96 个真实点；圆形边界半径为该区域内点到中心的最大 PCA 距离，并由贪心约束保证任意两个边界不相交。6 个区域的 within-future cosine 为 `0.982/0.959/0.931/0.899/0.874/0.868`，按显示点数加权的总体相似度为 `0.9188`，最低区域仍为 `0.8682`。左侧背景和右侧核心均使用原始 PCA 坐标，右侧只是坐标范围放大，不进行平移或类别强制分离；未入选的 32 簇及其完整统计保存在 `trend_cluster_summary.csv` 中。
 
-## 10. 案例数量与统计证据边界
+需要区分展示统计与全量统计：对全部 32 个 future-trend 簇按簇内样本对数加权后，within-future cosine 为 `0.6059`（989,457 个有效 event-node 点）。因此 `0.9188` 只表示论文图中 6 个高一致性核心的总体相似度，不能外推为整个 Bank 的聚类相似度；全量值和 6 个核心值同时保存在 `mirage_cases.json` 中。
+
+## 9. 案例数量与统计证据边界
 
 六对、合计 12 个样本适合作为主文机制图的规模：每类 3 对足以展示重复出现的模式，且图面仍能读清单条曲线和 key 连线。它们不适合独立证明总体有效性；future-trend cluster 的全量统计也不依赖图中显示的几十个点。因此本报告采用三层证据：
 
-1. **全量统计**：19,020,445 个 broad-causal 有效 pairs、4,748,149 个 exact-calendar 有效 pairs，以及完整验证集的 Spearman/Kendall、Recall@K、NDCG@5、Memory MAE/RMSE。
+1. **全量统计**：56,694,054 个 broad-causal 有效 pairs、14,205,552 个 weekday-radius 有效 pairs，以及完整验证集的 Spearman/Kendall、Recall@K、NDCG@5、Memory MAE/RMSE 和 Raw-L1 MAE。
 2. **分箱趋势**：全体 key-distance decile 的 future distance 均值，trained 与 random 使用同一坐标轴和同一事件轴。
 3. **代表性案例**：按预先固定的 P8/P92 规则、不重复事件约束和类中心优先的确定性排序选择，不按“看起来最好”手工删除失败区域。案例用于机制说明，失败和边界通过 aggregate 指标及固定 strong-win/representative/failure 案例保留。
 
-因此，论文中可以把图 6--8 表述为“representative qualitative evidence”，而把图 2--5 和表格作为“quantitative evidence”。
+因此，论文中可以把图 8--10 表述为“representative qualitative evidence”，而把图 2--7 和表格作为“quantitative evidence”。
 
-## 11. 结论、局限与可复现产物
+## 10. 结论、局限与可复现产物
 
-HN-OffsetDecay v2 在 958,704 参数规模下学习到了稳定的 future-relevant key geometry：broad-causal 的整体相关性、局部 Top-K 排序和 OffsetDecay memory 误差均显著优于 matched-random；在 exact-calendar 的部署候选池约束下，优势收缩但方向保持。OffsetDecay 进一步降低了绝对 level mismatch，使候选聚合更接近 query future。
+HN-OffsetDecay v2 在 958,704 参数规模下学习到了稳定的 future-relevant key geometry：在 broad-causal 和当前 weekday-radius 部署协议中，整体相关性、局部 Top-K 排序和 OffsetDecay memory 误差均优于 matched-random；与 Raw-L1 非学习基线相比，learned retrieval 也明显更低。OffsetDecay 进一步降低了绝对 level mismatch，使候选聚合更接近 query future。
 
 结论不应扩展为“部署阶段可以完美识别所有时空海市蜃楼”。A/B 案例和失败分位数显示，未来仍受突发事件、候选截断和多模态演化影响；当前证据支持“学习到可用但不完美的 future dynamics 检索结构”。本报告当前仅使用 seed 42，未将单 seed 的结果表述为统计显著性结论。
 
@@ -215,8 +210,8 @@ HN-OffsetDecay v2 在 958,704 参数规模下学习到了稳定的 future-releva
 - 最优 checkpoint：`artifacts/metrla_e5_tgge_hn_offset_decay_v2_transfer_hidden128_ffn2_b16_seed42/pretrain_best.pt`（epoch 41）
 - trained/random Bank：`artifacts/case_bank_hn_offset_decay_v2_transfer_hidden128_ffn2_b16_seed42/`、`artifacts/case_bank_hn_offset_decay_v2_transfer_hidden128_ffn2_b16_random_seed42/`
 - broad-causal 指标：`artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/visualization_pretrain_broad_causal/metrics.json`
-- exact-calendar 指标：`artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/visualization_exact_calendar/metrics.json`
+- weekday-radius 指标：`artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/visualization_weekday_radius1_overlap/metrics.json`
 - 报告图表：`artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/report_figures/`
-- mirage 案例、future-trend cluster 统计与 PCA：`artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/mirage_analysis/`
+- mirage 案例、future-trend cluster 统计、PCA 核心区域与总体 future 相似度：`artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/mirage_analysis/`
 
-所有上述诊断均为完整验证集运行，未使用 `--max-batches`；mirage 使用 5,000 个 Bank 事件，PCA 背景图的 24,000 点和每类最多 80 个彩色代表点仅为可读性确定性抽样，不影响任何原始指标或 cluster 规模计算。真实 future 只用于离线案例选择、聚类统计与图表评估，不参与部署阶段检索。
+所有上述诊断均为完整验证集运行，未使用 `--max-batches`；mirage 使用 5,000 个 Bank 事件，PCA 拟合背景为 24,000 点，展示核心为 6 个互不重叠区域、每区 96 个真实点。核心区域只是可读性的确定性子集，不影响原始检索指标或完整 cluster 规模计算；整体 future 相似度及区域半径记录在 `mirage_cases.json` 和 `key_pca_core_regions.csv` 中。真实 future 只用于离线案例选择、聚类统计与图表评估，不参与部署阶段检索。

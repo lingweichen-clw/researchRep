@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+import subprocess
+import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -34,6 +36,18 @@ from scripts.extract_spatiotemporal_mirages import (
 
 
 class RetrievalVisualizationTest(unittest.TestCase):
+    def test_visualization_cli_is_v2_only(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "scripts/visualize_retrieval.py", "--help"],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("HN-OffsetDecay v2", result.stdout)
+        self.assertNotIn("--version", result.stdout)
+
     def test_mirage_masked_distance_ignores_invalid_zero_values(self) -> None:
         left = np.asarray([1.0, 99.0, 3.0])
         right = np.asarray([1.0, -77.0, 5.0])
@@ -209,33 +223,14 @@ class RetrievalVisualizationTest(unittest.TestCase):
         self.assertTrue(bool(valid.all()))
         self.assertTrue(torch.allclose(distance[0, 0], torch.tensor([1.0, 0.0])))
 
-    def test_context_normalized_signature_matches_e2_and_e3_teacher(self) -> None:
-        context = torch.tensor([[[[0.0]], [[2.0]]]])
-        observed = torch.ones_like(context, dtype=torch.bool)
-        future = torch.tensor([[[[1.0]], [[3.0]]]])
-        future_observed = torch.ones_like(future, dtype=torch.bool)
-
-        signature, valid = build_teacher_aligned_signature(
-            "e3",
-            future,
-            future_observed,
-            context,
-            observed,
-        )
-
-        self.assertTrue(bool(valid.all()))
-        self.assertTrue(
-            torch.allclose(signature.flatten(), torch.tensor([0.0, 2.0]), atol=1.0e-5)
-        )
-
-    def test_od_signature_matches_e5a_teacher(self) -> None:
+    def test_offset_decay_signature_matches_current_v2_teacher(self) -> None:
         context = torch.tensor([[[[8.0]], [[10.0]]]])
         observed = torch.ones_like(context, dtype=torch.bool)
         future = torch.tensor([[[[12.0]], [[14.0]], [[16.0]]]])
         future_observed = torch.ones_like(future, dtype=torch.bool)
 
         signature, valid = build_teacher_aligned_signature(
-            "e5a",
+            "hn_offset_decay_v2",
             future,
             future_observed,
             context,
@@ -244,6 +239,21 @@ class RetrievalVisualizationTest(unittest.TestCase):
 
         self.assertTrue(bool(valid.all()))
         self.assertTrue(torch.allclose(signature.flatten(), torch.tensor([2.0, 9.0, 16.0])))
+
+    def test_legacy_teacher_versions_are_rejected(self) -> None:
+        context = torch.tensor([[[[8.0]], [[10.0]]]])
+        observed = torch.ones_like(context, dtype=torch.bool)
+        future = torch.tensor([[[[12.0]], [[14.0]], [[16.0]]]])
+        future_observed = torch.ones_like(future, dtype=torch.bool)
+
+        with self.assertRaisesRegex(ValueError, "hn_offset_decay_v2"):
+            build_teacher_aligned_signature(
+                "e3",
+                future,
+                future_observed,
+                context,
+                observed,
+            )
 
     def test_alignment_statistics_uses_equal_frequency_bins_and_spearman(self) -> None:
         key_distance = np.arange(10, dtype=np.float64)
@@ -371,7 +381,7 @@ class RetrievalVisualizationTest(unittest.TestCase):
         self.assertTrue(bool(anchor_valid.all()))
         self.assertTrue(torch.allclose(mae, torch.tensor([[1.5, 0.0]])))
 
-    def test_e5_candidate_distance_uses_configured_symmetric_normalization(self) -> None:
+    def test_v2_candidate_distance_uses_configured_symmetric_normalization(self) -> None:
         query = torch.tensor([[[[0.0]]]])
         query_observed = torch.ones_like(query, dtype=torch.bool)
         candidates = torch.tensor([[[[[1.0]]], [[[10.0]]]]])
@@ -412,7 +422,7 @@ class RetrievalVisualizationTest(unittest.TestCase):
 
     def test_render_visualization_figures_creates_expected_nonempty_pngs(self) -> None:
         result = {
-            "version": "e5a",
+            "version": "hn_offset_decay_v2",
             "alignment": {
                 "pretrained": {
                     "spearman": 0.2,
@@ -436,6 +446,8 @@ class RetrievalVisualizationTest(unittest.TestCase):
             "query_future": [10.0, 11.0, 12.0],
             "pretrained_memory": [10.0, 10.5, 12.0],
             "random_memory": [8.0, 9.0, 10.0],
+            "raw_l1_memory": [9.5, 10.0, 11.5],
+            "raw_l1_candidate_futures": [[9.0, 9.5, 11.0], [10.0, 10.5, 12.0]],
             "pretrained_candidate_futures": [[9.0, 10.0, 11.0], [11.0, 12.0, 13.0]],
             "random_candidate_futures": [[7.0, 8.0, 9.0], [8.0, 9.0, 10.0]],
             "pretrained_mae": 0.17,
@@ -482,7 +494,7 @@ class RetrievalVisualizationTest(unittest.TestCase):
     def test_full_visualization_runner_rejects_test_split_before_loading_assets(self) -> None:
         with self.assertRaisesRegex(ValueError, "validation"):
             run_retrieval_visualization(
-                version="e3",
+                version="hn_offset_decay_v2",
                 config=None,
                 checkpoint_path="missing.pt",
                 bank_path="missing-bank",

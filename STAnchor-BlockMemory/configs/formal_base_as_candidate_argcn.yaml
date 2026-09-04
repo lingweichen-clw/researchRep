@@ -67,7 +67,7 @@ pretrain:
   progress_interval: 10
 
 bank:
-  output_dir: artifacts/case_bank_hn_offset_decay_v1_seed42
+  output_dir: artifacts/case_bank_hn_offset_decay_v2_transfer_hidden128_ffn2_b16_seed42
   memory_fraction: 0.7
   event_top_r: 32
   node_top_k: 12

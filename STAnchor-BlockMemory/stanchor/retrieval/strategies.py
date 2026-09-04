@@ -495,3 +495,74 @@ def raw_l1_topk_aggregation(
         selected_valid,
     )
     return uniform_candidate_aggregation(selected_futures, selected_future_valid)
+
+
+def raw_l1_node_candidates(
+    query: torch.Tensor,
+    query_observed: torch.Tensor,
+    bank: Any,
+    events: EventCandidates,
+    series: Any,
+    scaler: Any,
+    context_length: int,
+    top_k: int,
+    device: torch.device,
+    candidate_chunk_size: int = 8,
+) -> tuple[NodeCandidates, torch.Tensor, torch.Tensor]:
+    """Select node-wise candidates by raw context L1 and assign uniform weights.
+
+    The event axis is exactly the supplied legal calendar pool. This is an
+    independent baseline: contexts are ranked in normalized observation space
+    and selected futures are aggregated without OffsetDecay or learned scores.
+    """
+    if query.ndim != 4 or query_observed.shape != query.shape:
+        raise ValueError("query and query_observed must be [B, T, N, C]")
+    if events.event_ids.ndim != 2 or events.valid.shape != events.event_ids.shape:
+        raise ValueError("events must contain [B, R] ids and valid mask")
+    batch, time, nodes, channels = query.shape
+    if time != context_length:
+        raise ValueError("query context time axis must match context_length")
+    candidate_count = int(events.event_ids.shape[1])
+    if top_k <= 0 or top_k > candidate_count:
+        raise ValueError("top_k must fit the padded calendar candidate axis")
+    if candidate_chunk_size <= 0:
+        raise ValueError("candidate_chunk_size must be positive")
+
+    score_chunks: list[torch.Tensor] = []
+    valid_chunks: list[torch.Tensor] = []
+    for start in range(0, candidate_count, candidate_chunk_size):
+        stop = min(start + candidate_chunk_size, candidate_count)
+        contexts, context_observed = candidate_contexts(
+            bank, events.event_ids[:, start:stop], series, scaler, context_length, device
+        )
+        chunk_scores, chunk_valid = raw_l1_candidate_scores(
+            query, query_observed, contexts, context_observed, events.valid[:, start:stop]
+        )
+        score_chunks.append(chunk_scores)
+        valid_chunks.append(chunk_valid)
+    raw_scores = torch.cat(score_chunks, dim=-1)
+    raw_valid = torch.cat(valid_chunks, dim=-1)
+    top_distances, selected = torch.topk(raw_scores, top_k, dim=-1, largest=False)
+    selected_valid = torch.isfinite(top_distances) & raw_valid.gather(2, selected)
+
+    selected_ids = events.event_ids[:, None, :].expand(batch, nodes, candidate_count)
+    selected_ids = selected_ids.gather(2, selected)
+    selected_ids = torch.where(
+        selected_valid, selected_ids, torch.full_like(selected_ids, -1)
+    )
+    selected_scores = (-top_distances).to(torch.float32)
+    selected_scores = selected_scores.masked_fill(~selected_valid, -torch.inf)
+    selected_levels = top_distances.to(torch.float32)
+    selected_levels = selected_levels.masked_fill(~selected_valid, torch.inf)
+    weights = selected_valid.to(torch.float32)
+    weights = weights / weights.sum(dim=-1, keepdim=True).clamp_min(1.0)
+
+    candidates = NodeCandidates(
+        event_ids=selected_ids,
+        total_scores=selected_scores,
+        shape_scores=selected_scores.clone(),
+        level_distances=selected_levels,
+        weights=weights,
+        valid=selected_valid,
+    )
+    return candidates, raw_scores, raw_valid

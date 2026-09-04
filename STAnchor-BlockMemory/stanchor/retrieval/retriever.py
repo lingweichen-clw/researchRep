@@ -240,9 +240,8 @@ class TwoStageRetriever:
             selected_mask.reshape(batch, nodes, top_k, horizon, channels).transpose(0, 3, 1, 2, 4)
         ).to(self.device)
         mask = mask & torch.from_numpy(valid_candidate[:, None, :, :, None]).to(self.device)
-        # Keep the legacy node-level aggregation as the matched baseline. The
-        # trainable HorizonAwareAggregationHead is applied explicitly by the
-        # error-aware downstream path, so this method remains backward compatible.
+        # Keep node-level aggregation as the matched baseline. The current
+        # Router consumes these candidate futures directly.
         effective_weights = candidates.weights[:, None, :, :, None] * mask.to(
             candidates.weights.dtype
         )
