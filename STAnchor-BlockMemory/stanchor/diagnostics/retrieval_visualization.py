@@ -1791,7 +1791,7 @@ def _plot_offset_decay_cases(cases: dict[str, Any], output_path: Path) -> None:
         axis.set_ylabel("Traffic speed")
         axis.grid(axis="y", alpha=0.2)
         axis.legend(frameon=False, fontsize=8)
-    figure.suptitle("E5A Payload Alignment on Identical Retrieved Candidates", fontsize=14)
+    figure.suptitle("OffsetDecay Payload Alignment on Identical Retrieved Candidates", fontsize=14)
     figure.savefig(output_path, dpi=220, facecolor="white")
     plt.close(figure)
 

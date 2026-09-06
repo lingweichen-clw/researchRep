@@ -16,6 +16,12 @@ dependencies = [
   "torch>=2.1",
 ]
 
+[project.optional-dependencies]
+diagnostics = [
+  "matplotlib>=3.7",
+  "scikit-learn>=1.6",
+  "umap-learn>=0.5.12",
+]
+
 [tool.setuptools.packages.find]
 include = ["stanchor*"]
-

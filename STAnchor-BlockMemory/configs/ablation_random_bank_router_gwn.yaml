@@ -1,0 +1,147 @@
+data:
+  raw_path: ../data/METRLA_data/METR-LA.h5
+  adjacency_path: ../data/METRLA_data/adj_mx.pkl
+  context_length: 12
+  retrieval_context_length: 288
+  horizon: 12
+  frequency_minutes: 5
+  train_ratio: 0.7
+  val_ratio: 0.1
+  zero_is_missing: true
+  num_workers: 0
+
+model:
+  input_channels: 1
+  output_channels: 1
+  patch_size: 12
+  hidden_dim: 128
+  retrieval_dim: 64
+  profile_dim: 0
+  latent_dim: 0
+  profile_weight: 0.0
+  num_heads: 4
+  encoder_layers: 4
+  ffn_multiplier: 2
+  dropout: 0.1
+  graph_bias: 1.0
+  route_enabled: true
+  route_dim: 16
+  route_top_k: 6
+  route_local_quota: 0
+  route_prior_weight: 0.25
+  route_temperature: 0.1
+  route_gate_bias: -2.0
+  dynamics_adapter_mode: none
+  dynamics_bottleneck_dim: 16
+  dynamics_gate_bias: -2.0
+  dynamics_gate_groups: 8
+  adapter_bottleneck_dim: 96
+
+pretrain:
+  batch_size: 16
+  epochs: 50
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  objective: masked_relation_single_view
+  reconstruction_weight: 2.0
+  validation_interval: 1
+  time_mask_ratio: 0.25
+  time_mask_block_size: 36
+  space_mask_ratio: 0.25
+  time_task_probability: 0.5
+  retrieval_weight: 1.0
+  retrieval_loss_mode: relation
+  retrieval_temperature: 0.1
+  relation_teacher_temperature: 0.1
+  relation_student_temperature: 0.1
+  relation_teacher_mode: offset_decay
+  relation_distance_normalization: symmetric_geometric_mean
+  future_increment_weight: 0.0
+  profile_loss_weight: 0.0
+  profile_scale_floor: 0.1
+  hard_negative_weight: 2.0
+  positive_quantile: 0.1
+  context_quantile: 0.2
+  negative_quantile: 0.8
+  patience: 10
+  progress_interval: 10
+  early_stopping_enabled: false
+
+bank:
+  output_dir: artifacts/case_bank_hn_offset_decay_v2_transfer_hidden128_ffn2_b16_random_seed42
+  memory_fraction: 0.7
+  event_top_r: 32
+  node_top_k: 12
+  level_weight: 0.0
+  level_temperature: 1.0
+  search_temperature: 0.1
+  key_dtype: float16
+
+target:
+  downstream_mode: learned_topk_error_aware
+  training_protocol: posthoc_frozen_base
+  training_data_scope: full_train
+  candidate_protocol: weekday_radius1_overlap
+  batch_size: 32
+  epochs: 50
+  learning_rate: 0.0005
+  weight_decay: 0.0001
+  optimizer_name: adam
+  scheduler_name: step_lr
+  scheduler_step_size: 10
+  scheduler_gamma: 0.5
+  confidence_hidden_dim: 32
+  confidence_weight: 0.0
+  confidence_level_temperature: 1.0
+  help_margin: 0.0
+  help_temperature: 0.1
+  backbone_name: graph_wavenet
+  graph_wavenet_residual_channels: 32
+  graph_wavenet_dilation_channels: 32
+  graph_wavenet_skip_channels: 256
+  graph_wavenet_end_channels: 512
+  graph_wavenet_kernel_size: 2
+  graph_wavenet_blocks: 4
+  graph_wavenet_layers: 2
+  graph_wavenet_dropout: 0.3
+  graph_wavenet_adaptive_dim: 10
+  graph_wavenet_adaptive_adj: true
+  patience: 20
+  early_stopping_enabled: false
+  risk_hidden_dim: 512
+  fusion_feature_hidden_dim: 64
+  horizon_aggregation_hidden_dim: 256
+  risk_weight: 0.0
+  blend_weight: 0.0
+  candidate_quality_weight: 0.0
+  candidate_quality_temperature: 0.2
+  validation_loss_variant: forecast_only
+  forecast_loss_space: physical
+  validation_correction_variant: base_as_candidate
+  calibrator_arch: retrieval_aware_mha_router
+  candidate_token_dim: 256
+  calibrator_state_dim: 256
+  candidate_attention_heads: 4
+  candidate_trajectory_hidden_dim: 64
+  routing_hidden_dim: 128
+  mha_dropout: 0.05
+  use_horizon_embedding: true
+  base_logit_init_bias: 1.0
+  base_warmup_epochs: 0
+  frozen_path_cache: true
+  blend_minimum_direction_norm: 0.0001
+  calibrator_warmup_epochs: 0
+  backbone_learning_rate_scale: 0.1
+
+runtime:
+  seed: 42
+  device: cuda:0
+  output_dir: artifacts
+  run_name: convergence/ablation_random_bank_router_gwn_seed42
+
+
+
+
+
+
+

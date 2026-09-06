@@ -1,10 +1,10 @@
 # STAnchor-BlockMemory
 
-独立实现的单源时空预训练与历史块检索项目。设计依据见 `doc/计划方案.md`。
+独立实现的单源时空预训练与历史块检索项目。当前核心设计见 `doc/优化方案合集/2026-09-01-Retrieval-Aware-MHA-Residual-Router方案.md`，跨数据集流程见 `doc/优化方案合集/2026-09-02-跨数据集检索迁移验证实验计划.md`。
 
 ## 当前实现范围
 
-v1 已实现：
+当前 v2 主线已实现：
 
 - HDF 交通序列读取、严格时间切分、节点级训练段 scaler。
 - 时间 patch mask 与整节点 mask，按 batch 解耦交替。
@@ -13,10 +13,11 @@ v1 已实现：
 - clean retrieval 分支、masked reconstruction 分支和 future-guided retrieval loss。
 - `.npy + mmap` 只读 Bank、calendar 倒排索引和 schema manifest。
 - 事件 top-`R` 粗检索、节点 top-`K` 精排、历史 future 聚合与候选方差。
-- 轻量节点 MLP backbone、六特征 confidence 和 exact fallback fusion。
+- HN-OffsetDecay v2 检索编码器、weekday-radius 候选协议和节点级 Top-12 检索。
+- Retrieval-aware MHA residual Router：Base 作为零残差 fallback candidate。
 - 预训练、建库、目标训练、评估四阶段 CLI 与 checkpoint 契约。
 
-v1 未实现可选 target adapter、FAISS 近似索引、多源联合预训练和跨物理量迁移。
+当前主线不包含可选 target adapter、FAISS 近似索引、多源联合预训练和跨物理量迁移。
 
 ## 环境
 
@@ -35,6 +36,12 @@ python -m pip install -e . --no-deps
 ```
 
 核心依赖已经写入 `pyproject.toml`：`torch`、`numpy`、`pandas`、`scipy`、`tables`、`PyYAML`。这里显式安装非 PyTorch 依赖后再使用 `--no-deps`，是为了避免 pip 覆盖实验机已经配置好的 CUDA PyTorch。单元测试使用 Python 内置 `unittest`，不要求安装 pytest。
+
+运行 CaseStudy 降维图等离线诊断时，再安装可选依赖；训练与推理不依赖 UMAP：
+
+```powershell
+python -m pip install -e ".[diagnostics]"
+```
 
 依赖与 CUDA 验证：
 
@@ -63,51 +70,32 @@ event candidates       (B,R)
 node candidates        (B,N,K)
 candidate future       (B,H,N,K,C)
 memory/base/final      (B,H,N,C)
-confidence/fusion      (B,H,N,1)
+router weights         (B,N,H,K+1)
 ```
 
-METR-LA 的现有路径已配置在 `configs/metrla_v1.yaml`。PEMS-BAY 模板在 `configs/pemsbay_transfer_v1.yaml`，运行前需要确认本机原始 HDF 与邻接矩阵路径。
+METR-LA 的当前预训练路径已配置在 `configs/metrla_e5_tgge_hn_offset_decay_v2_transfer_hidden128_ffn2_b16.yaml`。跨数据集 PEMS-BAY 阶段 1 使用 `configs/cross_dataset_pemsbay_source_encoder_stage1.yaml`，运行前需要确认本机原始 HDF 与邻接矩阵路径。
 
 ## 正式实验顺序
 
-以下命令从本目录运行。
+以下命令从本目录运行，路径均指向当前 v2 主线。
 
 ### 1. 在源数据集预训练
 
 ```powershell
-python scripts/pretrain.py --config configs/metrla_v1.yaml
+python scripts/pretrain.py --config configs/metrla_e5_tgge_hn_offset_decay_v2_transfer_hidden128_ffn2_b16.yaml
 ```
 
 输出：
 
 ```text
-artifacts/metrla_pretrain_seed42/pretrain_best.pt
-artifacts/metrla_pretrain_seed42/pretrain.log
-artifacts/metrla_pretrain_seed42/pretrain_metrics.jsonl
+artifacts/metrla_e5_tgge_hn_offset_decay_v2_transfer_hidden128_ffn2_b16_seed42/pretrain_best.pt
+artifacts/metrla_e5_tgge_hn_offset_decay_v2_transfer_hidden128_ffn2_b16_seed42/pretrain.log
+artifacts/metrla_e5_tgge_hn_offset_decay_v2_transfer_hidden128_ffn2_b16_seed42/pretrain_metrics.jsonl
 ```
 
 启动后控制台会立即打印数据规模、张量契约、图边数、优化器配置，以及
 `embedding / encoder / retrieval_head / reconstruction_head` 的参数量。相同内容同步写入
 `pretrain.log`；逐 epoch 的结构化指标写入 `pretrain_metrics.jsonl`，供后续脚本画曲线。
-
-### Patch1 时间注意力实验
-
-为了检验 4-token 时间注意力是否受到粗粒度 patch 限制，新增独立配置：
-
-```powershell
-python scripts/pretrain.py --config configs/metrla_patch1_v1.yaml
-```
-
-该实验不覆盖原 patch3 基线：
-
-```text
-token:       (B,12,N,64)，每个 token 对应 1 个 5 分钟时间步
-time mask:  每次连续遮挡 3 个 token，即仍遮挡 15 分钟
-output:      artifacts/metrla_patch1_pretrain_seed42
-```
-
-`time_mask_block_size` 以原始时间步为单位，必须能够被 `patch_size` 整除。patch1 checkpoint
-不能复用 patch3 Bank；后续必须使用同一个 `metrla_patch1_v1.yaml` 重新运行建库命令。
 
 ### 2. 用目标训练历史重建 Bank
 
@@ -115,24 +103,23 @@ output:      artifacts/metrla_patch1_pretrain_seed42
 
 ```powershell
 python scripts/build_bank.py `
-  --config configs/pemsbay_transfer_v1.yaml `
-  --checkpoint artifacts/metrla_pretrain_seed42/pretrain_best.pt `
+  --config configs/cross_dataset_pemsbay_source_encoder_stage1.yaml `
+  --checkpoint artifacts/metrla_e5_tgge_hn_offset_decay_v2_transfer_hidden128_ffn2_b16_seed42/pretrain_best.pt `
   --dataset-name PEMS-BAY
 ```
 
 Bank 输出目录由目标配置的 `bank.output_dir` 决定。为避免实验污染，程序拒绝覆盖已有 Bank；新实验请使用新的目录名。
 
-### 3. 训练目标 backbone、confidence 与 fusion
+### 3. 训练目标 backbone 与 Router
 
 ```powershell
 python scripts/train_downstream.py `
-  --config configs/pemsbay_transfer_v1.yaml `
-  --pretrained-checkpoint artifacts/metrla_pretrain_seed42/pretrain_best.pt `
-  --bank artifacts/pemsbay_bank_from_metrla_v1
+  --config configs/cross_dataset_pemsbay_source_encoder_stage1.yaml `
+  --pretrained-checkpoint artifacts/metrla_e5_tgge_hn_offset_decay_v2_transfer_hidden128_ffn2_b16_seed42/pretrain_best.pt `
+  --bank artifacts/case_bank_hn_offset_decay_v2_transfer_hidden128_ffn2_b16_seed42
 ```
 
-下游训练会在控制台和 `downstream.log` 中打印 `backbone / confidence_head / fusion` 的
-可训练参数量，并单独报告被冻结的预训练模型参数量。逐 epoch 指标保存到
+下游训练会在控制台和 `downstream.log` 中打印 Router、兼容字段以及冻结的 backbone/预训练模型参数量。逐 epoch 指标保存到
 `target_metrics.jsonl`。三个日志文件的职责如下：
 
 ```text
@@ -145,28 +132,28 @@ python scripts/train_downstream.py `
 
 ```powershell
 python scripts/evaluate.py `
-  --config configs/pemsbay_transfer_v1.yaml `
-  --pretrained-checkpoint artifacts/metrla_pretrain_seed42/pretrain_best.pt `
-  --downstream-checkpoint artifacts/metrla_to_pemsbay_v1/downstream_best.pt `
-  --bank artifacts/pemsbay_bank_from_metrla_v1 `
+  --config configs/cross_dataset_pemsbay_source_encoder_stage1.yaml `
+  --pretrained-checkpoint artifacts/metrla_e5_tgge_hn_offset_decay_v2_transfer_hidden128_ffn2_b16_seed42/pretrain_best.pt `
+  --downstream-checkpoint artifacts/cross_dataset_stage1/downstream_best.pt `
+  --bank artifacts/case_bank_hn_offset_decay_v2_transfer_hidden128_ffn2_b16_seed42 `
   --split test
 ```
 
-训练损失在目标数据集标准化尺度计算；报告的 MAE、RMSE、MAPE 和 horizon MAE 会先逆变换回原始物理尺度。
+训练损失和报告指标均按当前实现记录；MAE、RMSE、MAPE 和 horizon MAE 会逆变换回原始物理尺度。
 
 ## 调试命令
 
 真实 METR-LA one-batch 预训练：
 
 ```powershell
-python scripts/pretrain.py --config configs/metrla_v1.yaml --run-name metrla_smoke --epochs 1 --max-batches 1
+python scripts/pretrain.py --config configs/metrla_e5_tgge_hn_offset_decay_v2_transfer_hidden128_ffn2_b16.yaml --run-name metrla_smoke --epochs 1 --max-batches 1
 ```
 
 构建小型调试 Bank：
 
 ```powershell
 python scripts/build_bank.py `
-  --config configs/metrla_v1.yaml `
+  --config configs/metrla_e5_tgge_hn_offset_decay_v2_transfer_hidden128_ffn2_b16.yaml `
   --checkpoint artifacts/metrla_smoke/pretrain_best.pt `
   --output-dir artifacts/metrla_bank_debug `
   --dataset-name METR-LA `
@@ -177,7 +164,7 @@ python scripts/build_bank.py `
 
 ```powershell
 python scripts/train_downstream.py `
-  --config configs/metrla_v1.yaml `
+  --config configs/formal_base_as_candidate_gwn.yaml `
   --pretrained-checkpoint artifacts/metrla_smoke/pretrain_best.pt `
   --bank artifacts/metrla_bank_debug `
   --run-name metrla_downstream_smoke `

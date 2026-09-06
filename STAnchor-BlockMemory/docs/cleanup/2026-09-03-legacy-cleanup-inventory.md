@@ -224,6 +224,27 @@ No deletion is valid unless the final section below is filled with the actual co
 - Batch D deletion total: 84 explicitly enumerated targets, 573 files, and
   92,096,345 bytes. No wildcard deletion was used.
 
+### Batch E: obsolete Markdown reports and superseded plans
+
+- status: completed and verified.
+- scope: historical diagnostic reports, completed exploratory reports, and
+  implementation plans for deleted E2/E3/E5A, RelationOnly/Joint-v3,
+  Latent48, v1/pre-v2 encoders, confidence fusion, HorizonMixer,
+  TransformerCandidateRouter, exact-calendar/diverse-calendar experiments,
+  and superseded case-study drafts.
+- preserved: the v2 hidden128 final CaseStudy report; current v2 pretraining,
+  Router, frozen-cache, STAEformer protocol, weekday-radius, and
+  cross-dataset plans; plus the maintained Graph WaveNet audit note and
+  current diagnostic scripts.
+- deleted documents: 48 Markdown files (21 obsolete diagnostic reports, 5
+  old experiment-step reports, 9 old optimization plans, 7 stale root-level
+  design/implementation notes, 4 old execution plans, and 2
+  RelationOnly/Joint-v3 specifications), totaling 49,182 bytes from `HEAD`.
+- verification: every removed document described an artifact, protocol, or
+  calibrator no longer present in the finalized runtime/evidence closure. No
+  executable source or current retained document references any deleted
+  filename.
+
 ## Final Verification Evidence
 
 - `python -m pytest -q`: 173 tests passed. The only warnings were Matplotlib
