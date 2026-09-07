@@ -30,6 +30,10 @@ TARGET_SCHEDULERS = ("none", "step_lr")
 class DataConfig:
     raw_path: str
     adjacency_path: str
+    npz_key: str = "data"
+    channel_index: int = 0
+    inferred_start_weekday: int = 0
+    inferred_start_slot: int = 0
     context_length: int = 12
     retrieval_context_length: int | None = None
     horizon: int = 12
@@ -114,6 +118,20 @@ class PretrainConfig:
     # Pretraining uses a fixed epoch budget by default; legacy convergence
     # experiments may explicitly opt into early stopping.
     early_stopping_enabled: bool = False
+    progress_interval: int = 10
+
+
+@dataclass(frozen=True)
+class AdaptationConfig:
+    stage: str = "head_adapter"
+    batch_size: int = 16
+    epochs: int = 8
+    learning_rate: float = 3.0e-4
+    weight_decay: float = 1.0e-4
+    relation_weight: float = 1.0
+    distill_weight: float = 0.05
+    validation_interval: int = 1
+    gradient_clip_norm: float = 5.0
     progress_interval: int = 10
 
 
@@ -218,11 +236,32 @@ class ExperimentConfig:
     data: DataConfig
     model: ModelConfig = field(default_factory=ModelConfig)
     pretrain: PretrainConfig = field(default_factory=PretrainConfig)
+    adaptation: AdaptationConfig = field(default_factory=AdaptationConfig)
     bank: BankConfig = field(default_factory=BankConfig)
     target: TargetConfig = field(default_factory=TargetConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
 
     def validate(self) -> None:
+        if self.adaptation.stage != "head_adapter":
+            raise ValueError("adaptation stage must be head_adapter for T1")
+        for name, value in (
+            ("adaptation batch_size", self.adaptation.batch_size),
+            ("adaptation epochs", self.adaptation.epochs),
+            ("adaptation validation_interval", self.adaptation.validation_interval),
+            ("adaptation progress_interval", self.adaptation.progress_interval),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be positive")
+        if self.adaptation.learning_rate <= 0.0:
+            raise ValueError("adaptation learning_rate must be positive")
+        if self.adaptation.weight_decay < 0.0:
+            raise ValueError("adaptation weight_decay must be non-negative")
+        if self.adaptation.relation_weight <= 0.0:
+            raise ValueError("adaptation relation_weight must be positive")
+        if self.adaptation.distill_weight < 0.0:
+            raise ValueError("adaptation distill_weight must be non-negative")
+        if self.adaptation.gradient_clip_norm <= 0.0:
+            raise ValueError("adaptation gradient_clip_norm must be positive")
         validate_downstream_mode(self.target.downstream_mode)
         validate_candidate_protocol(self.target.candidate_protocol)
         if self.target.training_protocol not in TARGET_TRAINING_PROTOCOLS:
@@ -254,6 +293,13 @@ class ExperimentConfig:
             raise ValueError("staeformer_time_feature_mode must be calendar or fallback")
         if self.data.context_length <= 0 or self.data.horizon <= 0:
             raise ValueError("context_length and horizon must be positive")
+        if self.data.channel_index < 0:
+            raise ValueError("channel_index must be non-negative")
+        if not 0 <= self.data.inferred_start_weekday <= 6:
+            raise ValueError("inferred_start_weekday must be in [0, 6]")
+        slots_per_day = (24 * 60) // self.data.frequency_minutes
+        if not 0 <= self.data.inferred_start_slot < slots_per_day:
+            raise ValueError("inferred_start_slot must be within one day")
         if self.data.encoder_context_length < self.data.context_length:
             raise ValueError("retrieval_context_length must be at least context_length")
         if self.data.encoder_context_length % self.model.patch_size != 0:
@@ -594,6 +640,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
         data=_construct_dataclass(DataConfig, raw.get("data")),
         model=_construct_dataclass(ModelConfig, raw.get("model")),
         pretrain=_construct_dataclass(PretrainConfig, raw.get("pretrain")),
+        adaptation=_construct_dataclass(AdaptationConfig, raw.get("adaptation")),
         bank=_construct_dataclass(BankConfig, raw.get("bank")),
         target=_construct_dataclass(TargetConfig, raw.get("target")),
         runtime=_construct_dataclass(RuntimeConfig, raw.get("runtime")),

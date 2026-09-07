@@ -167,6 +167,64 @@ def load_hdf_series(
     )
 
 
+def load_npz_series(
+    path: str | Path,
+    frequency_minutes: int = 5,
+    zero_is_missing: bool = True,
+    npz_key: str = "data",
+    channel_index: int = 0,
+    start_weekday: int = 0,
+    start_slot: int = 0,
+) -> TrafficSeries:
+    """Load a traffic NPZ and select one physical variable as ``[T,N,1]``.
+
+    NPZ files in the transfer datasets do not contain timestamps.  Their rows
+    are therefore interpreted as consecutive ``frequency_minutes`` samples,
+    with an explicit inferred calendar origin.
+    """
+    if frequency_minutes <= 0 or (24 * 60) % frequency_minutes != 0:
+        raise ValueError("frequency_minutes must divide one day")
+    if not 0 <= start_weekday <= 6:
+        raise ValueError("start_weekday must be in [0, 6]")
+    slots_per_day = (24 * 60) // frequency_minutes
+    if not 0 <= start_slot < slots_per_day:
+        raise ValueError("start_slot must be within one day")
+    source = Path(path)
+    with np.load(source, allow_pickle=False) as archive:
+        if npz_key not in archive.files:
+            raise ValueError(f"NPZ does not contain key {npz_key!r}")
+        raw = np.asarray(archive[npz_key])
+    if raw.ndim != 3:
+        raise ValueError(f"NPZ traffic array must be [T,N,C], got {raw.shape}")
+    if not 0 <= channel_index < raw.shape[-1]:
+        raise ValueError(
+            f"channel_index {channel_index} is outside NPZ channel range {raw.shape[-1]}"
+        )
+    values = np.asarray(raw[..., channel_index : channel_index + 1], dtype=np.float32)
+    observed = np.isfinite(values)
+    if zero_is_missing:
+        observed &= values != 0
+    values = np.where(np.isfinite(values), values, 0.0).astype(np.float32)
+    steps = np.arange(values.shape[0], dtype=np.int64)
+    absolute_slots = start_slot + steps
+    weekday = ((start_weekday + absolute_slots // slots_per_day) % 7).astype(np.int64)
+    slot = (absolute_slots % slots_per_day).astype(np.int64)
+    timestamps_ns = (
+        absolute_slots.astype(np.int64)
+        * int(frequency_minutes)
+        * 60
+        * 1_000_000_000
+    )
+    return TrafficSeries(
+        values=values,
+        observed=observed.astype(bool),
+        timestamps_ns=timestamps_ns,
+        weekday=weekday,
+        slot=slot,
+        slots_per_day=slots_per_day,
+    )
+
+
 def build_hdf_datasets(
     path: str | Path,
     context_length: int,
@@ -213,6 +271,49 @@ def build_hdf_datasets(
             context_length,
             horizon,
             retrieval_context_length,
+        ),
+        train_end=train_end,
+        val_end=val_end,
+    )
+
+
+def build_npz_datasets(
+    path: str | Path,
+    context_length: int,
+    horizon: int,
+    train_ratio: float,
+    val_ratio: float,
+    frequency_minutes: int = 5,
+    zero_is_missing: bool = True,
+    retrieval_context_length: int | None = None,
+    npz_key: str = "data",
+    channel_index: int = 0,
+    start_weekday: int = 0,
+    start_slot: int = 0,
+) -> TrafficDataBundle:
+    series = load_npz_series(
+        path,
+        frequency_minutes,
+        zero_is_missing,
+        npz_key,
+        channel_index,
+        start_weekday,
+        start_slot,
+    )
+    train_end = int(series.num_steps * train_ratio)
+    val_end = int(series.num_steps * (train_ratio + val_ratio))
+    scaler = NodeStandardScaler.fit(series.values[:train_end], series.observed[:train_end])
+    return TrafficDataBundle(
+        series=series,
+        scaler=scaler,
+        train=TrafficWindowDataset(
+            series, scaler, 0, train_end, context_length, horizon, retrieval_context_length
+        ),
+        val=TrafficWindowDataset(
+            series, scaler, train_end, val_end, context_length, horizon, retrieval_context_length
+        ),
+        test=TrafficWindowDataset(
+            series, scaler, val_end, series.num_steps, context_length, horizon, retrieval_context_length
         ),
         train_end=train_end,
         val_end=val_end,

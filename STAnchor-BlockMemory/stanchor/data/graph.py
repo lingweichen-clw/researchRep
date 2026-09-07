@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 
 from stanchor.utils import array_sha256
@@ -193,5 +194,40 @@ def graph_from_dense(adjacency: np.ndarray, add_self_loops: bool = True) -> Grap
     return graph
 
 
-def load_graph(path: str | Path) -> GraphData:
-    return graph_from_dense(load_dense_adjacency(path), add_self_loops=True)
+def _load_edge_csv(path: Path, num_nodes: int | None = None) -> GraphData:
+    frame = pd.read_csv(path)
+    if not {"from", "to"}.issubset(frame.columns):
+        raise ValueError("edge CSV must contain from and to columns")
+    source = frame["from"].to_numpy(dtype=np.int64)
+    target = frame["to"].to_numpy(dtype=np.int64)
+    inferred_nodes = int(max(source.max(initial=-1), target.max(initial=-1)) + 1)
+    nodes = inferred_nodes if num_nodes is None else int(num_nodes)
+    if nodes <= 0:
+        raise ValueError("CSV graph must contain at least one node")
+    if np.any(source < 0) or np.any(target < 0) or np.any(source >= nodes) or np.any(target >= nodes):
+        raise ValueError("edge CSV contains out-of-range node ids")
+    if "cost" in frame.columns:
+        distance = frame["cost"].to_numpy(dtype=np.float32)
+        if not np.isfinite(distance).all() or np.any(distance < 0):
+            raise ValueError("CSV edge costs must be finite and non-negative")
+        weights = 1.0 / np.maximum(distance, 1.0e-6)
+    else:
+        weights = np.ones(source.shape[0], dtype=np.float32)
+    adjacency = np.zeros((nodes, nodes), dtype=np.float32)
+    # GraphData stores target/source rows; a CSV from->to edge routes source to target.
+    adjacency[target, source] = weights
+    diagonal = np.diag_indices(nodes)
+    adjacency[diagonal] = np.maximum(adjacency[diagonal], 1.0)
+    return graph_from_dense(adjacency, add_self_loops=False)
+
+
+def load_graph(path: str | Path, num_nodes: int | None = None) -> GraphData:
+    source = Path(path)
+    if source.suffix.lower() == ".csv":
+        return _load_edge_csv(source, num_nodes=num_nodes)
+    graph = graph_from_dense(load_dense_adjacency(source), add_self_loops=True)
+    if num_nodes is not None and graph.num_nodes != int(num_nodes):
+        raise ValueError(
+            f"graph has {graph.num_nodes} nodes but data requires {int(num_nodes)}"
+        )
+    return graph

@@ -8,23 +8,43 @@ from typing import Any
 import torch
 
 from stanchor.config import ExperimentConfig, resolve_project_path
-from stanchor.data.dataset import TrafficDataBundle, build_hdf_datasets
+from stanchor.data.dataset import TrafficDataBundle, build_hdf_datasets, build_npz_datasets
 from stanchor.data.graph import GraphData, load_graph
 from stanchor.models.pretraining import STAnchorPretrainModel
 
 
 def build_data_and_graph(config: ExperimentConfig) -> tuple[TrafficDataBundle, GraphData]:
-    data = build_hdf_datasets(
-        path=resolve_project_path(config.data.raw_path),
-        context_length=config.data.context_length,
-        horizon=config.data.horizon,
-        train_ratio=config.data.train_ratio,
-        val_ratio=config.data.val_ratio,
-        frequency_minutes=config.data.frequency_minutes,
-        zero_is_missing=config.data.zero_is_missing,
-        retrieval_context_length=config.data.retrieval_context_length,
+    raw_path = resolve_project_path(config.data.raw_path)
+    if raw_path.suffix.lower() == ".npz":
+        data = build_npz_datasets(
+            path=raw_path,
+            context_length=config.data.context_length,
+            horizon=config.data.horizon,
+            train_ratio=config.data.train_ratio,
+            val_ratio=config.data.val_ratio,
+            frequency_minutes=config.data.frequency_minutes,
+            zero_is_missing=config.data.zero_is_missing,
+            retrieval_context_length=config.data.retrieval_context_length,
+            npz_key=config.data.npz_key,
+            channel_index=config.data.channel_index,
+            start_weekday=config.data.inferred_start_weekday,
+            start_slot=config.data.inferred_start_slot,
+        )
+    else:
+        data = build_hdf_datasets(
+            path=raw_path,
+            context_length=config.data.context_length,
+            horizon=config.data.horizon,
+            train_ratio=config.data.train_ratio,
+            val_ratio=config.data.val_ratio,
+            frequency_minutes=config.data.frequency_minutes,
+            zero_is_missing=config.data.zero_is_missing,
+            retrieval_context_length=config.data.retrieval_context_length,
+        )
+    graph = load_graph(
+        resolve_project_path(config.data.adjacency_path),
+        num_nodes=data.series.num_nodes,
     )
-    graph = load_graph(resolve_project_path(config.data.adjacency_path))
     if graph.num_nodes != data.series.num_nodes:
         raise ValueError(
             f"Graph has {graph.num_nodes} nodes but data has {data.series.num_nodes}"
