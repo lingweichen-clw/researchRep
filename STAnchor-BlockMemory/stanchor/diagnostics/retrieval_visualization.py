@@ -356,7 +356,7 @@ def future_neighbor_recall_at_k(
     return torch.where(eligible, recall, torch.zeros_like(recall)), eligible
 
 
-def anchor_wise_ranking_metrics(
+def _anchor_wise_ranking_metrics_reference(
     key_distance: np.ndarray,
     teacher_distance: np.ndarray,
     valid: np.ndarray,
@@ -487,6 +487,172 @@ def anchor_wise_ranking_metrics(
         "ndcg_at_5_values": np.asarray(ndcg_values, dtype=np.float64),
         "recall_at_5_values": np.asarray(recall_at_5_values, dtype=np.float64),
     }
+
+def _anchor_wise_ranking_metrics_chunked(
+    key_distance: np.ndarray,
+    teacher_distance: np.ndarray,
+    valid: np.ndarray,
+    ndcg_k: int = 5,
+    teacher_temperature: float = 0.1,
+    chunk_size: int = 256,
+) -> dict[str, Any]:
+    """Compute local ranking metrics in bounded NumPy chunks.
+
+    This preserves the reference metric semantics while avoiding a Python loop
+    over every query-node anchor. Pairwise Kendall temporaries are limited to
+    ``chunk_size * R * R`` elements.
+    """
+    key = np.asarray(key_distance, dtype=np.float64)
+    teacher = np.asarray(teacher_distance, dtype=np.float64)
+    mask = np.asarray(valid, dtype=bool)
+    if key.ndim != 3 or teacher.shape != key.shape or mask.shape != key.shape:
+        raise ValueError("ranking distances and valid mask must be [B, N, R] and aligned")
+    if ndcg_k <= 0:
+        raise ValueError("ndcg_k must be positive")
+    if teacher_temperature <= 0:
+        raise ValueError("teacher_temperature must be positive")
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+
+    flat_key = key.reshape(-1, key.shape[-1])
+    flat_teacher = teacher.reshape(-1, teacher.shape[-1])
+    flat_mask = mask.reshape(-1, mask.shape[-1])
+    spearman_values: list[np.ndarray] = []
+    kendall_values: list[np.ndarray] = []
+    recall1_values: list[np.ndarray] = []
+    ndcg_values: list[np.ndarray] = []
+    recall5_values: list[np.ndarray] = []
+    candidate_counts: list[np.ndarray] = []
+    discounts = 1.0 / np.log2(np.arange(2, ndcg_k + 2, dtype=np.float64))
+    pair_selector = np.triu(np.ones((flat_key.shape[-1], flat_key.shape[-1]), dtype=bool), k=1)
+
+    for start in range(0, flat_key.shape[0], chunk_size):
+        stop = min(start + chunk_size, flat_key.shape[0])
+        left = flat_key[start:stop]
+        right = flat_teacher[start:stop]
+        finite = flat_mask[start:stop] & np.isfinite(left) & np.isfinite(right)
+        counts = finite.sum(axis=1)
+        eligible = counts >= 2
+        if not np.any(eligible):
+            continue
+        left = left[eligible]
+        right = right[eligible]
+        finite = finite[eligible]
+        counts = counts[eligible]
+        candidate_counts.append(counts.astype(np.int64, copy=False))
+
+        left_masked = np.where(finite, left, np.nan)
+        right_masked = np.where(finite, right, np.nan)
+        left_ranks = rankdata(left_masked, axis=1, method="average", nan_policy="omit")
+        right_ranks = rankdata(right_masked, axis=1, method="average", nan_policy="omit")
+        left_ranks = np.where(finite, left_ranks, 0.0)
+        right_ranks = np.where(finite, right_ranks, 0.0)
+        left_centered = left_ranks - left_ranks.sum(axis=1, keepdims=True) / counts[:, None]
+        right_centered = right_ranks - right_ranks.sum(axis=1, keepdims=True) / counts[:, None]
+        covariance = (left_centered * right_centered * finite).sum(axis=1)
+        denominator = np.sqrt(
+            (left_centered * left_centered * finite).sum(axis=1)
+            * (right_centered * right_centered * finite).sum(axis=1)
+        )
+        spearman_values.append(
+            np.divide(covariance, denominator, out=np.zeros_like(covariance), where=denominator > 0)
+        )
+
+        left_finite = np.where(finite, left, 0.0)
+        right_finite = np.where(finite, right, 0.0)
+        left_delta = left_finite[:, :, None] - left_finite[:, None, :]
+        right_delta = right_finite[:, :, None] - right_finite[:, None, :]
+        strict = (
+            finite[:, :, None]
+            & finite[:, None, :]
+            & pair_selector[None]
+            & (left_delta != 0.0)
+            & (right_delta != 0.0)
+        )
+        concordant = strict & (((left_delta > 0.0) == (right_delta > 0.0)))
+        concordant_count = concordant.sum(axis=(1, 2))
+        strict_count = strict.sum(axis=(1, 2))
+        kendall_values.append(
+            np.divide(
+                2.0 * concordant_count - strict_count,
+                strict_count,
+                out=np.zeros_like(strict_count, dtype=np.float64),
+                where=strict_count > 0,
+            )
+        )
+
+        key_order = np.argsort(np.where(finite, left, np.inf), axis=1, kind="stable")
+        teacher_order = np.argsort(np.where(finite, right, np.inf), axis=1, kind="stable")
+        recall1_values.append((key_order[:, 0] == teacher_order[:, 0]).astype(np.float64))
+        relevance = np.exp(-right / teacher_temperature)
+        cutoff = min(ndcg_k, left.shape[1])
+        row = np.arange(left.shape[0])[:, None]
+        key_top = key_order[:, :cutoff]
+        ideal_top = teacher_order[:, :cutoff]
+        dcg = ((2.0 ** relevance[row, key_top] - 1.0) * discounts[:cutoff]).sum(axis=1)
+        ideal = ((2.0 ** relevance[row, ideal_top] - 1.0) * discounts[:cutoff]).sum(axis=1)
+        ndcg_values.append(np.divide(dcg, ideal, out=np.zeros_like(dcg), where=ideal > 0))
+        recall_mask = counts > ndcg_k
+        if np.any(recall_mask):
+            key_top5 = key_order[recall_mask, :ndcg_k]
+            teacher_top5 = teacher_order[recall_mask, :ndcg_k]
+            overlap = (key_top5[:, :, None] == teacher_top5[:, None, :]).any(axis=2).sum(axis=1)
+            recall5_values.append(overlap.astype(np.float64) / float(ndcg_k))
+
+    counts = np.concatenate(candidate_counts).astype(np.float64, copy=False) if candidate_counts else np.empty(0)
+    spearman_array = np.concatenate(spearman_values) if spearman_values else np.empty(0)
+    kendall_array = np.concatenate(kendall_values) if kendall_values else np.empty(0)
+    recall1_array = np.concatenate(recall1_values) if recall1_values else np.empty(0)
+    ndcg_array = np.concatenate(ndcg_values) if ndcg_values else np.empty(0)
+    recall5_array = np.concatenate(recall5_values) if recall5_values else np.empty(0)
+    return {
+        "spearman_mean": float(spearman_array.mean()) if spearman_array.size else 0.0,
+        "spearman_std": float(spearman_array.std()) if spearman_array.size else 0.0,
+        "spearman_eligible_anchors": int(spearman_array.size),
+        "kendall_mean": float(kendall_array.mean()) if kendall_array.size else 0.0,
+        "kendall_std": float(kendall_array.std()) if kendall_array.size else 0.0,
+        "kendall_eligible_anchors": int(kendall_array.size),
+        "recall_at_1_mean": float(recall1_array.mean()) if recall1_array.size else 0.0,
+        "recall_at_1_std": float(recall1_array.std()) if recall1_array.size else 0.0,
+        "recall_at_1_eligible_anchors": int(recall1_array.size),
+        "ndcg_at_5_mean": float(ndcg_array.mean()) if ndcg_array.size else 0.0,
+        "ndcg_at_5_std": float(ndcg_array.std()) if ndcg_array.size else 0.0,
+        "ndcg_at_5_eligible_anchors": int(ndcg_array.size),
+        "recall_at_5_mean": float(recall5_array.mean()) if recall5_array.size else 0.0,
+        "recall_at_5_std": float(recall5_array.std()) if recall5_array.size else 0.0,
+        "recall_at_5_eligible_anchors": int(recall5_array.size),
+        "candidate_count_mean": float(counts.mean()) if counts.size else 0.0,
+        "candidate_count_min": int(counts.min()) if counts.size else 0,
+        "candidate_count_max": int(counts.max()) if counts.size else 0,
+        "random_recall_at_1_expected": float(np.mean(1.0 / counts)) if counts.size else 0.0,
+        "random_recall_at_5_expected": (
+            float(np.mean(ndcg_k / counts[counts > ndcg_k]))
+            if np.any(counts > ndcg_k)
+            else 0.0
+        ),
+        "spearman_values": spearman_array,
+        "kendall_values": kendall_array,
+        "recall_at_1_values": recall1_array,
+        "ndcg_at_5_values": ndcg_array,
+        "recall_at_5_values": recall5_array,
+    }
+
+
+def anchor_wise_ranking_metrics(
+    key_distance: np.ndarray,
+    teacher_distance: np.ndarray,
+    valid: np.ndarray,
+    ndcg_k: int = 5,
+    teacher_temperature: float = 0.1,
+) -> dict[str, Any]:
+    """Evaluate local candidate orderings with bounded vectorized statistics."""
+    return _anchor_wise_ranking_metrics_chunked(
+        key_distance,
+        teacher_distance,
+        valid,
+        ndcg_k=ndcg_k,
+        teacher_temperature=teacher_temperature,
+    )
 
 
 def alignment_statistics(

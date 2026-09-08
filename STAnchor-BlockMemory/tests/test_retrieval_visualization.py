@@ -10,6 +10,7 @@ import numpy as np
 import torch
 
 from stanchor.diagnostics.retrieval_visualization import (
+    _anchor_wise_ranking_metrics_chunked,
     alignment_statistics,
     anchor_wise_ranking_metrics,
     build_diagnostic_event_candidates,
@@ -36,6 +37,40 @@ from scripts.extract_spatiotemporal_mirages import (
 
 
 class RetrievalVisualizationTest(unittest.TestCase):
+    def test_anchor_ranking_chunk_size_does_not_change_metrics(self) -> None:
+        key_distance = np.asarray(
+            [
+                [[0.0, 2.0, 1.0, np.inf, np.inf], [1.0, 1.0, 3.0, 0.0, np.inf]],
+                [[4.0, 0.0, 2.0, 1.0, np.inf], [0.0, 3.0, np.inf, np.inf, np.inf]],
+            ]
+        )
+        teacher_distance = np.asarray(
+            [
+                [[0.0, 1.0, 2.0, np.inf, np.inf], [1.0, 2.0, 0.0, 3.0, np.inf]],
+                [[2.0, 0.0, 1.0, 3.0, np.inf], [1.0, 0.0, np.inf, np.inf, np.inf]],
+            ]
+        )
+        valid = np.isfinite(key_distance) & np.isfinite(teacher_distance)
+        one_chunk = _anchor_wise_ranking_metrics_chunked(
+            key_distance, teacher_distance, valid, ndcg_k=3, teacher_temperature=0.7, chunk_size=1
+        )
+        two_chunks = _anchor_wise_ranking_metrics_chunked(
+            key_distance, teacher_distance, valid, ndcg_k=3, teacher_temperature=0.7, chunk_size=3
+        )
+        for key in (
+            "spearman_mean",
+            "kendall_mean",
+            "recall_at_1_mean",
+            "ndcg_at_5_mean",
+            "recall_at_5_mean",
+            "spearman_eligible_anchors",
+            "kendall_eligible_anchors",
+            "recall_at_1_eligible_anchors",
+            "ndcg_at_5_eligible_anchors",
+            "recall_at_5_eligible_anchors",
+        ):
+            self.assertEqual(one_chunk[key], two_chunks[key])
+
     def test_visualization_cli_is_v2_only(self) -> None:
         result = subprocess.run(
             [sys.executable, "scripts/visualize_retrieval.py", "--help"],
