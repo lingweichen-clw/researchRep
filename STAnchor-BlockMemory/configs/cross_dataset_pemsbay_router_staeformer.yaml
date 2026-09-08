@@ -35,6 +35,7 @@ pretrain:
   relation_student_temperature: 0.1
   relation_teacher_mode: offset_decay
   relation_distance_normalization: symmetric_geometric_mean
+  time_mask_block_size: 36
   profile_loss_weight: 0.0
 bank:
   output_dir: artifacts/cross_dataset_stage1/pemsbay_source_bank
@@ -52,16 +53,16 @@ target:
   candidate_protocol: weekday_radius1_overlap
   batch_size: 32
   epochs: 50
-  learning_rate: 0.0005
+  learning_rate: 0.001
   weight_decay: 0.0001
   optimizer_name: adam
   scheduler_name: step_lr
   scheduler_step_size: 10
-  scheduler_gamma: 0.5
+  scheduler_gamma: 0.95
   confidence_weight: 0.0
   backbone_name: staeformer
   staeformer_time_feature_mode: calendar
-  patience: 20
+  patience: 10
   early_stopping_enabled: false
   risk_hidden_dim: 512
   fusion_feature_hidden_dim: 64
