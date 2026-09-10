@@ -7,12 +7,14 @@ import numpy as np
 import torch
 
 from stanchor.retrieval.strategies import (
+    ContextWindowCache,
     calendar_event_candidates,
     candidate_contexts,
     offset_decay_aggregation,
+    raw_l1_node_candidates,
     uniform_candidate_aggregation,
 )
-from stanchor.retrieval.retriever import NodeCandidates
+from stanchor.retrieval.retriever import EventCandidates, NodeCandidates
 
 
 class RetrievalStrategiesTest(unittest.TestCase):
@@ -42,6 +44,82 @@ class RetrievalStrategiesTest(unittest.TestCase):
         expected = torch.arange(12, 24, dtype=torch.float32).view(1, 1, 12, 1, 1)
         self.assertTrue(torch.allclose(contexts, expected, atol=1.0e-5))
         self.assertTrue(bool(context_observed.all()))
+
+    def test_context_window_cache_matches_uncached_and_skips_reload(self) -> None:
+        values = np.arange(80, dtype=np.float32).reshape(40, 2, 1)
+        observed = np.ones_like(values, dtype=bool)
+        class CountingSeries:
+            def __init__(self) -> None:
+                self.values = values
+                self.observed = observed
+                self.reads = 0
+            def __getitem__(self, item):
+                raise AssertionError('series itself should not be indexed')
+        class CountingValues(np.ndarray):
+            def __new__(cls, data):
+                obj = np.asarray(data).view(cls)
+                obj.reads = 0
+                return obj
+            def __getitem__(self, item):
+                self.reads += 1
+                return np.ndarray.__getitem__(self, item)
+        counted_values = CountingValues(values)
+        counted_observed = CountingValues(observed)
+        series = SimpleNamespace(values=counted_values, observed=counted_observed)
+        scaler = SimpleNamespace(
+            mean=np.zeros((2, 1), dtype=np.float32),
+            std=np.ones((2, 1), dtype=np.float32),
+            eps=1.0e-6,
+        )
+        bank = SimpleNamespace(context_end=np.asarray([11, 23, 35], dtype=np.int64))
+        event_ids = torch.tensor([[0, 1, 0, -1], [1, 2, 1, -1]])
+        cache = ContextWindowCache(max_events=8)
+        cached, cached_obs = candidate_contexts(
+            bank, event_ids, series, scaler, 12, torch.device('cpu'), cache=cache,
+        )
+        first_reads = int(counted_values.reads)
+        cached_again, cached_obs_again = candidate_contexts(
+            bank, event_ids, series, scaler, 12, torch.device('cpu'), cache=cache,
+        )
+        self.assertGreater(first_reads, 0)
+        self.assertEqual(int(counted_values.reads), first_reads)
+        uncached, uncached_obs = candidate_contexts(
+            bank, event_ids, series, scaler, 12, torch.device('cpu'),
+        )
+        self.assertEqual(len(cache), 3)
+        self.assertTrue(torch.allclose(cached, uncached))
+        self.assertTrue(torch.equal(cached_obs, uncached_obs))
+        self.assertTrue(torch.allclose(cached_again, cached))
+
+    def test_raw_l1_uses_context_cache_for_same_calendar_pool(self) -> None:
+        values = np.asarray(
+            [0.0, 0.0, 1.0, 1.0, 5.0, 5.0, 9.0, 9.0], dtype=np.float32
+        ).reshape(8, 1, 1)
+        series = SimpleNamespace(values=values, observed=np.ones_like(values, dtype=bool))
+        scaler = SimpleNamespace(
+            mean=np.zeros((1, 1), dtype=np.float32),
+            std=np.ones((1, 1), dtype=np.float32),
+            eps=1.0e-6,
+        )
+        bank = SimpleNamespace(context_end=np.asarray([1, 3, 5], dtype=np.int64))
+        events = EventCandidates(
+            event_ids=torch.tensor([[0, 1, 2, -1]]),
+            scores=torch.zeros(1, 4),
+            valid=torch.tensor([[True, True, True, False]]),
+        )
+        query = torch.tensor([[[[1.0]], [[1.0]]]])
+        observed = torch.ones_like(query, dtype=torch.bool)
+        cache = ContextWindowCache()
+        with_cache, _, _ = raw_l1_node_candidates(
+            query, observed, bank, events, series, scaler, 2, 2, torch.device('cpu'),
+            candidate_chunk_size=2, context_cache=cache,
+        )
+        without_cache, _, _ = raw_l1_node_candidates(
+            query, observed, bank, events, series, scaler, 2, 2, torch.device('cpu'),
+            candidate_chunk_size=2,
+        )
+        self.assertTrue(torch.equal(with_cache.event_ids, without_cache.event_ids))
+        self.assertEqual(len(cache), 3)
 
     def test_calendar_candidates_keep_all_and_only_causal_events(self) -> None:
         class Calendar:

@@ -23,17 +23,39 @@ class DownstreamLoss:
     candidate_quality: torch.Tensor | None = None
 
 
-def masked_mae(prediction: torch.Tensor, target: torch.Tensor, observed: torch.Tensor) -> torch.Tensor:
+def _valid_forecast_mask(
+    prediction: torch.Tensor, target: torch.Tensor, observed: torch.Tensor
+) -> torch.Tensor:
     if prediction.shape != target.shape or observed.shape != target.shape:
         raise ValueError("prediction, target, and observed must share a shape")
-    # Missing values may still be present in tensors even when an upstream
-    # observed mask is supplied.  Exclude non-finite prediction/target pairs
-    # before taking the reduction so one invalid sensor value cannot turn the
-    # whole downstream loss into NaN/Inf.
-    valid = observed.bool() & torch.isfinite(prediction) & torch.isfinite(target)
+    return observed.bool() & torch.isfinite(prediction) & torch.isfinite(target)
+
+
+def masked_mae(prediction: torch.Tensor, target: torch.Tensor, observed: torch.Tensor) -> torch.Tensor:
+    valid = _valid_forecast_mask(prediction, target, observed)
     if not bool(valid.any()):
         raise ValueError("masked MAE has no observed targets")
     return (prediction - target).abs().masked_select(valid).mean()
+
+
+def masked_mse(prediction: torch.Tensor, target: torch.Tensor, observed: torch.Tensor) -> torch.Tensor:
+    valid = _valid_forecast_mask(prediction, target, observed)
+    if not bool(valid.any()):
+        raise ValueError("masked MSE has no observed targets")
+    return (prediction - target).square().masked_select(valid).mean()
+
+
+def _forecast_loss(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    observed: torch.Tensor,
+    loss_name: str,
+) -> torch.Tensor:
+    if loss_name == "mae":
+        return masked_mae(prediction, target, observed)
+    if loss_name == "mse":
+        return masked_mse(prediction, target, observed)
+    raise ValueError("forecast_loss_name must be mae or mse")
 
 
 def candidate_quality_kl_loss(
@@ -116,11 +138,13 @@ def compute_downstream_loss(
     candidate_quality_temperature: float = 0.1,
     forecast_prediction: torch.Tensor | None = None,
     forecast_target: torch.Tensor | None = None,
+    forecast_loss_name: str = "mae",
 ) -> DownstreamLoss:
-    forecast = masked_mae(
+    forecast = _forecast_loss(
         output.final_prediction if forecast_prediction is None else forecast_prediction,
         target if forecast_target is None else forecast_target,
         observed,
+        forecast_loss_name,
     )
     candidate_quality = forecast * 0.0
     if candidate_quality_weight > 0.0 and output.candidate_attention is not None and output.candidate_futures is not None and output.candidate_masks is not None:

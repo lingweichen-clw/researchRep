@@ -23,7 +23,7 @@ POST_MEMORY_CALIBRATION = "post_memory_calibration"
 FULL_TRAIN = "full_train"
 TARGET_TRAINING_DATA_SCOPES = (POST_MEMORY_CALIBRATION, FULL_TRAIN)
 TARGET_OPTIMIZERS = ("adamw", "adam")
-TARGET_SCHEDULERS = ("none", "step_lr")
+TARGET_SCHEDULERS = ("none", "step_lr", "multi_step_lr")
 
 
 @dataclass(frozen=True)
@@ -173,6 +173,40 @@ class TargetConfig:
     # legacy checkpoints trained before calendar covariates were wired through.
     staeformer_time_feature_mode: str = "calendar"
     backbone_hidden_dim: int = 64
+    st_norm_channels: int = 16
+    st_norm_kernel_size: int = 2
+    st_norm_blocks: int = 1
+    st_norm_layers: int = 4
+    st_norm_use_snorm: bool = True
+    st_norm_use_tnorm: bool = True
+    st_norm_dropout: float = 0.2
+    dlinear_moving_avg_kernel: int = 25
+    dlinear_individual: bool = False
+    forecast_loss_name: str = "mae"
+    optimizer_eps: float = 1.0e-8
+    scheduler_milestones: tuple[int, ...] = ()
+    st_ssdl_rnn_units: int = 128
+    st_ssdl_rnn_layers: int = 1
+    st_ssdl_cheb_k: int = 3
+    st_ssdl_prototype_num: int = 20
+    st_ssdl_prototype_dim: int = 64
+    st_ssdl_tod_embed_dim: int = 20
+    st_ssdl_node_embedding_dim: int = 25
+    st_ssdl_input_embedding_dim: int = 3
+    st_ssdl_adaptive_embedding_dim: int = 0
+    st_ssdl_use_ste: bool = True
+    st_ssdl_use_curriculum_learning: bool = True
+    st_ssdl_cl_decay_steps: int = 2000
+    st_ssdl_contrastive_weight: float = 0.01
+    st_ssdl_deviation_weight: float = 1.0
+    st_ssdl_triplet_margin: float = 0.5
+    dcrnn_rnn_units: int = 64
+    dcrnn_rnn_layers: int = 2
+    dcrnn_max_diffusion_step: int = 2
+    dcrnn_filter_type: str = "dual_random_walk"
+    dcrnn_use_curriculum_learning: bool = True
+    dcrnn_cl_decay_steps: int = 2000
+    dcrnn_use_time_in_day: bool = True
     stgcn_temporal_kernel: int = 3
     stgcn_graph_kernel: int = 3
     stgcn_block_num: int = 2
@@ -221,6 +255,7 @@ class TargetConfig:
     base_warmup_epochs: int = 0
     calibrator_warmup_epochs: int = 5
     backbone_learning_rate_scale: float = 0.1
+    candidate_ranking: str = "learned_key"
 
 
 @dataclass(frozen=True)
@@ -264,6 +299,9 @@ class ExperimentConfig:
             raise ValueError("adaptation gradient_clip_norm must be positive")
         validate_downstream_mode(self.target.downstream_mode)
         validate_candidate_protocol(self.target.candidate_protocol)
+        ranking = validate_candidate_ranking(self.target.candidate_ranking)
+        if ranking == "raw_l1" and self.target.downstream_mode != LEARNED_TOPK_ERROR_AWARE:
+            raise ValueError("raw_l1 candidate ranking requires learned_topk_error_aware")
         if self.target.training_protocol not in TARGET_TRAINING_PROTOCOLS:
             choices = ", ".join(TARGET_TRAINING_PROTOCOLS)
             raise ValueError(f"training_protocol must be one of: {choices}")
@@ -287,10 +325,72 @@ class ExperimentConfig:
             raise ValueError(
                 "posthoc_frozen_base requires learned_topk_error_aware mode"
             )
-        if self.target.backbone_name not in {"lightweight", "stgcn", "graph_wavenet", "argcn", "staeformer"}:
-            raise ValueError("backbone_name must be lightweight, stgcn, graph_wavenet, argcn, or staeformer")
+        if self.target.backbone_name not in {
+            "lightweight", "stgcn", "graph_wavenet", "argcn", "staeformer",
+            "st_norm", "dlinear", "st_ssdl", "dcrnn",
+        }:
+            raise ValueError(
+                "backbone_name must be lightweight, stgcn, graph_wavenet, argcn, "
+                "staeformer, st_norm, dlinear, st_ssdl, or dcrnn"
+            )
         if self.target.staeformer_time_feature_mode not in {"calendar", "fallback"}:
             raise ValueError("staeformer_time_feature_mode must be calendar or fallback")
+        if self.target.backbone_name == "st_norm":
+            for name, value in (
+                ("st_norm_channels", self.target.st_norm_channels),
+                ("st_norm_kernel_size", self.target.st_norm_kernel_size),
+                ("st_norm_blocks", self.target.st_norm_blocks),
+                ("st_norm_layers", self.target.st_norm_layers),
+            ):
+                if value <= 0:
+                    raise ValueError(f"{name} must be positive")
+            if self.target.st_norm_kernel_size < 2:
+                raise ValueError("st_norm_kernel_size must be at least 2")
+            if not 0.0 <= self.target.st_norm_dropout < 1.0:
+                raise ValueError("st_norm_dropout must be in [0,1)")
+            if self.model.input_channels != 1 or self.model.output_channels != 1:
+                raise ValueError("st_norm requires one input and output channel")
+        if self.target.backbone_name == "dlinear":
+            if self.target.dlinear_moving_avg_kernel <= 0 or self.target.dlinear_moving_avg_kernel % 2 == 0:
+                raise ValueError("dlinear_moving_avg_kernel must be a positive odd integer")
+            if self.model.input_channels != 1 or self.model.output_channels != 1:
+                raise ValueError("dlinear requires one input and output channel")
+
+        if self.target.backbone_name == "st_ssdl":
+            if self.model.input_channels != 1 or self.model.output_channels != 1:
+                raise ValueError("st_ssdl requires one input and output channel")
+            for name, value in (
+                ("st_ssdl_rnn_units", self.target.st_ssdl_rnn_units),
+                ("st_ssdl_rnn_layers", self.target.st_ssdl_rnn_layers),
+                ("st_ssdl_cheb_k", self.target.st_ssdl_cheb_k),
+                ("st_ssdl_prototype_num", self.target.st_ssdl_prototype_num),
+                ("st_ssdl_prototype_dim", self.target.st_ssdl_prototype_dim),
+                ("st_ssdl_tod_embed_dim", self.target.st_ssdl_tod_embed_dim),
+                ("st_ssdl_node_embedding_dim", self.target.st_ssdl_node_embedding_dim),
+                ("st_ssdl_cl_decay_steps", self.target.st_ssdl_cl_decay_steps),
+            ):
+                if value <= 0:
+                    raise ValueError(f"{name} must be positive")
+            if self.target.st_ssdl_input_embedding_dim < 0 or self.target.st_ssdl_adaptive_embedding_dim < 0:
+                raise ValueError("ST-SSDL embedding dimensions must be non-negative")
+            if self.target.st_ssdl_contrastive_weight < 0.0 or self.target.st_ssdl_deviation_weight < 0.0:
+                raise ValueError("ST-SSDL auxiliary loss weights must be non-negative")
+            if self.target.st_ssdl_triplet_margin <= 0.0:
+                raise ValueError("st_ssdl_triplet_margin must be positive")
+        if self.target.backbone_name == "dcrnn":
+            if self.model.input_channels != 1 or self.model.output_channels != 1:
+                raise ValueError("dcrnn requires one input and output channel")
+            if self.target.dcrnn_filter_type not in {"dual_random_walk", "random_walk", "laplacian"}:
+                raise ValueError("dcrnn_filter_type must be dual_random_walk, random_walk, or laplacian")
+            for name, value in (
+                ("dcrnn_rnn_units", self.target.dcrnn_rnn_units),
+                ("dcrnn_rnn_layers", self.target.dcrnn_rnn_layers),
+                ("dcrnn_cl_decay_steps", self.target.dcrnn_cl_decay_steps),
+            ):
+                if value <= 0:
+                    raise ValueError(f"{name} must be positive")
+            if self.target.dcrnn_max_diffusion_step < 0:
+                raise ValueError("dcrnn_max_diffusion_step must be non-negative")
         if self.data.context_length <= 0 or self.data.horizon <= 0:
             raise ValueError("context_length and horizon must be positive")
         if self.data.channel_index < 0:
@@ -540,6 +640,14 @@ class ExperimentConfig:
             raise ValueError("unsupported validation_loss_variant")
         if self.target.forecast_loss_space not in {"normalized", "physical"}:
             raise ValueError("unsupported forecast_loss_space")
+        if self.target.forecast_loss_name not in {"mae", "mse"}:
+            raise ValueError("forecast_loss_name must be mae or mse")
+        if self.target.optimizer_eps <= 0.0:
+            raise ValueError("optimizer_eps must be positive")
+        if self.target.scheduler_name == "multi_step_lr":
+            milestones = tuple(int(value) for value in self.target.scheduler_milestones)
+            if not milestones or any(value <= 0 for value in milestones):
+                raise ValueError("multi_step_lr requires positive scheduler_milestones")
         if self.target.validation_correction_variant not in {"scalar_gate", "vector_residual", "residual_additive", "set_attention_horizon", "base_as_candidate"}:
             raise ValueError("unsupported validation_correction_variant")
         if self.target.calibrator_arch not in {"legacy", "base_as_candidate", "trajectory_conditioned_base_as_candidate", "transformer_candidate_router", "retrieval_aware_mha_router"}:
@@ -621,6 +729,17 @@ def _construct_dataclass(cls: type[T], values: Mapping[str, Any] | None) -> T:
     if unknown:
         raise ValueError(f"Unknown {cls.__name__} fields: {unknown}")
     return cls(**values)
+
+
+SUPPORTED_CANDIDATE_RANKINGS = {"learned_key", "raw_l1"}
+
+
+def validate_candidate_ranking(value: str) -> str:
+    ranking = str(value)
+    if ranking not in SUPPORTED_CANDIDATE_RANKINGS:
+        choices = ", ".join(sorted(SUPPORTED_CANDIDATE_RANKINGS))
+        raise ValueError(f"candidate_ranking must be one of: {choices}")
+    return ranking
 
 
 def load_config(path: str | Path) -> ExperimentConfig:

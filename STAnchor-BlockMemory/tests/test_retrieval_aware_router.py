@@ -65,8 +65,7 @@ def test_retrieval_aware_router_has_horizon_routing_and_mha_gradients():
         model.last_routing_weights.sum(dim=-1), torch.ones(2, 3, 12), atol=1e-5
     )
     final.square().mean().backward()
-    for name in ("mha.in_proj_weight", "mha.out_proj.weight"):
-        parameter = dict(model.named_parameters())[name]
+    for name, parameter in model.named_parameters():
         assert parameter.grad is not None, name
         assert torch.isfinite(parameter.grad).all(), name
         assert parameter.grad.abs().sum() > 0, name

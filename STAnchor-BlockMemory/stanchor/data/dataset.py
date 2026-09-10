@@ -318,3 +318,39 @@ def build_npz_datasets(
         train_end=train_end,
         val_end=val_end,
     )
+
+def build_normalized_weekday_slot_mean_table(
+    series: TrafficSeries,
+    train_end: int,
+    scaler: NodeStandardScaler,
+) -> np.ndarray:
+    """Build a train-only weekday-slot mean table in normalized units.
+
+    The table has shape [N, 7 * slots_per_day]. Empty bins fall back to the
+    node-level training mean, so the normalized value is zero.
+    """
+    if not 0 < train_end <= series.num_steps:
+        raise ValueError("train_end must lie within the series")
+    values = series.values[:train_end, :, 0]
+    observed = series.observed[:train_end, :, 0]
+    weekday = series.weekday[:train_end]
+    slot = series.slot[:train_end]
+    slot_count = 7 * series.slots_per_day
+    keys = weekday * series.slots_per_day + slot
+    node_count = series.num_nodes
+    totals = np.zeros((node_count, slot_count), dtype=np.float64)
+    counts = np.zeros((node_count, slot_count), dtype=np.float64)
+    for node in range(node_count):
+        valid = observed[:, node]
+        if not np.any(valid):
+            continue
+        np.add.at(totals[node], keys[valid], values[valid, node])
+        np.add.at(counts[node], keys[valid], 1.0)
+    means = np.zeros((node_count, slot_count), dtype=np.float32)
+    filled = counts > 0
+    means[filled] = (totals[filled] / counts[filled]).astype(np.float32)
+    node_mean = np.asarray(scaler.mean[:, 0], dtype=np.float32)
+    for node in range(node_count):
+        means[node, ~filled[node]] = node_mean[node]
+    physical = means.T[:, :, None]
+    return scaler.transform(physical)[:, :, 0].T.astype(np.float32)

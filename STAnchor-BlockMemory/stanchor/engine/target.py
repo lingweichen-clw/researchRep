@@ -19,10 +19,12 @@ from stanchor.config import (
     POSTHOC_FROZEN_BASE,
     ExperimentConfig,
     resolve_project_path,
+    validate_candidate_ranking,
 )
-from stanchor.data.graph import GraphData
+from stanchor.data.graph import GraphData, symmetric_normalized_adjacency
+from stanchor.data.dataset import build_normalized_weekday_slot_mean_table
 from stanchor.data.normalization import NodeStandardScaler
-from stanchor.losses.downstream import compute_downstream_loss
+from stanchor.losses.downstream import DownstreamLoss, compute_downstream_loss
 from stanchor.metrics import ForecastMetricAccumulator, select_common_horizon_metrics
 from stanchor.modes import (
     BASE_ONLY,
@@ -44,11 +46,21 @@ from stanchor.models.retrieval_router import RetrievalAwareMHAResidualRouter
 from stanchor.models.pretraining import STAnchorPretrainModel
 from stanchor.models.stgcn import STGCNForecastBackbone
 from stanchor.models.graph_wavenet import GraphWaveNetForecastBackbone
-from stanchor.models.baseline import ARGCNForecastBackbone, STAEformerForecastBackbone
+from stanchor.models.baseline import (
+    ARGCNForecastBackbone,
+    DCRNNForecastBackbone,
+    DLinearForecastBackbone,
+    STAEformerForecastBackbone,
+    STNormForecastBackbone,
+    STSSDLForecastBackbone,
+)
+from stanchor.models.baseline.dcrnn import dense_adjacency_from_graph
 from stanchor.retrieval.retriever import AggregationOutput, NodeCandidates, TwoStageRetriever
 from stanchor.retrieval.strategies import (
     calendar_event_candidates,
     offset_decay_aggregation,
+    ContextWindowCache,
+    raw_l1_node_candidates,
     raw_l1_topk_aggregation,
     validate_candidate_protocol,
     weekly_mean_aggregation,
@@ -235,6 +247,85 @@ def build_downstream_model(
                 dow_embedding_dim=24, spatial_embedding_dim=0,
                 adaptive_embedding_dim=80, feed_forward_dim=256,
                 heads=4, layers=3, dropout=0.1)
+    elif config.target.backbone_name == "st_norm":
+        if graph is None:
+            raise ValueError("st_norm backbone construction requires node-count graph metadata")
+        backbone = STNormForecastBackbone(
+            context_length=config.data.context_length,
+            horizon=config.data.horizon,
+            input_channels=config.model.input_channels,
+            output_channels=config.model.output_channels,
+            num_nodes=graph.num_nodes,
+            channels=config.target.st_norm_channels,
+            kernel_size=config.target.st_norm_kernel_size,
+            blocks=config.target.st_norm_blocks,
+            layers=config.target.st_norm_layers,
+            use_snorm=config.target.st_norm_use_snorm,
+            use_tnorm=config.target.st_norm_use_tnorm,
+            dropout=config.target.st_norm_dropout,
+        )
+    elif config.target.backbone_name == "dlinear":
+        if graph is None:
+            raise ValueError("dlinear backbone construction requires node-count graph metadata")
+        backbone = DLinearForecastBackbone(
+            context_length=config.data.context_length,
+            horizon=config.data.horizon,
+            input_channels=config.model.input_channels,
+            output_channels=config.model.output_channels,
+            moving_avg_kernel=config.target.dlinear_moving_avg_kernel,
+            individual=config.target.dlinear_individual,
+            num_nodes=graph.num_nodes,
+        )
+    elif config.target.backbone_name == "st_ssdl":
+        if graph is None:
+            raise ValueError("st_ssdl backbone construction requires graph data")
+        # Official ST-SSDL symadj normalizes the stored adjacency as-is,
+        # including the self-loops present in METR-LA/PEMS-BAY graph files.
+        support = symmetric_normalized_adjacency(
+            graph,
+            remove_self_loops=False,
+        ).unsqueeze(0)
+        backbone = STSSDLForecastBackbone(
+            context_length=config.data.context_length,
+            horizon=config.data.horizon,
+            num_nodes=graph.num_nodes,
+            input_channels=config.model.input_channels,
+            output_channels=config.model.output_channels,
+            adj_supports=support,
+            rnn_units=config.target.st_ssdl_rnn_units,
+            rnn_layers=config.target.st_ssdl_rnn_layers,
+            cheb_k=config.target.st_ssdl_cheb_k,
+            prototype_num=config.target.st_ssdl_prototype_num,
+            prototype_dim=config.target.st_ssdl_prototype_dim,
+            tod_embed_dim=config.target.st_ssdl_tod_embed_dim,
+            node_embedding_dim=config.target.st_ssdl_node_embedding_dim,
+            input_embedding_dim=config.target.st_ssdl_input_embedding_dim,
+            adaptive_embedding_dim=config.target.st_ssdl_adaptive_embedding_dim,
+            use_ste=config.target.st_ssdl_use_ste,
+            use_curriculum_learning=config.target.st_ssdl_use_curriculum_learning,
+            cl_decay_steps=config.target.st_ssdl_cl_decay_steps,
+            triplet_margin=config.target.st_ssdl_triplet_margin,
+            slots_per_day=(24 * 60) // config.data.frequency_minutes,
+        )
+    elif config.target.backbone_name == "dcrnn":
+        if graph is None:
+            raise ValueError("dcrnn backbone construction requires graph data")
+        backbone = DCRNNForecastBackbone(
+            context_length=config.data.context_length,
+            horizon=config.data.horizon,
+            num_nodes=graph.num_nodes,
+            input_channels=config.model.input_channels,
+            output_channels=config.model.output_channels,
+            adjacency=dense_adjacency_from_graph(graph),
+            rnn_units=config.target.dcrnn_rnn_units,
+            rnn_layers=config.target.dcrnn_rnn_layers,
+            max_diffusion_step=config.target.dcrnn_max_diffusion_step,
+            filter_type=config.target.dcrnn_filter_type,
+            use_curriculum_learning=config.target.dcrnn_use_curriculum_learning,
+            cl_decay_steps=config.target.dcrnn_cl_decay_steps,
+            use_time_in_day=config.target.dcrnn_use_time_in_day,
+            slots_per_day=(24 * 60) // config.data.frequency_minutes,
+        )
     else:
         raise ValueError(f"unsupported downstream backbone: {config.target.backbone_name}")
     error_corrector = None
@@ -270,6 +361,14 @@ def build_downstream_model(
         horizon_aggregator=None,
         error_corrector=error_corrector,
     )
+
+
+def attach_st_ssdl_history_table(downstream: STAnchorDownstreamModel, data) -> None:
+    backbone = downstream.backbone
+    if not isinstance(backbone, STSSDLForecastBackbone):
+        return
+    table = build_normalized_weekday_slot_mean_table(data.series, data.train_end, data.scaler)
+    backbone.set_history_table(torch.from_numpy(table))
 
 def validate_downstream_bank_path(
     mode: str,
@@ -344,6 +443,22 @@ def checkpoint_candidate_protocol(
             f"candidate protocol {expected!r} differs from checkpoint {protocol!r}"
         )
     return protocol
+
+
+def checkpoint_candidate_ranking(
+    checkpoint: dict,
+    expected: str | None = None,
+) -> str:
+    ranking = checkpoint.get("candidate_ranking")
+    if ranking is None:
+        target_config = checkpoint.get("config", {}).get("target", {})
+        ranking = target_config.get("candidate_ranking", "learned_key")
+    ranking = validate_candidate_ranking(str(ranking))
+    if expected is not None and ranking != validate_candidate_ranking(expected):
+        raise ValueError(
+            f"candidate ranking {expected!r} differs from checkpoint {ranking!r}"
+        )
+    return ranking
 
 
 def checkpoint_bank_level_weight(checkpoint: dict, default: float) -> float:
@@ -439,6 +554,7 @@ def build_target_optimizer(
         parameter_groups,
         lr=config.target.learning_rate,
         weight_decay=config.target.weight_decay,
+        eps=config.target.optimizer_eps,
     )
 
 
@@ -448,6 +564,12 @@ def build_target_scheduler(
 ):
     if config.target.scheduler_name == "none":
         return None
+    if config.target.scheduler_name == "multi_step_lr":
+        return torch.optim.lr_scheduler.MultiStepLR(
+            optimizer,
+            milestones=[int(value) for value in config.target.scheduler_milestones],
+            gamma=config.target.scheduler_gamma,
+        )
     return torch.optim.lr_scheduler.StepLR(
         optimizer,
         step_size=config.target.scheduler_step_size,
@@ -548,59 +670,66 @@ def retrieve_for_downstream_mode(
     device: torch.device,
     candidate_protocol: str = "exact_calendar",
     include_query_keys: bool = False,
+    candidate_ranking: str = "learned_key",
 ) -> tuple[NodeCandidates | None, AggregationOutput | None] | tuple[NodeCandidates | None, AggregationOutput | None, torch.Tensor | None]:
     mode = validate_downstream_mode(mode)
     candidate_protocol = validate_candidate_protocol(candidate_protocol)
+    candidate_ranking = validate_candidate_ranking(candidate_ranking)
+    if candidate_ranking == "raw_l1" and mode != LEARNED_TOPK_ERROR_AWARE:
+        raise ValueError("raw_l1 candidate ranking requires learned_topk_error_aware")
     if mode == BASE_ONLY:
         return (None, None, None) if include_query_keys else (None, None)
     if pretrained is None or retriever is None or bank is None:
         raise ValueError(f"downstream mode {mode!r} requires retrieval assets")
     if mode in {LEARNED_TOPK_CONFIDENCE, LEARNED_TOPK_ERROR_AWARE}:
-        encoding = pretrained.encode_clean(
-            batch["retrieval_x"].to(device),
-            batch["retrieval_observed"].to(device),
-            batch["retrieval_weekday"].to(device),
-            batch["retrieval_slot"].to(device),
-            graph,
+        encoding = None
+        if candidate_ranking != "raw_l1":
+            encoding = pretrained.encode_clean(
+                batch["retrieval_x"].to(device),
+                batch["retrieval_observed"].to(device),
+                batch["retrieval_weekday"].to(device),
+                batch["retrieval_slot"].to(device),
+                graph,
+            )
+        events = calendar_event_candidates(
+            bank,
+            weekday=batch["query_weekday"].to(device),
+            slot=batch["query_slot"].to(device),
+            context_start=batch["context_start"].to(device),
+            max_candidates=retriever.event_top_r,
+            device=device,
+            candidate_protocol=candidate_protocol,
         )
-        if candidate_protocol == "exact_calendar":
-            # The legal exact-calendar pool is already small (about eight
-            # events/query on METR-LA).  Event keys are mean-pooled across
-            # nodes and are not independently supervised, so they are
-            # intentionally bypassed here; node keys perform the actual Top-K
-            # selection over the complete legal pool.
-            events = calendar_event_candidates(
+        if candidate_ranking == "raw_l1":
+            retrieval_context = int(
+                getattr(data.train, "retrieval_context_length", data.train.context_length)
+            )
+            context_cache = getattr(retriever, "context_window_cache", None)
+            if context_cache is None:
+                context_cache = ContextWindowCache()
+                retriever.context_window_cache = context_cache
+            candidates, _, _ = raw_l1_node_candidates(
+                batch["retrieval_x"].to(device),
+                batch["retrieval_observed"].to(device),
                 bank,
-                weekday=batch["query_weekday"].to(device),
-                slot=batch["query_slot"].to(device),
-                context_start=batch["context_start"].to(device),
-                max_candidates=retriever.event_top_r,
-                device=device,
-                candidate_protocol=candidate_protocol,
-            )
-            candidates = retriever.rerank_nodes(
-                encoding.retrieval.node_keys,
-                encoding.statistics.level_features,
                 events,
+                data.series,
+                data.scaler,
+                retrieval_context,
+                retriever.node_top_k,
+                device,
+                context_cache=context_cache,
             )
-            aggregation = retriever.aggregate(candidates)
         else:
-            events = calendar_event_candidates(
-                bank,
-                weekday=batch["query_weekday"].to(device),
-                slot=batch["query_slot"].to(device),
-                context_start=batch["context_start"].to(device),
-                max_candidates=retriever.event_top_r,
-                device=device,
-                candidate_protocol=candidate_protocol,
-            )
+            if encoding is None:
+                raise RuntimeError("learned-key ranking requires retrieval encoding")
             candidates = retriever.rerank_nodes(
                 encoding.retrieval.node_keys,
                 encoding.statistics.level_features,
                 events,
             )
-            aggregation = retriever.aggregate(candidates)
-        if mode == LEARNED_TOPK_ERROR_AWARE:
+        aggregation = retriever.aggregate(candidates)
+        if mode == LEARNED_TOPK_ERROR_AWARE and candidate_ranking != "raw_l1":
             aggregation = offset_decay_aggregation(
                 candidates,
                 x,
@@ -611,7 +740,19 @@ def retrieve_for_downstream_mode(
                 data.train.context_length,
                 device,
             )
-        return (candidates, aggregation, encoding.retrieval.node_keys.detach()) if include_query_keys else (candidates, aggregation)
+        if include_query_keys:
+            if encoding is None:
+                retrieval_node_keys = torch.zeros(
+                    x.shape[0],
+                    x.shape[2],
+                    int(bank.manifest.retrieval_dim),
+                    dtype=x.dtype,
+                    device=device,
+                )
+            else:
+                retrieval_node_keys = encoding.retrieval.node_keys.detach()
+            return candidates, aggregation, retrieval_node_keys
+        return candidates, aggregation
 
     events = calendar_event_candidates(
         bank,
@@ -751,6 +892,7 @@ def run_target_epoch(
                     batch, x, observed_x, device,
                     candidate_protocol=config.target.candidate_protocol,
                     include_query_keys=(config.target.calibrator_arch == "retrieval_aware_mha_router"),
+                    candidate_ranking=config.target.candidate_ranking,
                 )
                 if config.target.calibrator_arch == "retrieval_aware_mha_router":
                     node_candidates, aggregation, retrieval_node_keys = retrieved
@@ -765,6 +907,36 @@ def run_target_epoch(
                             inp,
                             tod=batch["slot"].to(device),
                             dow=batch["weekday"].to(device),
+                        )
+                    if config.target.backbone_name == "st_ssdl":
+                        slot = batch["slot"].to(device)
+                        weekday = batch["weekday"].to(device)
+                        history = downstream.backbone.lookup_history(weekday, slot)
+                        future_tod = downstream.backbone.future_slots(slot)
+                        labels = None
+                        backbone_trainable = any(
+                            parameter.requires_grad for parameter in downstream.backbone.parameters()
+                        )
+                        if training and backbone_trainable:
+                            labels = batch["y"].to(device)
+                        return downstream.backbone(
+                            inp,
+                            tod=slot,
+                            x_his=history,
+                            y_tod=future_tod,
+                            labels=labels,
+                        )
+                    if config.target.backbone_name == "dcrnn":
+                        labels = None
+                        backbone_trainable = any(
+                            parameter.requires_grad for parameter in downstream.backbone.parameters()
+                        )
+                        if training and backbone_trainable:
+                            labels = batch["y"].to(device)
+                        return downstream.backbone(
+                            inp,
+                            tod=batch["slot"].to(device),
+                            labels=labels,
                         )
                     return downstream.backbone(inp)
 
@@ -811,7 +983,31 @@ def run_target_epoch(
                 candidate_quality_temperature=config.target.candidate_quality_temperature,
                 forecast_prediction=forecast_prediction,
                 forecast_target=forecast_target,
+                forecast_loss_name=config.target.forecast_loss_name,
             )
+
+            if (
+                training
+                and config.target.backbone_name == "st_ssdl"
+                and any(parameter.requires_grad for parameter in downstream.backbone.parameters())
+            ):
+                auxiliary = downstream.backbone.pop_auxiliary_losses()
+                if auxiliary is not None:
+                    extra = (
+                        config.target.st_ssdl_contrastive_weight * auxiliary["contrastive"]
+                        + config.target.st_ssdl_deviation_weight * auxiliary["deviation"]
+                    )
+                    losses = DownstreamLoss(
+                        total=losses.total + extra,
+                        forecast=losses.forecast,
+                        confidence=losses.confidence,
+                        confidence_target=losses.confidence_target,
+                        risk=losses.risk,
+                        blend=losses.blend,
+                        risk_target=losses.risk_target,
+                        blend_target=losses.blend_target,
+                        candidate_quality=losses.candidate_quality,
+                    )
             require_finite(losses.total, "downstream loss")
             if training:
                 losses.total.backward()
@@ -923,6 +1119,7 @@ def train_downstream(
         # the downstream model so encoder variants share identical initialization.
         set_seed(config.runtime.seed)
         downstream = build_downstream_model(config, graph).to(device)
+        attach_st_ssdl_history_table(downstream, data)
         configure_downstream_trainable(downstream, config.target.downstream_mode)
         base_provenance = None
         if config.target.training_protocol == POSTHOC_FROZEN_BASE:
@@ -966,10 +1163,11 @@ def train_downstream(
             run_dir,
         )
         logger.info(
-            "Mode | downstream_mode=%s | training_protocol=%s | candidate_protocol=%s",
+            "Mode | downstream_mode=%s | training_protocol=%s | candidate_protocol=%s | candidate_ranking=%s",
             config.target.downstream_mode,
             config.target.training_protocol,
             config.target.candidate_protocol,
+            config.target.candidate_ranking,
         )
         if config.target.backbone_name == "staeformer":
             logger.info(
@@ -1015,6 +1213,11 @@ def train_downstream(
                 config.bank.node_top_k,
                 bank.manifest.key_dtype,
             )
+        logger.info(
+            "Frozen path cache | enabled=%s | candidate_ranking=%s | fill=first_epoch",
+            "yes" if config.target.frozen_path_cache else "no",
+            config.target.candidate_ranking,
+        )
         logger.info(
             "Parameters | downstream_total=%s | downstream_trainable=%s | backbone=%s | "
             "confidence_head=%s | fusion=%s | frozen_pretrained=%s",
@@ -1118,6 +1321,19 @@ def train_downstream(
                     stage_config, data.scaler, device, None, max_batches,
                     frozen_cache=val_cache,
                 )
+                if (
+                    global_epoch == 1
+                    and retriever is not None
+                    and getattr(retriever, "context_window_cache", None) is not None
+                ):
+                    cached_windows = len(retriever.context_window_cache)
+                    retriever.context_window_cache.clear()
+                    logger.info(
+                        "Released raw-L1 context window cache | windows=%d | frozen_train=%d | frozen_val=%d",
+                        cached_windows,
+                        0 if train_cache is None else len(train_cache),
+                        0 if val_cache is None else len(val_cache),
+                    )
                 if device.type == "cuda":
                     torch.cuda.synchronize(device)
                     cuda_peak_mb = torch.cuda.max_memory_allocated(device) / (1024.0 ** 2)
@@ -1190,6 +1406,7 @@ def train_downstream(
                             "downstream_mode": config.target.downstream_mode,
                             "training_protocol": config.target.training_protocol,
                             "candidate_protocol": config.target.candidate_protocol,
+                            "candidate_ranking": config.target.candidate_ranking,
                             "training_stage": stage,
                             "base_checkpoint_provenance": base_provenance,
                             "config": config.to_dict(),
@@ -1271,6 +1488,7 @@ def evaluate_downstream(
         )
     else:
         candidate_protocol = saved_candidate_protocol
+    ranking = checkpoint_candidate_ranking(checkpoint)
     config = replace(
         config,
         bank=replace(config.bank, level_weight=level_weight),
@@ -1278,9 +1496,11 @@ def evaluate_downstream(
             config.target,
             downstream_mode=mode,
             candidate_protocol=candidate_protocol,
+            candidate_ranking=ranking,
         ),
     )
     downstream = build_downstream_model(config, graph).to(device)
+    attach_st_ssdl_history_table(downstream, data)
     downstream.load_state_dict(checkpoint["downstream_state_dict"], strict=True)
     dataset: Dataset = getattr(data, split)
     loader = DataLoader(dataset, batch_size=config.target.batch_size, shuffle=False)
@@ -1310,8 +1530,6 @@ def evaluate_downstream(
             pretrained, downstream, retriever, bank, data, loader, graph, config,
             data.scaler, device, None, max_batches
         )
-
-
 
 
 

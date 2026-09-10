@@ -1,0 +1,54 @@
+data:
+  raw_path: ../data/pemsBay_data/pems-bay.h5
+  adjacency_path: ../data/pemsBay_data/adj_mx_bay.pkl
+  context_length: 12
+  retrieval_context_length: 288
+  horizon: 12
+  frequency_minutes: 5
+  train_ratio: 0.7
+  val_ratio: 0.1
+  zero_is_missing: true
+  num_workers: 0
+
+model:
+  input_channels: 1
+  output_channels: 1
+
+target:
+  downstream_mode: base_only
+  training_protocol: staged_joint
+  training_data_scope: full_train
+  candidate_protocol: weekday_radius1_overlap
+  batch_size: 8
+  epochs: 100
+  learning_rate: 0.0001
+  weight_decay: 0.0
+  optimizer_name: adam
+  scheduler_name: none
+  scheduler_step_size: 10
+  scheduler_gamma: 0.95
+  confidence_weight: 0.0
+  backbone_name: st_norm
+  st_norm_channels: 16
+  st_norm_kernel_size: 2
+  st_norm_blocks: 1
+  st_norm_layers: 4
+  st_norm_use_snorm: true
+  st_norm_use_tnorm: true
+  st_norm_dropout: 0.2
+  dlinear_moving_avg_kernel: 25
+  dlinear_individual: false
+  patience: 50
+  early_stopping_enabled: true
+  risk_weight: 0.0
+  blend_weight: 0.0
+  candidate_quality_weight: 0.0
+  validation_loss_variant: forecast_only
+  forecast_loss_space: normalized
+  forecast_loss_name: mse
+
+runtime:
+  seed: 42
+  device: cuda:0
+  output_dir: artifacts
+  run_name: cross_dataset_pemsbay/pemsbay_baseonly_st_norm_seed42

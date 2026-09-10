@@ -231,3 +231,19 @@ def load_graph(path: str | Path, num_nodes: int | None = None) -> GraphData:
             f"graph has {graph.num_nodes} nodes but data requires {int(num_nodes)}"
         )
     return graph
+
+def symmetric_normalized_adjacency(
+    graph: GraphData,
+    *,
+    remove_self_loops: bool = True,
+) -> torch.Tensor:
+    """Return D^{-1/2} A D^{-1/2}, optionally removing stored self-loops."""
+    adjacency = torch.zeros((graph.num_nodes, graph.num_nodes), dtype=torch.float32)
+    target, source = graph.edge_index.cpu()
+    adjacency[target, source] = graph.edge_weight.detach().cpu().float()
+    if remove_self_loops:
+        adjacency.fill_diagonal_(0.0)
+    degree = adjacency.sum(dim=1)
+    inv_sqrt = torch.pow(degree.clamp_min(0.0), -0.5)
+    inv_sqrt = torch.where(torch.isfinite(inv_sqrt), inv_sqrt, torch.zeros_like(inv_sqrt))
+    return adjacency * inv_sqrt.unsqueeze(1) * inv_sqrt.unsqueeze(0)

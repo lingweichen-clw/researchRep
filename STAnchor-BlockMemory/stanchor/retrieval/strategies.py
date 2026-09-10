@@ -251,6 +251,55 @@ def select_candidate_set_by_node(
     return torch.where(valid, values, torch.zeros_like(values)), valid
 
 
+class ContextWindowCache:
+    """CPU cache of per-event retrieval windows used by raw-L1 ranking."""
+
+    def __init__(self, max_events: int = 2048) -> None:
+        if max_events <= 0:
+            raise ValueError("max_events must be positive")
+        self.max_events = int(max_events)
+        self._store: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+        self._order: list[int] = []
+
+    def clear(self) -> None:
+        self._store.clear()
+        self._order.clear()
+
+    def __len__(self) -> int:
+        return len(self._store)
+
+    def _evict_if_needed(self) -> None:
+        while len(self._store) >= self.max_events and self._order:
+            oldest = self._order.pop(0)
+            self._store.pop(oldest, None)
+
+    def get_or_load(
+        self,
+        event_id: int,
+        bank: Any,
+        series: Any,
+        scaler: Any,
+        context_length: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        cached = self._store.get(event_id)
+        if cached is not None:
+            return cached
+        end = int(np.asarray(bank.context_end)[event_id])
+        start = end - int(context_length) + 1
+        raw = np.asarray(series.values[start:end + 1], dtype=np.float32)
+        observed = np.asarray(series.observed[start:end + 1], dtype=bool)
+        if raw.shape[0] != int(context_length) or observed.shape[0] != int(context_length):
+            raise ValueError("cached context window length does not match context_length")
+        mean = np.asarray(scaler.mean, dtype=np.float32)
+        std = np.asarray(scaler.std, dtype=np.float32)
+        model_values = (raw - mean) / (std + scaler.eps)
+        model_values = np.where(observed, model_values, 0.0).astype(np.float32, copy=False)
+        self._evict_if_needed()
+        self._store[event_id] = (model_values, observed)
+        self._order.append(event_id)
+        return model_values, observed
+
+
 def candidate_contexts(
     bank: Any,
     event_ids: torch.Tensor,
@@ -258,19 +307,38 @@ def candidate_contexts(
     scaler: Any,
     context_length: int,
     device: torch.device,
+    cache: ContextWindowCache | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Load the forecast-tail contexts as [B, R, T, N, C]."""
-    safe_ids = event_ids.clamp_min(0).cpu().numpy()
-    ends = np.asarray(bank.context_end)[safe_ids]
-    starts = ends - int(context_length) + 1
-    indices = starts[..., None] + np.arange(context_length, dtype=np.int64)
-    raw = np.asarray(series.values[indices], dtype=np.float32)
-    observed = np.asarray(series.observed[indices], dtype=bool)
-    mean = scaler.mean[None, None, None, ...]
-    std = scaler.std[None, None, None, ...]
-    model_values = (raw - mean) / (std + scaler.eps)
-    model_values = np.where(observed, model_values, 0.0).astype(np.float32)
-    return torch.from_numpy(model_values).to(device), torch.from_numpy(observed).to(device)
+    if event_ids.ndim != 2:
+        raise ValueError("event_ids must be [B, R]")
+    if cache is None:
+        safe_ids = event_ids.clamp_min(0).cpu().numpy()
+        ends = np.asarray(bank.context_end)[safe_ids]
+        starts = ends - int(context_length) + 1
+        indices = starts[..., None] + np.arange(context_length, dtype=np.int64)
+        raw = np.asarray(series.values[indices], dtype=np.float32)
+        observed = np.asarray(series.observed[indices], dtype=bool)
+        mean = scaler.mean[None, None, None, ...]
+        std = scaler.std[None, None, None, ...]
+        model_values = (raw - mean) / (std + scaler.eps)
+        model_values = np.where(observed, model_values, 0.0).astype(np.float32)
+        return torch.from_numpy(model_values).to(device), torch.from_numpy(observed).to(device)
+
+    cpu_ids = np.maximum(event_ids.detach().cpu().numpy(), 0)
+    unique_ids = np.unique(cpu_ids)
+    windows = []
+    window_masks = []
+    for event_id in unique_ids.tolist():
+        window, window_observed = cache.get_or_load(int(event_id), bank, series, scaler, context_length)
+        windows.append(window)
+        window_masks.append(window_observed)
+    stacked_values = np.stack(windows, axis=0)
+    stacked_observed = np.stack(window_masks, axis=0)
+    gather = np.searchsorted(unique_ids, cpu_ids)
+    values = stacked_values[gather]
+    observed = stacked_observed[gather]
+    return torch.from_numpy(np.asarray(values, dtype=np.float32)).to(device), torch.from_numpy(np.asarray(observed, dtype=bool)).to(device)
 
 
 def candidate_contexts_for_nodes(
@@ -508,6 +576,7 @@ def raw_l1_node_candidates(
     top_k: int,
     device: torch.device,
     candidate_chunk_size: int = 8,
+    context_cache: ContextWindowCache | None = None,
 ) -> tuple[NodeCandidates, torch.Tensor, torch.Tensor]:
     """Select node-wise candidates by raw context L1 and assign uniform weights.
 
@@ -533,7 +602,13 @@ def raw_l1_node_candidates(
     for start in range(0, candidate_count, candidate_chunk_size):
         stop = min(start + candidate_chunk_size, candidate_count)
         contexts, context_observed = candidate_contexts(
-            bank, events.event_ids[:, start:stop], series, scaler, context_length, device
+            bank,
+            events.event_ids[:, start:stop],
+            series,
+            scaler,
+            context_length,
+            device,
+            cache=context_cache,
         )
         chunk_scores, chunk_valid = raw_l1_candidate_scores(
             query, query_observed, contexts, context_observed, events.valid[:, start:stop]
