@@ -12,7 +12,7 @@ $runRandom = -not $RawL1Only
 $runRawL1 = -not $RandomOnly
 
 # METR-LA retrieval ablations after the case-study evidence is already in.
-# Only four runs: random STAEformer / ARGCN, raw-L1 GWN / STAEformer.
+# Only three runs: random ARGCN, raw-L1 ARGCN / GWN.
 # Same Router, weekday_radius1_overlap, Top-12, frozen path cache.
 # Build missing banks, but do not delete the official trained or random banks.
 
@@ -57,12 +57,6 @@ $randomBank = 'artifacts\case_bank_hn_offset_decay_v2_transfer_hidden128_ffn2_b1
 
 $randomJobs = @(
     @{
-        Label = 'random_router_staeformer'
-        Config = 'configs\ablation_random_bank_router_staeformer.yaml'
-        Base = 'artifacts\convergence\formal_20260828_staeformer_base_only_v2\downstream_best.pt'
-        RunName = 'convergence/ablation_random_bank_router_staeformer_seed42'
-    },
-    @{
         Label = 'random_router_argcn'
         Config = 'configs\ablation_random_bank_router_argcn.yaml'
         Base = 'artifacts\convergence\formal_20260826_argcn_base_only_v1\downstream_best.pt'
@@ -77,10 +71,10 @@ $rawl1Jobs = @(
         RunName = 'convergence/ablation_rawl1_router_gwn_seed42'
     },
     @{
-        Label = 'rawl1_router_staeformer'
-        Config = 'configs\ablation_rawl1_router_staeformer.yaml'
-        Base = 'artifacts\convergence\formal_20260828_staeformer_base_only_v2\downstream_best.pt'
-        RunName = 'convergence/ablation_rawl1_router_staeformer_seed42'
+        Label = 'rawl1_router_argcn'
+        Config = 'configs\ablation_rawl1_router_argcn.yaml'
+        Base = 'artifacts\convergence\formal_20260826_argcn_base_only_v1\downstream_best.pt'
+        RunName = 'convergence/ablation_rawl1_router_argcn_seed42'
     }
 )
 
@@ -186,5 +180,5 @@ if ($completed -ne $expected) {
 
 Write-Host ''
 Write-Host '===== METR-LA RETRIEVAL ABLATION QUEUE COMPLETED ====='
-if ($runRandom) { Write-Host 'Finished: random STAEformer, random ARGCN' }
-if ($runRawL1) { Write-Host 'Finished: raw-L1 GWN, raw-L1 STAEformer' }
+if ($runRandom) { Write-Host 'Finished: random ARGCN' }
+if ($runRawL1) { Write-Host 'Finished: raw-L1 GWN, raw-L1 ARGCN' }

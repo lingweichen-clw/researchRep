@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -96,7 +97,7 @@ class CandidateRankingTest(unittest.TestCase):
     def test_rawl1_router_configs_keep_same_router_and_calendar_pool(self) -> None:
         pairs = (
             ('graph_wavenet', 'formal_base_as_candidate_gwn.yaml', 'ablation_rawl1_router_gwn.yaml'),
-            ('staeformer', 'formal_base_as_candidate_staeformer.yaml', 'ablation_rawl1_router_staeformer.yaml'),
+            ('argcn', 'formal_base_as_candidate_argcn.yaml', 'ablation_rawl1_router_argcn.yaml'),
         )
         for backbone, src_name, ablation_name in pairs:
             src = load_config('configs/' + src_name)
@@ -115,6 +116,16 @@ class CandidateRankingTest(unittest.TestCase):
             self.assertAlmostEqual(ablation.target.learning_rate, 0.0005)
             self.assertTrue(ablation.target.frozen_path_cache)
             self.assertNotIn('random_seed42', ablation.bank.output_dir)
+
+    def test_local_retrieval_ablation_queue_uses_argcn_anchor(self) -> None:
+        script = Path('scripts/run_metrla_retrieval_ablation_queue.ps1').read_text(
+            encoding='utf-8'
+        )
+        self.assertIn("Label = 'random_router_argcn'", script)
+        self.assertIn("Label = 'rawl1_router_argcn'", script)
+        self.assertIn("Label = 'rawl1_router_gwn'", script)
+        self.assertNotIn("Label = 'random_router_staeformer'", script)
+        self.assertNotIn("Label = 'rawl1_router_staeformer'", script)
 
     def test_random_ablation_configs_keep_router_protocol(self) -> None:
         for backbone in ('staeformer', 'argcn'):
