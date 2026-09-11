@@ -22,6 +22,7 @@ from stanchor.diagnostics.retrieval_visualization import (
     memory_mae_by_anchor,
     node_key_distances,
     render_visualization_figures,
+    _write_ranking_csv,
     run_retrieval_visualization,
     select_quantile_cases,
     teacher_candidate_distances,
@@ -458,6 +459,7 @@ class RetrievalVisualizationTest(unittest.TestCase):
     def test_render_visualization_figures_creates_expected_nonempty_pngs(self) -> None:
         result = {
             "version": "hn_offset_decay_v2",
+            "candidate_protocol": {"name": "weekday_radius1_overlap"},
             "alignment": {
                 "pretrained": {
                     "spearman": 0.2,
@@ -475,20 +477,47 @@ class RetrievalVisualizationTest(unittest.TestCase):
                         for index in range(1, 11)
                     ],
                 },
+                "raw_l1": {
+                    "spearman": 0.1,
+                    "future_neighbor_recall_at_5": 0.6,
+                    "distance_bins": [
+                        {
+                            "bin": index,
+                            "future_distance_mean": float(index) * 0.8,
+                            "future_distance_median": float(index) * 0.8,
+                        }
+                        for index in range(1, 11)
+                    ],
+                },
+            },
+            "ranking": {
+                selector: {
+                    "spearman_mean": value,
+                    "kendall_mean": value,
+                    "recall_at_1_mean": value,
+                    "ndcg_at_5_mean": value,
+                    "recall_at_5_mean": value,
+                }
+                for selector, value in (
+                    ("pretrained", 0.8),
+                    ("raw_l1", 0.5),
+                    ("random", 0.2),
+                )
             },
         }
         series = {
             "query_future": [10.0, 11.0, 12.0],
             "pretrained_memory": [10.0, 10.5, 12.0],
             "random_memory": [8.0, 9.0, 10.0],
-            "raw_l1_memory": [9.5, 10.0, 11.5],
-            "raw_l1_candidate_futures": [[9.0, 9.5, 11.0], [10.0, 10.5, 12.0]],
+            "raw_l1_offset_decay_memory": [9.5, 10.0, 11.5],
+            "raw_l1_offset_decay_candidate_futures": [
+                [9.0, 9.5, 11.0],
+                [10.0, 10.5, 12.0],
+            ],
             "pretrained_candidate_futures": [[9.0, 10.0, 11.0], [11.0, 12.0, 13.0]],
             "random_candidate_futures": [[7.0, 8.0, 9.0], [8.0, 9.0, 10.0]],
             "pretrained_mae": 0.17,
             "random_mae": 2.0,
-            "pretrained_raw_memory": [9.0, 10.0, 11.0],
-            "pretrained_offset_decay_memory": [10.0, 10.5, 12.0],
         }
         cases = {
             name: {**series, "sample_id": index, "node_id": index}
@@ -502,6 +531,36 @@ class RetrievalVisualizationTest(unittest.TestCase):
             for path in paths:
                 self.assertTrue(path.exists())
                 self.assertGreater(path.stat().st_size, 1000)
+            self.assertFalse(
+                (Path(directory) / "offset_decay_payload_cases.png").exists()
+            )
+
+    def test_ranking_csv_labels_all_three_candidate_selectors(self) -> None:
+        metrics = {
+            key: 0.1
+            for key in (
+                "spearman_mean",
+                "kendall_mean",
+                "recall_at_1_mean",
+                "ndcg_at_5_mean",
+                "recall_at_5_mean",
+            )
+        }
+        result = {
+            "ranking": {
+                "pretrained": metrics,
+                "raw_l1": metrics,
+                "random": metrics,
+            }
+        }
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "ranking.csv"
+            _write_ranking_csv(result, output)
+            selectors = {
+                row.split(",", 1)[0]
+                for row in output.read_text(encoding="utf-8").splitlines()[1:]
+            }
+        self.assertEqual(selectors, {"pretrained", "raw_l1", "random"})
 
     def test_bank_axis_validation_rejects_different_candidate_event_order(self) -> None:
         class FakeManifest:

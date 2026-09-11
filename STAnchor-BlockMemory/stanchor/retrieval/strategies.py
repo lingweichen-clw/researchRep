@@ -581,8 +581,8 @@ def raw_l1_node_candidates(
     """Select node-wise candidates by raw context L1 and assign uniform weights.
 
     The event axis is exactly the supplied legal calendar pool. This is an
-    independent baseline: contexts are ranked in normalized observation space
-    and selected futures are aggregated without OffsetDecay or learned scores.
+    independent selector: contexts are ranked in normalized observation space.
+    The caller chooses how selected historical futures are transformed and aggregated.
     """
     if query.ndim != 4 or query_observed.shape != query.shape:
         raise ValueError("query and query_observed must be [B, T, N, C]")

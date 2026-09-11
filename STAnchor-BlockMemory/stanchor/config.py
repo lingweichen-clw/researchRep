@@ -256,6 +256,7 @@ class TargetConfig:
     calibrator_warmup_epochs: int = 5
     backbone_learning_rate_scale: float = 0.1
     candidate_ranking: str = "learned_key"
+    candidate_payload: str = "auto"
 
 
 @dataclass(frozen=True)
@@ -300,8 +301,13 @@ class ExperimentConfig:
         validate_downstream_mode(self.target.downstream_mode)
         validate_candidate_protocol(self.target.candidate_protocol)
         ranking = validate_candidate_ranking(self.target.candidate_ranking)
+        payload = validate_candidate_payload(self.target.candidate_payload)
         if ranking == "raw_l1" and self.target.downstream_mode != LEARNED_TOPK_ERROR_AWARE:
             raise ValueError("raw_l1 candidate ranking requires learned_topk_error_aware")
+        if payload != "auto" and self.target.downstream_mode != LEARNED_TOPK_ERROR_AWARE:
+            raise ValueError(
+                "explicit candidate payload requires learned_topk_error_aware"
+            )
         if self.target.training_protocol not in TARGET_TRAINING_PROTOCOLS:
             choices = ", ".join(TARGET_TRAINING_PROTOCOLS)
             raise ValueError(f"training_protocol must be one of: {choices}")
@@ -732,6 +738,7 @@ def _construct_dataclass(cls: type[T], values: Mapping[str, Any] | None) -> T:
 
 
 SUPPORTED_CANDIDATE_RANKINGS = {"learned_key", "raw_l1"}
+SUPPORTED_CANDIDATE_PAYLOADS = {"auto", "raw_future", "offset_decay"}
 
 
 def validate_candidate_ranking(value: str) -> str:
@@ -740,6 +747,23 @@ def validate_candidate_ranking(value: str) -> str:
         choices = ", ".join(sorted(SUPPORTED_CANDIDATE_RANKINGS))
         raise ValueError(f"candidate_ranking must be one of: {choices}")
     return ranking
+
+
+def validate_candidate_payload(value: str) -> str:
+    payload = str(value)
+    if payload not in SUPPORTED_CANDIDATE_PAYLOADS:
+        choices = ", ".join(sorted(SUPPORTED_CANDIDATE_PAYLOADS))
+        raise ValueError(f"candidate_payload must be one of: {choices}")
+    return payload
+
+
+def resolve_candidate_payload(value: str, candidate_ranking: str) -> str:
+    """Resolve new-run payload behavior independently of ranking."""
+    payload = validate_candidate_payload(value)
+    validate_candidate_ranking(candidate_ranking)
+    if payload == "auto":
+        return "offset_decay"
+    return payload
 
 
 def load_config(path: str | Path) -> ExperimentConfig:

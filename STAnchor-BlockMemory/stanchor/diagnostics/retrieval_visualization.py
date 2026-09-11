@@ -953,7 +953,7 @@ def _write_ranking_csv(result: dict[str, Any], path: Path) -> None:
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
-        for selector in ("pretrained", "random"):
+        for selector in ("pretrained", "raw_l1", "random"):
             metrics = result["ranking"][selector]
             for metric, label in (
                 ("spearman", "spearman_mean"),
@@ -1055,9 +1055,16 @@ def _collect_case_payloads(
             config.bank.node_top_k,
             device,
         )
-        raw_l1_memory = pretrained_retriever.aggregate(raw_l1_candidates)
-        pretrained_raw = pretrained_retriever.aggregate(pretrained_candidates)
-        random_raw = random_retriever.aggregate(random_candidates)
+        raw_l1_deployed = offset_decay_aggregation(
+            raw_l1_candidates,
+            batch["x"].to(device),
+            batch["x_observed"].to(device),
+            pretrained_bank,
+            data.series,
+            data.scaler,
+            config.data.context_length,
+            device,
+        )
         pretrained_deployed = offset_decay_aggregation(
             pretrained_candidates,
             batch["x"].to(device),
@@ -1139,13 +1146,13 @@ def _collect_case_payloads(
             random_scores,
         ) = aggregation_payload(random_candidates, random_deployed)
         (
-            raw_l1_prediction,
+            raw_l1_offset_decay_memory,
             raw_l1_futures,
             raw_l1_event_ids,
             raw_l1_sample_ids,
             raw_l1_weights,
             raw_l1_scores,
-        ) = aggregation_payload(raw_l1_candidates, raw_l1_memory)
+        ) = aggregation_payload(raw_l1_candidates, raw_l1_deployed)
         case = dict(selected[case_name])
         case.update(
             {
@@ -1166,20 +1173,14 @@ def _collect_case_payloads(
                 "random_weights": random_weights,
                 "pretrained_key_cosine_scores": pretrained_scores,
                 "random_key_cosine_scores": random_scores,
-                "raw_l1_memory": raw_l1_prediction,
-                "raw_l1_candidate_futures": raw_l1_futures,
+                "raw_l1_offset_decay_memory": raw_l1_offset_decay_memory,
+                "raw_l1_offset_decay_candidate_futures": raw_l1_futures,
                 "raw_l1_event_ids": raw_l1_event_ids,
                 "raw_l1_candidate_sample_ids": raw_l1_sample_ids,
                 "raw_l1_weights": raw_l1_weights,
                 "raw_l1_context_l1_scores": raw_l1_scores,
             }
         )
-        case["pretrained_raw_memory"] = _physical_node_series(
-            pretrained_raw.prediction[batch_index, :, node_id, channel_id],
-            node_id,
-            data.scaler,
-        ).tolist()
-        case["pretrained_offset_decay_memory"] = pretrained_memory
         payloads[case_name] = case
     payloads["selection_rule"] = selected["selection_rule"]
     return payloads
@@ -1202,7 +1203,7 @@ def _write_alignment_csv(result: dict[str, Any], path: Path) -> None:
             ),
         )
         writer.writeheader()
-        for selector in ("pretrained", "random"):
+        for selector in ("pretrained", "raw_l1", "random"):
             for item in result["alignment"][selector]["distance_bins"]:
                 writer.writerow({"selector": selector, **item})
 
@@ -1279,25 +1280,25 @@ def run_retrieval_visualization(
     random_model.eval()
 
     pretrained_key_chunks: list[np.ndarray] = []
+    raw_l1_key_chunks: list[np.ndarray] = []
     random_key_chunks: list[np.ndarray] = []
     future_distance_chunks: list[np.ndarray] = []
     pretrained_anchor_key_chunks: list[np.ndarray] = []
+    raw_l1_anchor_key_chunks: list[np.ndarray] = []
     random_anchor_key_chunks: list[np.ndarray] = []
     anchor_future_distance_chunks: list[np.ndarray] = []
     anchor_valid_chunks: list[np.ndarray] = []
     pretrained_recall_chunks: list[np.ndarray] = []
+    raw_l1_recall_chunks: list[np.ndarray] = []
     random_recall_chunks: list[np.ndarray] = []
     candidate_count_chunks: list[np.ndarray] = []
     case_records: list[dict[str, Any]] = []
-    payload_case_records: list[dict[str, Any]] = []
     query_count = 0
     batch_count = 0
     metric_names = [
         "pretrained_memory",
         "random_memory",
-        "raw_l1_memory",
-        "pretrained_raw_memory",
-        "random_raw_memory",
+        "raw_l1_offset_decay_memory",
     ]
     metrics = {
         name: ForecastMetricAccumulator(config.data.horizon) for name in metric_names
@@ -1409,10 +1410,27 @@ def run_retrieval_visualization(
                 events.valid,
                 normalization,
             )
-            alignment_valid = future_valid & pretrained_key_valid & random_key_valid
+            raw_l1_candidates, raw_l1_distance, raw_l1_valid = raw_l1_node_candidates(
+                batch["retrieval_x"].to(device),
+                batch["retrieval_observed"].to(device),
+                pretrained_bank,
+                events,
+                data.series,
+                data.scaler,
+                config.data.encoder_context_length,
+                config.bank.node_top_k,
+                device,
+            )
+            alignment_valid = (
+                future_valid
+                & pretrained_key_valid
+                & raw_l1_valid
+                & random_key_valid
+            )
             pretrained_anchor_key_chunks.append(
                 pretrained_key_distance.detach().cpu().numpy()
             )
+            raw_l1_anchor_key_chunks.append(raw_l1_distance.detach().cpu().numpy())
             random_anchor_key_chunks.append(
                 random_key_distance.detach().cpu().numpy()
             )
@@ -1422,6 +1440,9 @@ def run_retrieval_visualization(
             anchor_valid_chunks.append(alignment_valid.detach().cpu().numpy())
             pretrained_key_chunks.append(
                 pretrained_key_distance.masked_select(alignment_valid).detach().cpu().numpy()
+            )
+            raw_l1_key_chunks.append(
+                raw_l1_distance.masked_select(alignment_valid).detach().cpu().numpy()
             )
             random_key_chunks.append(
                 random_key_distance.masked_select(alignment_valid).detach().cpu().numpy()
@@ -1441,9 +1462,20 @@ def run_retrieval_visualization(
                 alignment_valid,
                 k=5,
             )
-            joint_recall_eligible = recall_eligible & random_recall_eligible
+            raw_l1_recall, raw_l1_recall_eligible = future_neighbor_recall_at_k(
+                raw_l1_distance,
+                future_distance,
+                alignment_valid,
+                k=5,
+            )
+            joint_recall_eligible = (
+                recall_eligible & raw_l1_recall_eligible & random_recall_eligible
+            )
             pretrained_recall_chunks.append(
                 pretrained_recall.masked_select(joint_recall_eligible).detach().cpu().numpy()
+            )
+            raw_l1_recall_chunks.append(
+                raw_l1_recall.masked_select(joint_recall_eligible).detach().cpu().numpy()
             )
             random_recall_chunks.append(
                 random_recall.masked_select(joint_recall_eligible).detach().cpu().numpy()
@@ -1459,20 +1491,6 @@ def run_retrieval_visualization(
                 random_encoding.statistics.level_features,
                 events,
             )
-            raw_l1_candidates, _, _ = raw_l1_node_candidates(
-                batch["retrieval_x"].to(device),
-                batch["retrieval_observed"].to(device),
-                pretrained_bank,
-                events,
-                data.series,
-                data.scaler,
-                config.data.encoder_context_length,
-                config.bank.node_top_k,
-                device,
-            )
-            raw_l1_memory = pretrained_retriever.aggregate(raw_l1_candidates)
-            pretrained_raw = pretrained_retriever.aggregate(pretrained_candidates)
-            random_raw = random_retriever.aggregate(random_candidates)
             pretrained_deployed = offset_decay_aggregation(
                 pretrained_candidates,
                 batch["x"].to(device),
@@ -1493,12 +1511,20 @@ def run_retrieval_visualization(
                 config.data.context_length,
                 device,
             )
+            raw_l1_deployed = offset_decay_aggregation(
+                raw_l1_candidates,
+                batch["x"].to(device),
+                batch["x_observed"].to(device),
+                pretrained_bank,
+                data.series,
+                data.scaler,
+                config.data.context_length,
+                device,
+            )
             aggregations = {
                 "pretrained_memory": pretrained_deployed,
                 "random_memory": random_deployed,
-                "raw_l1_memory": raw_l1_memory,
-                "pretrained_raw_memory": pretrained_raw,
-                "random_raw_memory": random_raw,
+                "raw_l1_offset_decay_memory": raw_l1_deployed,
             }
             target = batch["y"].to(device)
             target_valid = batch["y_observed"].to(device).bool()
@@ -1523,7 +1549,7 @@ def run_retrieval_visualization(
                 common_metric_valid,
             )
             raw_l1_anchor_mae, raw_l1_anchor_valid = memory_mae_by_anchor(
-                physical_predictions["raw_l1_memory"],
+                physical_predictions["raw_l1_offset_decay_memory"],
                 target_physical,
                 common_metric_valid,
             )
@@ -1551,39 +1577,6 @@ def run_retrieval_visualization(
                         ),
                     }
                 )
-            pretrained_raw_anchor_mae, pretrained_raw_anchor_valid = memory_mae_by_anchor(
-                physical_predictions["pretrained_raw_memory"],
-                target_physical,
-                common_metric_valid,
-            )
-            payload_valid = (
-                pretrained_anchor_valid
-                & pretrained_raw_anchor_valid
-                & complete_anchor_mask(common_metric_valid)
-            )
-            payload_gain = pretrained_raw_anchor_mae - pretrained_anchor_mae
-            for local_query, node_id in payload_valid.nonzero(
-                as_tuple=False
-            ).detach().cpu().tolist():
-                payload_case_records.append(
-                    {
-                        "sample_id": int(batch["sample_id"][local_query]),
-                        "node_id": int(node_id),
-                        "mae_gain": float(
-                            payload_gain[local_query, node_id].detach().cpu()
-                        ),
-                        "raw_mae": float(
-                            pretrained_raw_anchor_mae[local_query, node_id]
-                            .detach()
-                            .cpu()
-                        ),
-                        "offset_decay_mae": float(
-                            pretrained_anchor_mae[local_query, node_id]
-                            .detach()
-                            .cpu()
-                        ),
-                    }
-                )
             query_count += int(target.shape[0])
             batch_count += 1
             if batch_count == 1 or batch_count % 10 == 0:
@@ -1597,9 +1590,11 @@ def run_retrieval_visualization(
         if batch_count == 0:
             raise ValueError("no validation batches were processed")
         pretrained_keys = np.concatenate(pretrained_key_chunks)
+        raw_l1_keys = np.concatenate(raw_l1_key_chunks)
         random_keys = np.concatenate(random_key_chunks)
         future_distances = np.concatenate(future_distance_chunks)
         anchor_key_pretrained = np.concatenate(pretrained_anchor_key_chunks, axis=0)
+        anchor_key_raw_l1 = np.concatenate(raw_l1_anchor_key_chunks, axis=0)
         anchor_key_random = np.concatenate(random_anchor_key_chunks, axis=0)
         anchor_future = np.concatenate(anchor_future_distance_chunks, axis=0)
         anchor_valid = np.concatenate(anchor_valid_chunks, axis=0)
@@ -1617,12 +1612,21 @@ def run_retrieval_visualization(
             ndcg_k=5,
             teacher_temperature=config.pretrain.relation_teacher_temperature,
         )
+        raw_l1_ranking = anchor_wise_ranking_metrics(
+            anchor_key_raw_l1,
+            anchor_future,
+            anchor_valid,
+            ndcg_k=5,
+            teacher_temperature=config.pretrain.relation_teacher_temperature,
+        )
         shared_valid = np.ones_like(future_distances, dtype=bool)
         pretrained_alignment = alignment_statistics(
             pretrained_keys, future_distances, shared_valid
         )
+        raw_l1_alignment = alignment_statistics(raw_l1_keys, future_distances, shared_valid)
         random_alignment = alignment_statistics(random_keys, future_distances, shared_valid)
         pretrained_recall_values = np.concatenate(pretrained_recall_chunks)
+        raw_l1_recall_values = np.concatenate(raw_l1_recall_chunks)
         random_recall_values = np.concatenate(random_recall_chunks)
         pretrained_alignment["future_neighbor_recall_at_5"] = float(
             pretrained_recall_values.mean()
@@ -1636,8 +1640,15 @@ def run_retrieval_visualization(
         random_alignment["recall_at_5_eligible_anchors"] = int(
             random_recall_values.size
         )
+        raw_l1_alignment["future_neighbor_recall_at_5"] = float(
+            raw_l1_recall_values.mean()
+        )
+        raw_l1_alignment["recall_at_5_eligible_anchors"] = int(
+            raw_l1_recall_values.size
+        )
         ranking_payload = {
             "pretrained": _ranking_summary(pretrained_ranking),
+            "raw_l1": _ranking_summary(raw_l1_ranking),
             "random": _ranking_summary(random_ranking),
             "delta_pretrained_minus_random": {
                 metric: pretrained_ranking[f"{metric}_mean"]
@@ -1661,26 +1672,6 @@ def run_retrieval_visualization(
             device,
             candidate_protocol,
         )
-        payload_selected = select_quantile_cases(payload_case_records)
-        payload_selected["selection_rule"]["score"] = (
-            "rawfuture_memory_mae_minus_offset_decay_memory_mae"
-        )
-        cases["offset_decay_payload_cases"] = _collect_case_payloads(
-            payload_selected,
-            dataset,
-            data,
-            graph_cpu,
-            config,
-            pretrained_model,
-            random_model,
-            pretrained_retriever,
-            random_retriever,
-            pretrained_bank,
-            random_bank,
-            device,
-            candidate_protocol,
-        )
-
         candidate_counts = np.concatenate(candidate_count_chunks).astype(np.float64)
         positive_candidate_counts = candidate_counts[candidate_counts > 0]
         if positive_candidate_counts.size == 0:
@@ -1690,7 +1681,7 @@ def run_retrieval_visualization(
             float(config.bank.node_top_k),
         ) / positive_candidate_counts
         result: dict[str, Any] = {
-            "schema_version": 1,
+            "schema_version": 2,
             "version": version,
             "dataset": pretrained_bank.manifest.dataset_name,
             "split": split,
@@ -1748,9 +1739,20 @@ def run_retrieval_visualization(
                 "context_steps": config.data.context_length,
                 "distance_normalization": config.pretrain.relation_distance_normalization,
             },
+            "selector_distances": {
+                "pretrained": "cosine distance between learned node keys",
+                "raw_l1": "masked mean L1 distance between 288-step node contexts",
+                "random": "cosine distance between matched-random node keys",
+            },
+            "candidate_payload": {
+                "name": "offset_decay",
+                "shared_across_selectors": True,
+                "selectors": ["pretrained", "raw_l1", "random"],
+            },
             "future_information_boundary": future_information_boundary(),
             "alignment": {
                 "pretrained": pretrained_alignment,
+                "raw_l1": raw_l1_alignment,
                 "random": random_alignment,
                 "delta_pretrained_minus_random": {
                     "spearman": pretrained_alignment["spearman"]
@@ -1764,7 +1766,6 @@ def run_retrieval_visualization(
             "ranking": ranking_payload,
             "memory_metrics": {name: accumulator.compute() for name, accumulator in metrics.items()},
             "case_selection": selected,
-            "offset_decay_payload_case_selection": payload_selected,
             "config": {
                 "event_top_r": config.bank.event_top_r,
                 "node_top_k": config.bank.node_top_k,
@@ -1808,15 +1809,20 @@ def _plot_alignment(result: dict[str, Any], output_path: Path) -> None:
     import matplotlib.pyplot as plt
 
     pretrained = result["alignment"]["pretrained"]
+    raw_l1 = result["alignment"]["raw_l1"]
     random = result["alignment"]["random"]
     figure, axes = plt.subplots(1, 2, figsize=(11.0, 4.2), constrained_layout=True)
-    colors = {"Pretrained": "#C43C39", "Random": "#4C78A8"}
-    for label, values in (("Pretrained", pretrained), ("Random", random)):
+    colors = {"Learned key": "#C43C39", "Raw-L1": "#E69F00", "Matched random": "#4C78A8"}
+    for label, values in (
+        ("Learned key", pretrained),
+        ("Raw-L1", raw_l1),
+        ("Matched random", random),
+    ):
         bins = values["distance_bins"]
         x = [item["bin"] for item in bins]
         y = [item["future_distance_mean"] for item in bins]
         axes[0].plot(x, y, marker="o", linewidth=2.2, label=label, color=colors[label])
-    axes[0].set_xlabel("Key-distance decile (near to far)")
+    axes[0].set_xlabel("Selector-distance decile (near to far)")
     axes[0].set_ylabel("Mean teacher-aligned future distance")
     axes[0].set_xticks(range(1, 11))
     axes[0].grid(axis="y", alpha=0.25)
@@ -1827,22 +1833,30 @@ def _plot_alignment(result: dict[str, Any], output_path: Path) -> None:
         pretrained["spearman"],
         pretrained["future_neighbor_recall_at_5"],
     ]
+    raw_l1_values = [raw_l1["spearman"], raw_l1["future_neighbor_recall_at_5"]]
     random_values = [random["spearman"], random["future_neighbor_recall_at_5"]]
     positions = np.arange(len(labels), dtype=np.float64)
-    width = 0.34
+    width = 0.25
     bars_pretrained = axes[1].bar(
-        positions - width / 2,
+        positions - width,
         pretrained_values,
         width,
-        color=colors["Pretrained"],
-        label="Pretrained",
+        color=colors["Learned key"],
+        label="Learned key",
+    )
+    bars_raw_l1 = axes[1].bar(
+        positions,
+        raw_l1_values,
+        width,
+        color=colors["Raw-L1"],
+        label="Raw-L1",
     )
     bars_random = axes[1].bar(
-        positions + width / 2,
+        positions + width,
         random_values,
         width,
-        color=colors["Random"],
-        label="Random",
+        color=colors["Matched random"],
+        label="Matched random",
     )
     axes[1].axhline(0.0, color="#333333", linewidth=0.8)
     axes[1].set_xticks(positions, labels)
@@ -1850,8 +1864,9 @@ def _plot_alignment(result: dict[str, Any], output_path: Path) -> None:
     axes[1].grid(axis="y", alpha=0.25)
     axes[1].legend(frameon=False)
     axes[1].bar_label(bars_pretrained, fmt="%.3f", padding=3, fontsize=9)
+    axes[1].bar_label(bars_raw_l1, fmt="%.3f", padding=3, fontsize=9)
     axes[1].bar_label(bars_random, fmt="%.3f", padding=3, fontsize=9)
-    figure.suptitle(f"{result['version'].upper()} Key-Future Alignment", fontsize=14)
+    figure.suptitle(f"{result['version'].upper()} Selector-Future Alignment", fontsize=14)
     figure.savefig(output_path, dpi=220, facecolor="white")
     plt.close(figure)
 
@@ -1865,7 +1880,7 @@ def _plot_cases(cases: dict[str, Any], output_path: Path) -> None:
     case_names = ("strong_win", "representative", "failure")
     methods = (
         ("Learned", "pretrained", "#C43C39"),
-        ("Raw-L1", "raw_l1", "#E69F00"),
+        ("Raw-L1", "raw_l1_offset_decay", "#E69F00"),
         ("Matched Random", "random", "#4C78A8"),
     )
     figure, axes = plt.subplots(3, 3, figsize=(17.0, 10.0), constrained_layout=True)
@@ -1898,10 +1913,13 @@ def _plot_cases(cases: dict[str, Any], output_path: Path) -> None:
             truth,
             np.asarray(case["pretrained_memory"]),
             np.asarray(case["random_memory"]),
-            np.asarray(case["raw_l1_memory"]),
+            np.asarray(case["raw_l1_offset_decay_memory"]),
         ]
         row_values.extend(np.asarray(value) for value in case["pretrained_candidate_futures"])
-        row_values.extend(np.asarray(value) for value in case["raw_l1_candidate_futures"])
+        row_values.extend(
+            np.asarray(value)
+            for value in case["raw_l1_offset_decay_candidate_futures"]
+        )
         row_values.extend(np.asarray(value) for value in case["random_candidate_futures"])
         lower = min(float(value.min()) for value in row_values)
         upper = max(float(value.max()) for value in row_values)
@@ -1912,52 +1930,6 @@ def _plot_cases(cases: dict[str, Any], output_path: Path) -> None:
         f"Deterministic Top-{top_k} Retrieval Cases on a Shared Legal Pool",
         fontsize=14,
     )
-    figure.savefig(output_path, dpi=220, facecolor="white")
-    plt.close(figure)
-
-
-def _plot_offset_decay_cases(cases: dict[str, Any], output_path: Path) -> None:
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    payload_cases = cases.get("offset_decay_payload_cases", cases)
-    case_names = ("strong_win", "representative", "failure")
-    figure, axes = plt.subplots(3, 1, figsize=(8.5, 10.0), constrained_layout=True)
-    for axis, case_name in zip(axes, case_names):
-        case = payload_cases[case_name]
-        truth = np.asarray(case["query_future"], dtype=np.float64)
-        raw_memory = np.asarray(case["pretrained_raw_memory"], dtype=np.float64)
-        offset_memory = np.asarray(
-            case["pretrained_offset_decay_memory"], dtype=np.float64
-        )
-        raw_mae = float(np.mean(np.abs(raw_memory - truth)))
-        offset_mae = float(np.mean(np.abs(offset_memory - truth)))
-        axis.plot(truth, color="#111111", linewidth=2.6, marker="s", label="True future")
-        axis.plot(
-            raw_memory,
-            color="#59A14F",
-            linewidth=2.2,
-            marker="o",
-            label="RawFuture memory",
-        )
-        axis.plot(
-            offset_memory,
-            color="#C43C39",
-            linewidth=2.2,
-            marker="o",
-            label="OffsetDecay memory",
-        )
-        axis.set_title(
-            f"OffsetDecay {case_name.replace('_', ' ').title()} | "
-            f"Raw MAE={raw_mae:.3f} | OD MAE={offset_mae:.3f}"
-        )
-        axis.set_xlabel("Forecast step")
-        axis.set_ylabel("Traffic speed")
-        axis.grid(axis="y", alpha=0.2)
-        axis.legend(frameon=False, fontsize=8)
-    figure.suptitle("OffsetDecay Payload Alignment on Identical Retrieved Candidates", fontsize=14)
     figure.savefig(output_path, dpi=220, facecolor="white")
     plt.close(figure)
 
@@ -1973,7 +1945,7 @@ def _plot_top5_error_profiles(cases: dict[str, Any], output_path: Path) -> None:
     figure, axes = plt.subplots(3, 1, figsize=(8.5, 9.0), constrained_layout=True)
     methods = (
         ("Learned", "pretrained", "#C43C39"),
-        ("Raw-L1", "raw_l1", "#E69F00"),
+        ("Raw-L1", "raw_l1_offset_decay", "#E69F00"),
         ("Matched Random", "random", "#4C78A8"),
     )
     colors = {"Pretrained": "#C43C39", "Random": "#4C78A8"}
@@ -2024,19 +1996,33 @@ def _plot_ranking_metrics(result: dict[str, Any], output_path: Path) -> None:
     import matplotlib.pyplot as plt
 
     ranking = result["ranking"]
-    labels = ["Anchor Spearman", "Anchor Kendall", "Recall@1", "NDCG@5", "Recall@5\nsecondary"]
+    labels = ["Anchor Spearman", "Anchor Kendall", "Recall@1", "NDCG@5", "Recall@5"]
     keys = ("spearman_mean", "kendall_mean", "recall_at_1_mean", "ndcg_at_5_mean", "recall_at_5_mean")
-    pretrained = [float(ranking["pretrained"][key]) for key in keys]
-    random = [float(ranking["random"][key]) for key in keys]
+    values = {
+        selector: [float(ranking[selector][key]) for key in keys]
+        for selector in ("pretrained", "raw_l1", "random")
+    }
     positions = np.arange(len(labels), dtype=np.float64)
     width = 0.34
     figure, axis = plt.subplots(figsize=(11.5, 4.8), constrained_layout=True)
-    bars_pretrained = axis.bar(
-        positions - width / 2, pretrained, width, color="#C43C39", label="Joint v2"
-    )
-    bars_random = axis.bar(
-        positions + width / 2, random, width, color="#4C78A8", label="Matched random"
-    )
+    offsets = (-width, 0.0, width)
+    colors = {"pretrained": "#C43C39", "raw_l1": "#E69F00", "random": "#4C78A8"}
+    labels_by_selector = {
+        "pretrained": "Learned key",
+        "raw_l1": "Raw-L1",
+        "random": "Matched random",
+    }
+    bars = []
+    for selector, offset in zip(("pretrained", "raw_l1", "random"), offsets):
+        bars.append(
+            axis.bar(
+                positions + offset,
+                values[selector],
+                width,
+                color=colors[selector],
+                label=labels_by_selector[selector],
+            )
+        )
     axis.axhline(0.0, color="#333333", linewidth=0.8)
     axis.set_xticks(positions, labels)
     axis.set_ylabel("Anchor-wise score")
@@ -2045,8 +2031,8 @@ def _plot_ranking_metrics(result: dict[str, Any], output_path: Path) -> None:
     )
     axis.grid(axis="y", alpha=0.25)
     axis.legend(frameon=False)
-    axis.bar_label(bars_pretrained, fmt="%.3f", padding=3, fontsize=8)
-    axis.bar_label(bars_random, fmt="%.3f", padding=3, fontsize=8)
+    for bar in bars:
+        axis.bar_label(bar, fmt="%.3f", padding=3, fontsize=8)
     expected = float(ranking["pretrained"].get("random_recall_at_1_expected", 0.0))
     if expected > 0.0:
         axis.axhline(
@@ -2080,7 +2066,4 @@ def render_visualization_figures(
         ranking_path = output_dir / "ranking_metrics.png"
         _plot_ranking_metrics(result, ranking_path)
         paths.append(ranking_path)
-    offset_path = output_dir / "offset_decay_payload_cases.png"
-    _plot_offset_decay_cases(cases, offset_path)
-    paths.append(offset_path)
     return paths

@@ -18,6 +18,7 @@ from stanchor.config import (
     FULL_TRAIN,
     POSTHOC_FROZEN_BASE,
     ExperimentConfig,
+    resolve_candidate_payload,
     resolve_project_path,
     validate_candidate_ranking,
 )
@@ -461,6 +462,30 @@ def checkpoint_candidate_ranking(
     return ranking
 
 
+def checkpoint_candidate_payload(
+    checkpoint: dict,
+    candidate_ranking: str,
+    expected: str | None = None,
+) -> str:
+    payload = checkpoint.get("candidate_payload")
+    if payload is None:
+        target_config = checkpoint.get("config", {}).get("target", {})
+        payload = target_config.get("candidate_payload")
+    if payload is None:
+        # Checkpoints written before candidate_payload existed used raw future
+        # for Raw-L1 and OffsetDecay for learned-key retrieval.
+        payload = "raw_future" if candidate_ranking == "raw_l1" else "offset_decay"
+    else:
+        payload = resolve_candidate_payload(str(payload), candidate_ranking)
+    if expected is not None:
+        expected_payload = resolve_candidate_payload(expected, candidate_ranking)
+        if payload != expected_payload:
+            raise ValueError(
+                f"candidate payload {expected!r} differs from checkpoint {payload!r}"
+            )
+    return payload
+
+
 def checkpoint_bank_level_weight(checkpoint: dict, default: float) -> float:
     """Restore the node reranking level weight used during downstream training."""
     bank_config = checkpoint.get("config", {}).get("bank", {})
@@ -671,10 +696,12 @@ def retrieve_for_downstream_mode(
     candidate_protocol: str = "exact_calendar",
     include_query_keys: bool = False,
     candidate_ranking: str = "learned_key",
+    candidate_payload: str = "auto",
 ) -> tuple[NodeCandidates | None, AggregationOutput | None] | tuple[NodeCandidates | None, AggregationOutput | None, torch.Tensor | None]:
     mode = validate_downstream_mode(mode)
     candidate_protocol = validate_candidate_protocol(candidate_protocol)
     candidate_ranking = validate_candidate_ranking(candidate_ranking)
+    candidate_payload = resolve_candidate_payload(candidate_payload, candidate_ranking)
     if candidate_ranking == "raw_l1" and mode != LEARNED_TOPK_ERROR_AWARE:
         raise ValueError("raw_l1 candidate ranking requires learned_topk_error_aware")
     if mode == BASE_ONLY:
@@ -729,7 +756,7 @@ def retrieve_for_downstream_mode(
                 events,
             )
         aggregation = retriever.aggregate(candidates)
-        if mode == LEARNED_TOPK_ERROR_AWARE and candidate_ranking != "raw_l1":
+        if mode == LEARNED_TOPK_ERROR_AWARE and candidate_payload == "offset_decay":
             aggregation = offset_decay_aggregation(
                 candidates,
                 x,
@@ -893,6 +920,7 @@ def run_target_epoch(
                     candidate_protocol=config.target.candidate_protocol,
                     include_query_keys=(config.target.calibrator_arch == "retrieval_aware_mha_router"),
                     candidate_ranking=config.target.candidate_ranking,
+                    candidate_payload=config.target.candidate_payload,
                 )
                 if config.target.calibrator_arch == "retrieval_aware_mha_router":
                     node_candidates, aggregation, retrieval_node_keys = retrieved
@@ -1163,11 +1191,16 @@ def train_downstream(
             run_dir,
         )
         logger.info(
-            "Mode | downstream_mode=%s | training_protocol=%s | candidate_protocol=%s | candidate_ranking=%s",
+            "Mode | downstream_mode=%s | training_protocol=%s | candidate_protocol=%s | "
+            "candidate_ranking=%s | candidate_payload=%s",
             config.target.downstream_mode,
             config.target.training_protocol,
             config.target.candidate_protocol,
             config.target.candidate_ranking,
+            resolve_candidate_payload(
+                config.target.candidate_payload,
+                config.target.candidate_ranking,
+            ),
         )
         if config.target.backbone_name == "staeformer":
             logger.info(
@@ -1407,6 +1440,10 @@ def train_downstream(
                             "training_protocol": config.target.training_protocol,
                             "candidate_protocol": config.target.candidate_protocol,
                             "candidate_ranking": config.target.candidate_ranking,
+                            "candidate_payload": resolve_candidate_payload(
+                                config.target.candidate_payload,
+                                config.target.candidate_ranking,
+                            ),
                             "training_stage": stage,
                             "base_checkpoint_provenance": base_provenance,
                             "config": config.to_dict(),
@@ -1489,6 +1526,7 @@ def evaluate_downstream(
     else:
         candidate_protocol = saved_candidate_protocol
     ranking = checkpoint_candidate_ranking(checkpoint)
+    payload = checkpoint_candidate_payload(checkpoint, ranking)
     config = replace(
         config,
         bank=replace(config.bank, level_weight=level_weight),
@@ -1497,6 +1535,7 @@ def evaluate_downstream(
             downstream_mode=mode,
             candidate_protocol=candidate_protocol,
             candidate_ranking=ranking,
+            candidate_payload=payload,
         ),
     )
     downstream = build_downstream_model(config, graph).to(device)
@@ -1530,9 +1569,6 @@ def evaluate_downstream(
             pretrained, downstream, retriever, bank, data, loader, graph, config,
             data.scaler, device, None, max_batches
         )
-
-
-
 
 
 

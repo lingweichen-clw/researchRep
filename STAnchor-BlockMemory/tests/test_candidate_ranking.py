@@ -8,8 +8,16 @@ from unittest.mock import MagicMock, patch
 
 import torch
 
-from stanchor.config import load_config, validate_candidate_ranking
-from stanchor.engine.target import retrieve_for_downstream_mode
+from stanchor.config import (
+    load_config,
+    resolve_candidate_payload,
+    validate_candidate_payload,
+    validate_candidate_ranking,
+)
+from stanchor.engine.target import (
+    checkpoint_candidate_payload,
+    retrieve_for_downstream_mode,
+)
 from stanchor.modes import LEARNED_TOPK_CONFIDENCE, LEARNED_TOPK_ERROR_AWARE
 
 
@@ -19,6 +27,31 @@ class CandidateRankingTest(unittest.TestCase):
         self.assertEqual(validate_candidate_ranking('raw_l1'), 'raw_l1')
         with self.assertRaises(ValueError):
             validate_candidate_ranking('event_key')
+
+    def test_candidate_payload_resolution_defaults_new_runs_to_offset_decay(self) -> None:
+        self.assertEqual(validate_candidate_payload('raw_future'), 'raw_future')
+        self.assertEqual(validate_candidate_payload('offset_decay'), 'offset_decay')
+        self.assertEqual(resolve_candidate_payload('auto', 'learned_key'), 'offset_decay')
+        self.assertEqual(resolve_candidate_payload('auto', 'raw_l1'), 'offset_decay')
+        with self.assertRaises(ValueError):
+            validate_candidate_payload('offset')
+
+    def test_legacy_checkpoint_payload_follows_saved_ranking(self) -> None:
+        self.assertEqual(
+            checkpoint_candidate_payload({}, 'learned_key'),
+            'offset_decay',
+        )
+        self.assertEqual(
+            checkpoint_candidate_payload({}, 'raw_l1'),
+            'raw_future',
+        )
+        self.assertEqual(
+            checkpoint_candidate_payload(
+                {'candidate_payload': 'offset_decay'},
+                'raw_l1',
+            ),
+            'offset_decay',
+        )
 
     def test_raw_l1_requires_error_aware_mode(self) -> None:
         with self.assertRaises(ValueError):
@@ -36,7 +69,7 @@ class CandidateRankingTest(unittest.TestCase):
                 candidate_ranking='raw_l1',
             )
 
-    def test_raw_l1_router_does_not_apply_offset_decay(self) -> None:
+    def test_explicit_raw_future_payload_remains_available_for_legacy_replay(self) -> None:
         pretrained = MagicMock()
         query_keys = torch.randn(1, 2, 4)
         pretrained.encode_clean.return_value = SimpleNamespace(
@@ -81,12 +114,116 @@ class CandidateRankingTest(unittest.TestCase):
                 candidate_protocol='weekday_radius1_overlap',
                 include_query_keys=True,
                 candidate_ranking='raw_l1',
+                candidate_payload='raw_future',
             )
         self.assertIs(result_candidates, candidates)
         self.assertIs(aggregation, direct_aggregation)
         self.assertTrue(torch.equal(result_keys, torch.zeros_like(query_keys)))
         pretrained.encode_clean.assert_not_called()
         retriever.aggregate.assert_called_once_with(candidates)
+        offset_decay.assert_not_called()
+
+    def test_raw_l1_router_can_apply_offset_decay_payload(self) -> None:
+        pretrained = MagicMock()
+        retriever = MagicMock(event_top_r=3, node_top_k=2)
+        retriever.context_window_cache = None
+        candidates = MagicMock(name='raw_l1_candidates')
+        offset_aggregation = MagicMock(name='offset_decay_aggregation')
+        data = SimpleNamespace(
+            train=SimpleNamespace(retrieval_context_length=288, context_length=12),
+            series=object(),
+            scaler=object(),
+        )
+        batch = {
+            'retrieval_x': torch.zeros(1, 288, 2, 1),
+            'retrieval_observed': torch.ones(1, 288, 2, 1, dtype=torch.bool),
+            'query_weekday': torch.zeros(1, dtype=torch.long),
+            'query_slot': torch.zeros(1, dtype=torch.long),
+            'context_start': torch.ones(1, dtype=torch.long),
+        }
+        with (
+            patch('stanchor.engine.target.calendar_event_candidates', return_value=MagicMock()),
+            patch('stanchor.engine.target.raw_l1_node_candidates', return_value=(candidates, None, None)),
+            patch(
+                'stanchor.engine.target.offset_decay_aggregation',
+                return_value=offset_aggregation,
+            ),
+        ):
+            try:
+                result_candidates, aggregation, result_keys = retrieve_for_downstream_mode(
+                    LEARNED_TOPK_ERROR_AWARE,
+                    pretrained=pretrained,
+                    retriever=retriever,
+                    bank=SimpleNamespace(manifest=SimpleNamespace(retrieval_dim=4)),
+                    data=data,
+                    graph=object(),
+                    batch=batch,
+                    x=torch.zeros(1, 12, 2, 1),
+                    observed_x=torch.ones(1, 12, 2, 1, dtype=torch.bool),
+                    device=torch.device('cpu'),
+                    candidate_protocol='weekday_radius1_overlap',
+                    include_query_keys=True,
+                    candidate_ranking='raw_l1',
+                    candidate_payload='offset_decay',
+                )
+            except TypeError as exc:
+                self.fail(f'candidate payload must be independently selectable: {exc}')
+        self.assertIs(result_candidates, candidates)
+        self.assertIs(aggregation, offset_aggregation)
+        self.assertTrue(torch.equal(result_keys, torch.zeros(1, 2, 4)))
+        pretrained.encode_clean.assert_not_called()
+
+    def test_learned_key_router_can_use_raw_future_payload(self) -> None:
+        query_keys = torch.randn(1, 2, 4)
+        pretrained = MagicMock()
+        pretrained.encode_clean.return_value = SimpleNamespace(
+            retrieval=SimpleNamespace(node_keys=query_keys),
+            statistics=SimpleNamespace(level_features=torch.zeros(1, 2, 1)),
+        )
+        retriever = MagicMock(event_top_r=3, node_top_k=2)
+        candidates = MagicMock(name='learned_candidates')
+        direct_aggregation = MagicMock(name='direct_raw_future_aggregation')
+        retriever.rerank_nodes.return_value = candidates
+        retriever.aggregate.return_value = direct_aggregation
+        batch = {
+            'retrieval_x': torch.zeros(1, 288, 2, 1),
+            'retrieval_observed': torch.ones(1, 288, 2, 1, dtype=torch.bool),
+            'retrieval_weekday': torch.zeros(1, 288, dtype=torch.long),
+            'retrieval_slot': torch.zeros(1, 288, dtype=torch.long),
+            'query_weekday': torch.zeros(1, dtype=torch.long),
+            'query_slot': torch.zeros(1, dtype=torch.long),
+            'context_start': torch.ones(1, dtype=torch.long),
+        }
+        with (
+            patch('stanchor.engine.target.calendar_event_candidates', return_value=MagicMock()),
+            patch('stanchor.engine.target.offset_decay_aggregation') as offset_decay,
+        ):
+            try:
+                result_candidates, aggregation, result_keys = retrieve_for_downstream_mode(
+                    LEARNED_TOPK_ERROR_AWARE,
+                    pretrained=pretrained,
+                    retriever=retriever,
+                    bank=SimpleNamespace(manifest=SimpleNamespace(retrieval_dim=4)),
+                    data=SimpleNamespace(
+                        train=SimpleNamespace(context_length=12),
+                        series=object(),
+                        scaler=object(),
+                    ),
+                    graph=object(),
+                    batch=batch,
+                    x=torch.zeros(1, 12, 2, 1),
+                    observed_x=torch.ones(1, 12, 2, 1, dtype=torch.bool),
+                    device=torch.device('cpu'),
+                    candidate_protocol='weekday_radius1_overlap',
+                    include_query_keys=True,
+                    candidate_ranking='learned_key',
+                    candidate_payload='raw_future',
+                )
+            except TypeError as exc:
+                self.fail(f'candidate payload must be independently selectable: {exc}')
+        self.assertIs(result_candidates, candidates)
+        self.assertIs(aggregation, direct_aggregation)
+        self.assertTrue(torch.equal(result_keys, query_keys))
         offset_decay.assert_not_called()
 
     def test_baseonly_rejects_raw_l1_ranking(self) -> None:
@@ -96,8 +233,16 @@ class CandidateRankingTest(unittest.TestCase):
 
     def test_rawl1_router_configs_keep_same_router_and_calendar_pool(self) -> None:
         pairs = (
-            ('graph_wavenet', 'formal_base_as_candidate_gwn.yaml', 'ablation_rawl1_router_gwn.yaml'),
-            ('argcn', 'formal_base_as_candidate_argcn.yaml', 'ablation_rawl1_router_argcn.yaml'),
+            (
+                'graph_wavenet',
+                'formal_base_as_candidate_gwn.yaml',
+                'ablation_rawl1_offset_decay_router_gwn.yaml',
+            ),
+            (
+                'argcn',
+                'formal_base_as_candidate_argcn.yaml',
+                'ablation_rawl1_offset_decay_router_argcn.yaml',
+            ),
         )
         for backbone, src_name, ablation_name in pairs:
             src = load_config('configs/' + src_name)
@@ -108,6 +253,7 @@ class CandidateRankingTest(unittest.TestCase):
             self.assertEqual(ablation.target.downstream_mode, LEARNED_TOPK_ERROR_AWARE)
             self.assertEqual(ablation.target.candidate_protocol, 'weekday_radius1_overlap')
             self.assertEqual(ablation.target.candidate_ranking, 'raw_l1')
+            self.assertEqual(ablation.target.candidate_payload, 'offset_decay')
             self.assertEqual(src.target.candidate_ranking, 'learned_key')
             self.assertEqual(ablation.bank.node_top_k, 12)
             self.assertEqual(ablation.bank.event_top_r, src.bank.event_top_r)
@@ -117,13 +263,57 @@ class CandidateRankingTest(unittest.TestCase):
             self.assertTrue(ablation.target.frozen_path_cache)
             self.assertNotIn('random_seed42', ablation.bank.output_dir)
 
+    def test_raw_l1_offset_decay_configs_match_learned_anchors(self) -> None:
+        configurations = {
+            'graph_wavenet': (
+                load_config('configs/formal_base_as_candidate_gwn.yaml'),
+                load_config('configs/ablation_rawl1_offset_decay_router_gwn.yaml'),
+            ),
+            'argcn': (
+                load_config('configs/formal_base_as_candidate_argcn.yaml'),
+                load_config('configs/ablation_rawl1_offset_decay_router_argcn.yaml'),
+            ),
+        }
+        for backbone, (learned, raw_l1) in configurations.items():
+            learned.validate()
+            raw_l1.validate()
+            self.assertEqual(raw_l1.target.candidate_ranking, 'raw_l1')
+            self.assertEqual(
+                resolve_candidate_payload(raw_l1.target.candidate_payload, 'raw_l1'),
+                'offset_decay',
+            )
+            self.assertEqual(raw_l1.target.backbone_name, backbone)
+            self.assertEqual(raw_l1.target.candidate_protocol, 'weekday_radius1_overlap')
+            self.assertEqual(raw_l1.bank.event_top_r, 32)
+            self.assertEqual(raw_l1.bank.node_top_k, 12)
+            self.assertAlmostEqual(raw_l1.target.learning_rate, 0.0005)
+            self.assertEqual(raw_l1.target.epochs, 50)
+            self.assertTrue(raw_l1.target.frozen_path_cache)
+            expected_run_name = (
+                'convergence/ablation_rawl1_offset_decay_router_'
+                + ('gwn' if backbone == 'graph_wavenet' else 'argcn')
+                + '_seed42'
+            )
+            self.assertEqual(
+                raw_l1,
+                replace(
+                    learned,
+                    target=replace(
+                        learned.target,
+                        candidate_ranking='raw_l1',
+                        candidate_payload='offset_decay',
+                    ),
+                    runtime=replace(learned.runtime, run_name=expected_run_name),
+                ),
+            )
+
     def test_local_retrieval_ablation_queue_uses_argcn_anchor(self) -> None:
         script = Path('scripts/run_metrla_retrieval_ablation_queue.ps1').read_text(
             encoding='utf-8'
         )
         self.assertIn("Label = 'random_router_argcn'", script)
-        self.assertIn("Label = 'rawl1_router_argcn'", script)
-        self.assertIn("Label = 'rawl1_router_gwn'", script)
+        self.assertIn("Label = 'rawl1_offset_decay_router_argcn'", script)
+        self.assertIn("Label = 'rawl1_offset_decay_router_gwn'", script)
         self.assertNotIn("Label = 'random_router_staeformer'", script)
         self.assertNotIn("Label = 'rawl1_router_staeformer'", script)
 

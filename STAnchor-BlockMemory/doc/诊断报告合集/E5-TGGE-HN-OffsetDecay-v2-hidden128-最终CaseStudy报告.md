@@ -9,8 +9,8 @@
 1. 预训练完整运行 50 轮，无跳过 batch、NaN 或中途退出；验证总损失在第 41 轮达到最佳 `1.971686`，第 50 轮为 `1.976423`，说明训练已收敛。
 2. 在与预训练监督语义一致的 `pretrain_broad_causal` 协议下，trained key 的 Pair Spearman 为 `0.6693`，matched-random 为 `0.0611`；OffsetDecay memory MAE 为 `3.2033`，random 为 `4.0984`。这说明 64 维 key 学到了与 future dynamics 相关的可检索结构。
 3. 在当前部署侧 `weekday_radius1_overlap` 协议下，候选事件池平均为 `23.98` 个（范围 `19--27`），trained key 的 Pair Spearman 为 `0.4399`，matched-random 为 `0.1337`；OffsetDecay memory MAE 为 `3.2215`，random 为 `3.5674`。候选池相较旧的单 weekday 协议明显扩大，但排序增益仍保持。
-4. 在两个协议中都加入独立的 `Raw-L1 Top-12` 对照。该基线使用同一合法事件池、masked 288-step context、节点级原始 L1 排序和原始 future 等权聚合，不使用 learned key、learned weight 或 OffsetDecay；其 memory MAE 分别为 broad-causal `5.2695`、weekday-radius `4.3296`，明显高于 learned retrieval。
-5. OffsetDecay 在 learned 候选上继续降低绝对 level mismatch：broad-causal 的 raw-future MAE `3.5344` 降至 `3.2033`，weekday-radius 的 raw-future MAE `3.4351` 降至 `3.2215`。两类时空海市蜃楼案例均由固定分位数规则自动选择；整体有效性由全量候选统计、分箱曲线、Raw-L1 和 matched-random 对照承担。
+4. 在两个协议中加入独立的 `Raw-L1 Top-12 + OffsetDecay` 对照。该基线使用同一合法事件池、288-step context 的节点级原始 L1 排序，选出的候选与 learned/random 一样经过 OffsetDecay 后聚合。broad-causal 的 Raw-L1 memory MAE 为 `4.2242`，weekday-radius 为 `3.7083`；对应排名指标也完整写入结果。
+5. 三种选择器的候选载荷完全统一为 OffsetDecay，因此结果可以分别讨论排序质量与统一载荷下的直接 Memory 质量，不再混入 raw-future 聚合因素。两类时空海市蜃楼案例仍由固定分位数规则自动选择；整体有效性由全量候选统计、分箱曲线、Raw-L1 和 matched-random 对照承担。
 
 ## 2. 数据、张量与信息边界
 
@@ -87,21 +87,20 @@ Teacher effective support 是 teacher 分布的有效候选数，v2 验证阶段
 
 ## 5. Broad-causal：与预训练语义一致的主结果
 
-`pretrain_broad_causal` 要求候选严格早于 query，但不强制相同 weekday 或 slot；每个 query 从合法历史事件中按时间分位抽样，最多保留 96 个候选。完整验证集包含 2,993 个 query、56,694,054 个有效 query-candidate pairs，事件候选池平均为 96.0。
+`pretrain_broad_causal` 要求候选严格早于 query，但不强制相同 weekday 或 slot；每个 query 从合法历史事件中按时间分位抽样，最多保留 96 个候选。完整验证集包含 2,993 个 query、56,694,024 个有效 query-candidate pairs，事件候选池平均为 96.0。
 
-| 指标 | HN-OffsetDecay v2 | Matched random | 差值 |
+| 指标 | Learned key | Raw-L1 | Matched random |
 |---|---:|---:|---:|
-| Pair Spearman | 0.6693 | 0.0611 | +0.6083 |
-| Anchor Spearman | 0.5989 | 0.0926 | +0.5063 |
-| Anchor Kendall | 0.4443 | 0.0625 | +0.3817 |
-| Recall@1 | 0.0661 | 0.0289 | +0.0373 |
-| NDCG@5 | 0.3408 | 0.2013 | +0.1396 |
-| Recall@5 | 0.2131 | 0.1052 | +0.1080 |
-| OffsetDecay memory MAE | 3.2033 | 4.0984 | -0.8952 |
-| OffsetDecay memory RMSE | 6.2482 | 7.4150 | -1.1669 |
-| Raw-L1 Top-12 memory MAE | 5.2695 | — | — |
+| Pair Spearman | 0.6693 | 0.2187 | 0.0611 |
+| Anchor Spearman | 0.5989 | 0.1485 | 0.0926 |
+| Anchor Kendall | 0.4443 | 0.1011 | 0.0625 |
+| Recall@1 | 0.0661 | 0.0260 | 0.0289 |
+| NDCG@5 | 0.3408 | 0.1942 | 0.2013 |
+| Recall@5 | 0.2131 | 0.1012 | 0.1052 |
+| OffsetDecay memory MAE | 3.2033 | 4.2242 | 4.0984 |
+| OffsetDecay memory RMSE | 6.2482 | 7.5437 | 7.4150 |
 
-Pair Spearman 汇总所有合法 query-candidate 对的单调关系；Anchor Spearman/Kendall 先在每个 query 内计算再平均；Recall@K 衡量 future 近邻是否进入 key 排名前 K；NDCG@5 同时考虑 Top-5 候选的位置质量。trained key 的排名指标和 memory 误差均明显优于同一事件轴上的 random key。
+Pair Spearman 汇总所有合法 query-candidate 对的单调关系；Anchor Spearman/Kendall 先在每个 query 内计算再平均；Recall@K 衡量 future 近邻是否进入选择器排名前 K；NDCG@5 同时考虑 Top-5 候选的位置质量。learned key 的排名指标和统一 OffsetDecay Memory 误差均优于 Raw-L1 与同一事件轴上的 random key。
 
 ![图 2：broad-causal 全量 key-future 分箱关系](../../artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/visualization_pretrain_broad_causal/key_future_alignment.png)
 
@@ -109,7 +108,7 @@ Pair Spearman 汇总所有合法 query-candidate 对的单调关系；Anchor Spe
 
 ![图 3：broad-causal 全量 ranking 对照与绝对增益](../../artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/visualization_pretrain_broad_causal/ranking_metrics.png)
 
-图 3 同时给出 trained/random 的原始分数和绝对增益，避免只展示一侧曲线造成视觉误读。
+图 3 同时给出 learned key、Raw-L1 和 matched-random 的原始分数，避免只展示一侧曲线造成视觉误读。
 
 ![图 4：broad-causal Top-12 候选误差 profile](../../artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/visualization_pretrain_broad_causal/top5_error_profiles.png)
 
@@ -117,40 +116,32 @@ Pair Spearman 汇总所有合法 query-candidate 对的单调关系；Anchor Spe
 
 ## 6. Weekday-radius：当前部署侧候选协议
 
-`weekday_radius1_overlap` 要求候选与 query 具有相同日内 slot、weekday 差不超过 1，并满足候选事件的 context end 不晚于 query context end；允许 288-step context 窗口重叠，不再额外去重。完整验证集事件候选池平均为 `23.984`，范围为 `19--27`；节点级有效候选数平均为 `23.494`。该协议正是“query 前后相邻一天的同一时段”扩展，Raw-L1 与 learned/random 使用完全相同的事件轴。
+`weekday_radius1_overlap` 要求候选与 query 具有相同日内 slot、weekday 差不超过 1，并满足候选事件的 context end 不晚于 query context end；允许 288-step context 窗口重叠，不再额外去重。完整验证集事件候选池平均为 `23.984`，范围为 `19--27`；本次三选择器共同使用的有效 query-candidate pairs 为 `14,205,494`。该协议正是“query 前后相邻一天的同一时段”扩展，Raw-L1 与 learned/random 使用完全相同的事件轴。
 
-| 指标 | HN-OffsetDecay v2 | Matched random | 差值 |
+| 指标 | Learned key | Raw-L1 | Matched random |
 |---|---:|---:|---:|
-| Pair Spearman | 0.4399 | 0.1337 | +0.3063 |
-| Anchor Spearman | 0.3994 | 0.1167 | +0.2828 |
-| Anchor Kendall | 0.2951 | 0.0828 | +0.2123 |
-| Recall@1 | 0.1061 | 0.0754 | +0.0307 |
-| NDCG@5 | 0.3947 | 0.3062 | +0.0884 |
-| Recall@5 | 0.3660 | 0.2771 | +0.0890 |
-| OffsetDecay memory MAE | 3.2215 | 3.5674 | -0.3459 |
-| OffsetDecay memory RMSE | 6.1163 | 6.5171 | -0.4009 |
-| Raw-L1 Top-12 memory MAE | 4.3296 | — | — |
+| Pair Spearman | 0.4399 | 0.1134 | 0.1337 |
+| Anchor Spearman | 0.3994 | 0.0976 | 0.1167 |
+| Anchor Kendall | 0.2951 | 0.0683 | 0.0828 |
+| Recall@1 | 0.1061 | 0.0600 | 0.0754 |
+| NDCG@5 | 0.3947 | 0.2773 | 0.3062 |
+| Recall@5 | 0.3660 | 0.2579 | 0.2771 |
+| OffsetDecay memory MAE | 3.2215 | 3.7083 | 3.5674 |
+| OffsetDecay memory RMSE | 6.1163 | 6.5836 | 6.5171 |
 
 ![图 5：weekday-radius 的 key-future 分箱关系](../../artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/visualization_weekday_radius1_overlap/key_future_alignment.png)
 
-图 5 与图 2 共用布局，展示当前部署候选约束下的结果。trained 曲线在近 key-distance 区间给出更低的 future distance，并随 key distance 增长呈明显上升趋势；相较 broad-causal，绝对相关性收缩是候选范围和 weekday 约束共同作用的结果，但 trained/random 方向保持一致。
+图 5 与图 2 共用布局，展示当前部署候选约束下的结果。learned-key 曲线在近 selector-distance 区间给出更低的 future distance，并随距离增长呈明显上升趋势；相较 broad-causal，绝对相关性收缩是候选范围和 weekday 约束共同作用的结果，但 learned、Raw-L1 与 matched-random 的差异保持可见。
 
-![图 6：weekday-radius ranking 对照](../../artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/visualization_weekday_radius1_overlap/ranking_metrics.png)
+![图 6：weekday-radius 三选择器 ranking 对照](../../artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/visualization_weekday_radius1_overlap/ranking_metrics.png)
 
 ![图 7：weekday-radius Top-12 候选误差 profile](../../artifacts/casestudy_hn_offset_decay_v2_hidden128_ffn2/visualization_weekday_radius1_overlap/top5_error_profiles.png)
 
-## 7. Raw future、Raw-L1 与 OffsetDecay 聚合
+## 7. 统一 OffsetDecay 载荷下的三选择器对照
 
-在相同 trained/random 候选和权重下，直接聚合绝对 future 会把事件 level 差异带入 memory；OffsetDecay 先对齐历史末端 level，再聚合动态变化。
+本版不再展示 raw-future 聚合。三种选择器共享同一合法事件池、Top-12、候选 future 和 OffsetDecay 载荷，只有候选排序距离不同：learned key、原始 context L1、matched-random key。这样可以把排序指标直接归因于 selector，把 Memory MAE/RMSE 解释为 selector 在统一载荷下提供的直接历史先例质量。
 
-| 协议 | learned raw-future MAE | learned OffsetDecay MAE | OffsetDecay 降低 | Raw-L1 Top-12 MAE | matched-random raw MAE |
-|---|---:|---:|---:|---:|---:|
-| pretrain_broad_causal | 3.5344 | 3.2033 | 0.3312 | 5.2695 | 4.5092 |
-| weekday_radius1_overlap | 3.4351 | 3.2215 | 0.2136 | 4.3296 | 3.7843 |
-
-这里的 `Raw-L1 Top-12` 是独立的非学习检索基线：它只在共享合法事件池中按节点 raw context L1 排序，并对原始 Bank future 等权平均；它不使用 learned key、learned attention、OffsetDecay 或真实 query future。表中的 learned raw-future 与 OffsetDecay 只改变 payload alignment，候选事件轴和 learned key 排序保持不变。
-
-该对照只改变 payload alignment，不改变 encoder、候选事件轴或 key 排序，因此可将误差降低归因于 OffsetDecay 的水平校正。对应的案例图保存在两组 visualization 目录下的 `offset_decay_payload_cases.png`，案例选择遵循 strong-win/representative/failure 三个固定增益分位数。
+对应的统一三列结果保存在两个 visualization 目录的 `metrics.json`、`ranking_metrics.csv`、`key_future_alignment.png`、`ranking_metrics.png` 和 `top5_error_profiles.png` 中；不再生成 `offset_decay_payload_cases.png`。
 
 ## 8. 时空海市蜃楼案例
 
@@ -192,7 +183,7 @@ B 类先用 `context >= P92`、`future trend <= P8`、`key <= P8` 定义候选�
 
 六对、合计 12 个样本适合作为主文机制图的规模：每类 3 对足以展示重复出现的模式，且图面仍能读清单条曲线和 key 连线。它们不适合独立证明总体有效性；future-trend cluster 的全量统计也不依赖图中显示的几十个点。因此本报告采用三层证据：
 
-1. **全量统计**：56,694,054 个 broad-causal 有效 pairs、14,205,552 个 weekday-radius 有效 pairs，以及完整验证集的 Spearman/Kendall、Recall@K、NDCG@5、Memory MAE/RMSE 和 Raw-L1 MAE。
+1. **全量统计**：56,694,024 个 broad-causal 有效 pairs、14,205,494 个 weekday-radius 有效 pairs，以及完整验证集的三选择器 Spearman/Kendall、Recall@K、NDCG@5 和统一 OffsetDecay Memory MAE/RMSE。
 2. **分箱趋势**：全体 key-distance decile 的 future distance 均值，trained 与 random 使用同一坐标轴和同一事件轴。
 3. **代表性案例**：按预先固定的 P8/P92 规则、不重复事件约束和类中心优先的确定性排序选择，不按“看起来最好”手工删除失败区域。案例用于机制说明，失败和边界通过 aggregate 指标及固定 strong-win/representative/failure 案例保留。
 

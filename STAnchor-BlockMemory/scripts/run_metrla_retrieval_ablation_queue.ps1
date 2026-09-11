@@ -12,7 +12,7 @@ $runRandom = -not $RawL1Only
 $runRawL1 = -not $RandomOnly
 
 # METR-LA retrieval ablations after the case-study evidence is already in.
-# Only three runs: random ARGCN, raw-L1 ARGCN / GWN.
+# Only three runs: random ARGCN, raw-L1 + OffsetDecay ARGCN / GWN.
 # Same Router, weekday_radius1_overlap, Top-12, frozen path cache.
 # Build missing banks, but do not delete the official trained or random banks.
 
@@ -65,16 +65,16 @@ $randomJobs = @(
 )
 $rawl1Jobs = @(
     @{
-        Label = 'rawl1_router_gwn'
-        Config = 'configs\ablation_rawl1_router_gwn.yaml'
+        Label = 'rawl1_offset_decay_router_gwn'
+        Config = 'configs\ablation_rawl1_offset_decay_router_gwn.yaml'
         Base = 'artifacts\convergence\downstream_tgge_v3_matched_fulltrain_queue\downstream_tgge_v3_graphwavenet_base_only_fulltrain_seed42\downstream_best.pt'
-        RunName = 'convergence/ablation_rawl1_router_gwn_seed42'
+        RunName = 'convergence/ablation_rawl1_offset_decay_router_gwn_seed42'
     },
     @{
-        Label = 'rawl1_router_argcn'
-        Config = 'configs\ablation_rawl1_router_argcn.yaml'
+        Label = 'rawl1_offset_decay_router_argcn'
+        Config = 'configs\ablation_rawl1_offset_decay_router_argcn.yaml'
         Base = 'artifacts\convergence\formal_20260826_argcn_base_only_v1\downstream_best.pt'
-        RunName = 'convergence/ablation_rawl1_router_argcn_seed42'
+        RunName = 'convergence/ablation_rawl1_offset_decay_router_argcn_seed42'
     }
 )
 
@@ -181,4 +181,4 @@ if ($completed -ne $expected) {
 Write-Host ''
 Write-Host '===== METR-LA RETRIEVAL ABLATION QUEUE COMPLETED ====='
 if ($runRandom) { Write-Host 'Finished: random ARGCN' }
-if ($runRawL1) { Write-Host 'Finished: raw-L1 GWN, raw-L1 ARGCN' }
+if ($runRawL1) { Write-Host 'Finished: raw-L1 + OffsetDecay GWN, raw-L1 + OffsetDecay ARGCN' }
