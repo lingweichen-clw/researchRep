@@ -90,6 +90,19 @@ class DownstreamFlowTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "candidate protocol"):
             config.validate()
 
+    def test_config_accepts_context_key_context_router(self) -> None:
+        config = ExperimentConfig(
+            data=DataConfig(raw_path="data.h5", adjacency_path="adj.pkl"),
+            target=TargetConfig(
+                downstream_mode="learned_topk_error_aware",
+                training_protocol="posthoc_frozen_base",
+                validation_correction_variant="base_as_candidate",
+                calibrator_arch="context_retrieval_aware_mha_router",
+                candidate_ranking="learned_key",
+            ),
+        )
+        config.validate()
+
     def test_legacy_checkpoint_defaults_to_existing_confidence_mode(self) -> None:
         self.assertEqual(
             checkpoint_downstream_mode({"config": {"target": {}}}),

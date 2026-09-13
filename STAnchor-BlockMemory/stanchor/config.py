@@ -304,6 +304,21 @@ class ExperimentConfig:
         payload = validate_candidate_payload(self.target.candidate_payload)
         if ranking == "raw_l1" and self.target.downstream_mode != LEARNED_TOPK_ERROR_AWARE:
             raise ValueError("raw_l1 candidate ranking requires learned_topk_error_aware")
+        if (
+            self.target.calibrator_arch == "context_retrieval_aware_mha_router"
+            and ranking != "learned_key"
+        ):
+            raise ValueError(
+                "context_retrieval_aware_mha_router requires candidate_ranking='learned_key'"
+            )
+        if (
+            self.target.calibrator_arch == "context_retrieval_aware_mha_router"
+            and self.target.downstream_mode != LEARNED_TOPK_ERROR_AWARE
+        ):
+            raise ValueError(
+                "context_retrieval_aware_mha_router requires "
+                "downstream_mode='learned_topk_error_aware'"
+            )
         if payload != "auto" and self.target.downstream_mode != LEARNED_TOPK_ERROR_AWARE:
             raise ValueError(
                 "explicit candidate payload requires learned_topk_error_aware"
@@ -657,7 +672,7 @@ class ExperimentConfig:
                 raise ValueError("multi_step_lr requires positive scheduler_milestones")
         if self.target.validation_correction_variant not in {"scalar_gate", "vector_residual", "residual_additive", "set_attention_horizon", "base_as_candidate"}:
             raise ValueError("unsupported validation_correction_variant")
-        if self.target.calibrator_arch not in {"legacy", "base_as_candidate", "trajectory_conditioned_base_as_candidate", "transformer_candidate_router", "retrieval_aware_mha_router"}:
+        if self.target.calibrator_arch not in {"legacy", "base_as_candidate", "trajectory_conditioned_base_as_candidate", "transformer_candidate_router", "retrieval_aware_mha_router", "context_retrieval_aware_mha_router"}:
             raise ValueError("unsupported calibrator_arch")
         if self.target.candidate_token_dim <= 0 or self.target.candidate_attention_heads <= 0:
             raise ValueError("candidate token dimensions must be positive")

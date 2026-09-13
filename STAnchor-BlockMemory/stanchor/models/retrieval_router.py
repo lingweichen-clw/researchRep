@@ -8,7 +8,7 @@ from torch.nn import functional as F
 
 
 class RetrievalAwareMHAResidualRouter(nn.Module):
-    """Use standard MHA output to route K residual experts plus Base fallback."""
+    """Route K residual experts plus Base, optionally with context evidence."""
 
     uses_candidate_routing = True
     uses_retrieval_node_keys = True
@@ -27,6 +27,7 @@ class RetrievalAwareMHAResidualRouter(nn.Module):
         attention_heads: int = 4,
         mha_dropout: float = 0.05,
         base_logit_init_bias: float = 1.0,
+        use_context_features: bool = False,
     ) -> None:
         super().__init__()
         dims = (context_length, horizon, channels, retrieval_dim, hidden_dim,
@@ -46,6 +47,8 @@ class RetrievalAwareMHAResidualRouter(nn.Module):
         self.state_dim = fusion_hidden_dim
         self.attention_heads = attention_heads
         self.routing_dim = routing_dim
+        self.use_context_features = bool(use_context_features)
+        self.context_feature_dim = context_length * channels * 2
 
         self.state_encoder = nn.Sequential(
             nn.Linear((context_length + horizon) * channels, fusion_hidden_dim),
@@ -73,6 +76,24 @@ class RetrievalAwareMHAResidualRouter(nn.Module):
             nn.GELU(),
             nn.Linear(candidate_hidden_dim, hidden_dim),
         )
+        self.context_key_encoder = None
+        self.context_trajectory_encoder = None
+        if self.use_context_features:
+            self.context_key_encoder = nn.Sequential(
+                nn.Linear(retrieval_dim * 2, candidate_hidden_dim),
+                nn.GELU(),
+                nn.Linear(candidate_hidden_dim, hidden_dim),
+            )
+            self.context_trajectory_encoder = nn.Sequential(
+                nn.Linear(self.context_feature_dim, candidate_hidden_dim),
+                nn.GELU(),
+                nn.Linear(candidate_hidden_dim, hidden_dim),
+            )
+            # Start the enhanced branch as the published residual Router.
+            nn.init.zeros_(self.context_key_encoder[-1].weight)
+            nn.init.zeros_(self.context_key_encoder[-1].bias)
+            nn.init.zeros_(self.context_trajectory_encoder[-1].weight)
+            nn.init.zeros_(self.context_trajectory_encoder[-1].bias)
         self.base_encoder = nn.Sequential(
             nn.Linear(fusion_hidden_dim + hidden_dim + 2, hidden_dim),
             nn.GELU(),
@@ -133,6 +154,7 @@ class RetrievalAwareMHAResidualRouter(nn.Module):
         candidates=None,
         aggregation=None,
         retrieval_node_keys: torch.Tensor | None = None,
+        candidate_context_features: torch.Tensor | None = None,
     ):
         del memory, features, memory_valid
         if candidates is None or aggregation is None:
@@ -189,6 +211,42 @@ class RetrievalAwareMHAResidualRouter(nn.Module):
             )
         if retrieval_node_keys.shape != (batch, nodes, self.retrieval_dim):
             raise ValueError("retrieval_node_keys must be [B,N,retrieval_dim]")
+        if self.use_context_features:
+            if candidate_context_features is None:
+                raise ValueError("context router requires candidate_context_features")
+            expected_context_shape = (
+                batch,
+                nodes,
+                top_k,
+                self.context_feature_dim,
+            )
+            if candidate_context_features.shape != expected_context_shape:
+                raise ValueError(
+                    "candidate_context_features must be "
+                    f"[B,N,K,{self.context_feature_dim}]"
+                )
+            candidate_keys = candidates.node_keys
+            if candidate_keys is None:
+                raise ValueError("context router requires selected candidate node_keys")
+            expected_key_shape = (batch, nodes, top_k, self.retrieval_dim)
+            if candidate_keys.shape != expected_key_shape:
+                raise ValueError("candidate node_keys must be [B,N,K,retrieval_dim]")
+            query_key = retrieval_node_keys.unsqueeze(2)
+            key_pair = torch.cat(
+                (query_key * candidate_keys.to(dtype=query_key.dtype),
+                 (query_key - candidate_keys.to(dtype=query_key.dtype)).abs()),
+                dim=-1,
+            )
+            tokens = tokens + self.context_key_encoder(key_pair)
+            tokens = tokens + self.context_trajectory_encoder(
+                torch.nan_to_num(
+                    candidate_context_features,
+                    nan=0.0,
+                    posinf=0.0,
+                    neginf=0.0,
+                ).to(dtype=tokens.dtype)
+            )
+            tokens = torch.where(valid.unsqueeze(-1), tokens, torch.zeros_like(tokens))
         key_token = self.retrieval_encoder(torch.nan_to_num(
             retrieval_node_keys, nan=0.0, posinf=0.0, neginf=0.0
         ))

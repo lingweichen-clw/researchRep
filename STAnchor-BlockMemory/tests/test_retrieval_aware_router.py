@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from stanchor.models.trajectory_calibrator import RetrievalAwareMHAResidualRouter
@@ -17,6 +18,7 @@ def _inputs(batch=2, context=12, horizon=12, nodes=3, top_k=12, channels=1):
         level_distances=torch.rand(batch, nodes, top_k),
         weights=torch.full((batch, nodes, top_k), 1.0 / top_k),
         valid=torch.ones(batch, nodes, top_k, dtype=torch.bool),
+        node_keys=torch.nn.functional.normalize(torch.randn(batch, nodes, top_k, 64), dim=-1),
     )
     aggregation = AggregationOutput(
         prediction=futures.mean(dim=3),
@@ -97,3 +99,56 @@ def test_retrieval_aware_router_base_fallback_is_exact():
         model.last_routing_weights[..., -1],
         torch.ones_like(model.last_routing_weights[..., -1]), atol=1e-7
     )
+
+
+def test_context_router_consumes_key_pair_and_twelve_step_context_features():
+    model = RetrievalAwareMHAResidualRouter(
+        context_length=12,
+        horizon=12,
+        channels=1,
+        retrieval_dim=64,
+        hidden_dim=256,
+        retrieval_hidden_dim=128,
+        fusion_hidden_dim=256,
+        candidate_hidden_dim=128,
+        routing_dim=128,
+        attention_heads=4,
+        mha_dropout=0.0,
+        use_context_features=True,
+    )
+    history, base, candidates, aggregation = _inputs()
+    context_features = torch.randn(2, 3, 12, 24)
+    final, history_mass, _, _ = model(
+        history,
+        base,
+        candidates=candidates,
+        aggregation=aggregation,
+        retrieval_node_keys=torch.randn(2, 3, 64),
+        candidate_context_features=context_features,
+    )
+    assert final.shape == base.shape
+    assert history_mass.shape == (2, 12, 3, 1)
+    assert model.context_key_encoder is not None
+    assert model.context_trajectory_encoder is not None
+    assert model.last_routing_weights.shape == (2, 3, 12, 13)
+
+
+def test_context_router_requires_context_features():
+    model = RetrievalAwareMHAResidualRouter(
+        context_length=12,
+        horizon=12,
+        channels=1,
+        hidden_dim=256,
+        attention_heads=4,
+        mha_dropout=0.0,
+        use_context_features=True,
+    )
+    history, base, candidates, aggregation = _inputs()
+    with pytest.raises(ValueError, match="candidate_context_features"):
+        model(
+            history,
+            base,
+            candidates=candidates,
+            aggregation=aggregation,
+            retrieval_node_keys=torch.randn(2, 3, 64),
+        )
