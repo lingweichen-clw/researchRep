@@ -3173,3 +3173,15 @@
 [2026-09-13 17:19:32] INFO Epoch 020 | train batch=210/1418 | elapsed=1.6 min | eta=8.9 min
 [2026-09-13 17:19:37] INFO Epoch 020 | train batch=220/1418 | elapsed=1.6 min | eta=8.9 min
 [2026-09-13 17:19:41] INFO Epoch 020 | train batch=230/1418 | elapsed=1.7 min | eta=8.8 min
+[2026-09-13 17:19:45] INFO Epoch 020 | train batch=240/1418 | elapsed=1.8 min | eta=8.7 min
+[2026-09-13 17:19:45] INFO Epoch 020 | train batch=240/1418 | elapsed=1.8 min | eta=8.7 min
+[2026-09-13 17:19:50] INFO Epoch 020 | train batch=250/1418 | elapsed=1.9 min | eta=8.7 min
+[2026-09-13 17:19:55] INFO Epoch 020 | train batch=260/1418 | elapsed=1.9 min | eta=8.6 min
+[2026-09-13 17:19:59] INFO Epoch 020 | train batch=270/1418 | elapsed=2.0 min | eta=8.5 min
+[2026-09-13 17:20:04] INFO Epoch 020 | train batch=280/1418 | elapsed=2.1 min | eta=8.5 min
+[2026-09-13 17:20:09] INFO Epoch 020 | train batch=290/1418 | elapsed=2.2 min | eta=8.4 min
+[2026-09-13 17:20:13] INFO Epoch 020 | train batch=300/1418 | elapsed=2.2 min | eta=8.4 min
+[2026-09-13 17:20:18] INFO Epoch 020 | train batch=310/1418 | elapsed=2.3 min | eta=8.3 min
+[2026-09-13 17:20:23] INFO Epoch 020 | train batch=320/1418 | elapsed=2.4 min | eta=8.3 min
+[2026-09-13 17:20:28] INFO Epoch 020 | train batch=330/1418 | elapsed=2.5 min | eta=8.2 min
+[2026-09-13 17:20:33] INFO Epoch 020 | train batch=340/1418 | elapsed=2.6 min | eta=8.1 min
