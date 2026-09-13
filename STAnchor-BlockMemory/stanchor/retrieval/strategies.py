@@ -370,6 +370,60 @@ def candidate_contexts_for_nodes(
     )
 
 
+@torch.no_grad()
+def candidate_context_pair_features(
+    candidates: NodeCandidates,
+    query_context: torch.Tensor,
+    query_observed: torch.Tensor,
+    bank: Any,
+    series: Any,
+    scaler: Any,
+    context_length: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """Build compact query/candidate context differences for the Router.
+
+    The returned feature is ``[B, N, K, 2*T*C]`` containing the visible
+    normalized context difference and its magnitude.  Candidate contexts are
+    loaded from the causal event windows already used by retrieval; no query
+    future values are involved.
+    """
+    if query_context.ndim != 4 or query_observed.shape != query_context.shape:
+        raise ValueError("query context and mask must be [B, T, N, C]")
+    batch, time, nodes, channels = query_context.shape
+    if time != context_length:
+        raise ValueError("query context time axis must match context_length")
+    if candidates.event_ids.shape[:2] != (batch, nodes):
+        raise ValueError("candidate event ids must align with query context")
+    node_ids = torch.arange(nodes, device=device).view(1, nodes, 1).expand(
+        batch, nodes, candidates.event_ids.shape[-1]
+    )
+    candidate_values, candidate_observed = candidate_contexts_for_nodes(
+        bank,
+        candidates.event_ids,
+        node_ids,
+        series,
+        scaler,
+        context_length,
+        device,
+    )
+    # [B, N, T, K, C] -> [B, N, K, T, C]
+    candidate_values = candidate_values.permute(0, 1, 3, 2, 4).contiguous()
+    candidate_observed = candidate_observed.permute(0, 1, 3, 2, 4).contiguous()
+    query_values = query_context.permute(0, 2, 1, 3).unsqueeze(2)
+    query_mask = query_observed.bool().permute(0, 2, 1, 3).unsqueeze(2)
+    common = candidate_observed.bool() & query_mask
+    delta = torch.where(
+        common,
+        candidate_values - query_values,
+        torch.zeros_like(candidate_values),
+    )
+    features = torch.cat((delta, delta.abs()), dim=-1)
+    features = features.reshape(batch, nodes, candidates.event_ids.shape[-1], -1)
+    valid = candidates.valid.unsqueeze(-1)
+    return torch.where(valid, features, torch.zeros_like(features))
+
+
 def event_candidate_futures(
     bank: Any,
     event_ids: torch.Tensor,

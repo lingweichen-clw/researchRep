@@ -10,6 +10,7 @@ from stanchor.retrieval import strategies as retrieval_strategies
 from stanchor.retrieval.strategies import (
     ContextWindowCache,
     calendar_event_candidates,
+    candidate_context_pair_features,
     candidate_contexts,
     offset_decay_aggregation,
     raw_l1_node_candidates,
@@ -19,6 +20,63 @@ from stanchor.retrieval.retriever import EventCandidates, NodeCandidates
 
 
 class RetrievalStrategiesTest(unittest.TestCase):
+    def test_candidate_context_pair_features_are_compact_and_causal(self) -> None:
+        values = np.arange(36, dtype=np.float32).reshape(36, 1, 1)
+        observed = np.ones_like(values, dtype=bool)
+        series = SimpleNamespace(values=values, observed=observed)
+        scaler = SimpleNamespace(
+            mean=np.zeros((1, 1), dtype=np.float32),
+            std=np.ones((1, 1), dtype=np.float32),
+            eps=1.0e-6,
+        )
+        bank = SimpleNamespace(context_end=np.asarray([11, 23], dtype=np.int64))
+        candidates = NodeCandidates(
+            event_ids=torch.tensor([[[0, 1]]]),
+            total_scores=torch.zeros(1, 1, 2),
+            shape_scores=torch.zeros(1, 1, 2),
+            level_distances=torch.zeros(1, 1, 2),
+            weights=torch.full((1, 1, 2), 0.5),
+            valid=torch.ones(1, 1, 2, dtype=torch.bool),
+        )
+        query = torch.arange(12, dtype=torch.float32).view(1, 12, 1, 1)
+        features = candidate_context_pair_features(
+            candidates,
+            query,
+            torch.ones_like(query, dtype=torch.bool),
+            bank,
+            series,
+            scaler,
+            12,
+            torch.device("cpu"),
+        )
+        self.assertEqual(tuple(features.shape), (1, 1, 2, 24))
+        self.assertTrue(torch.allclose(features[0, 0, 0], torch.zeros(24)))
+        self.assertTrue(torch.allclose(features[0, 0, 1, 12:], features[0, 0, 1, :12].abs()))
+
+    def test_candidate_context_pair_features_zero_invalid_candidate(self) -> None:
+        values = np.arange(24, dtype=np.float32).reshape(24, 1, 1)
+        series = SimpleNamespace(values=values, observed=np.ones_like(values, dtype=bool))
+        scaler = SimpleNamespace(
+            mean=np.zeros((1, 1), dtype=np.float32),
+            std=np.ones((1, 1), dtype=np.float32),
+            eps=1.0e-6,
+        )
+        bank = SimpleNamespace(context_end=np.asarray([11], dtype=np.int64))
+        candidates = NodeCandidates(
+            event_ids=torch.tensor([[[0, -1]]]),
+            total_scores=torch.zeros(1, 1, 2),
+            shape_scores=torch.zeros(1, 1, 2),
+            level_distances=torch.zeros(1, 1, 2),
+            weights=torch.tensor([[[1.0, 0.0]]]),
+            valid=torch.tensor([[[True, False]]]),
+        )
+        query = torch.zeros(1, 12, 1, 1)
+        features = candidate_context_pair_features(
+            candidates, query, torch.ones_like(query, dtype=torch.bool), bank,
+            series, scaler, 12, torch.device("cpu"),
+        )
+        self.assertTrue(torch.equal(features[0, 0, 1], torch.zeros(24)))
+
     def test_candidate_contexts_use_forecast_tail_of_long_retrieval_window(self) -> None:
         values = np.arange(30, dtype=np.float32).reshape(30, 1, 1)
         observed = np.ones_like(values, dtype=bool)

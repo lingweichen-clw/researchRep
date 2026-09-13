@@ -11,6 +11,7 @@ from stanchor.config import ExperimentConfig
 from stanchor.engine.common import build_data_and_graph, load_checkpoint, load_pretrained_model
 from stanchor.engine.target import _validate_bank, build_downstream_model, checkpoint_bank_level_weight, checkpoint_candidate_protocol, checkpoint_downstream_mode, retrieve_for_downstream_mode
 from stanchor.retrieval.retriever import TwoStageRetriever
+from stanchor.retrieval.strategies import candidate_context_pair_features
 from stanchor.utils import resolve_device
 
 def _rho(x, y):
@@ -32,9 +33,19 @@ def diagnose_attention_checkpoint(config: ExperimentConfig, pretrained_checkpoin
         _validate_bank(bank,pretrained,graph_cpu,data.scaler.state_dict())
         if checkpoint.get('bank_manifest')!=bank.manifest.to_dict(): raise ValueError('diagnostic bank differs from the bank used for downstream training')
         retriever=TwoStageRetriever(bank,config.bank.event_top_r,config.bank.node_top_k,config.bank.level_weight,config.bank.level_temperature,config.bank.search_temperature,device)
+        retrieval_router = config.target.calibrator_arch in {'retrieval_aware_mha_router', 'context_retrieval_aware_mha_router'}
         for i,batch in enumerate(loader):
             if max_batches is not None and i>=max_batches: break
-            x=batch['x'].to(device); ox=batch['x_observed'].to(device); candidates,aggregation=retrieve_for_downstream_mode(mode,pretrained,retriever,bank,data,graph,batch,x,ox,device,candidate_protocol=protocol); downstream(x,candidates,aggregation); attention=downstream.error_corrector.last_attention
+            x=batch['x'].to(device); ox=batch['x_observed'].to(device)
+            retrieved=retrieve_for_downstream_mode(mode,pretrained,retriever,bank,data,graph,batch,x,ox,device,candidate_protocol=protocol,include_query_keys=retrieval_router)
+            if retrieval_router:
+                candidates,aggregation,retrieval_node_keys=retrieved
+            else:
+                candidates,aggregation=retrieved; retrieval_node_keys=None
+            candidate_context_features = None
+            if config.target.calibrator_arch == 'context_retrieval_aware_mha_router':
+                candidate_context_features = candidate_context_pair_features(candidates,x,ox,bank,data.series,data.scaler,config.data.context_length,device)
+            downstream(x,candidates,aggregation,retrieval_node_keys=retrieval_node_keys,candidate_context_features=candidate_context_features); attention=downstream.error_corrector.last_attention
             target=data.scaler.inverse_transform_torch(batch['y'].to(device)); mean=torch.as_tensor(data.scaler.mean,dtype=aggregation.candidate_futures.dtype,device=device)[None,None,:,None,:]; std=torch.as_tensor(data.scaler.std,dtype=aggregation.candidate_futures.dtype,device=device)[None,None,:,None,:]; future=aggregation.candidate_futures*(std+data.scaler.eps)+mean; valid=aggregation.candidate_masks.bool().all(-1)&aggregation.valid.bool().all(-1,keepdim=True); errors=(future-target.unsqueeze(3)).abs().mean(-1); valid=valid&torch.isfinite(errors); loc=valid.any(-1)
             if not bool(loc.any()): continue
             a=attention.float()[loc]; e=errors[loc]; v=valid[loc]; k=a.shape[-1]; top1.extend(a[:,0].cpu().tolist()); top5.extend(a[:,:min(5,k)].sum(-1).cpu().tolist()); ent.extend((-(a.clamp_min(1e-12)*a.clamp_min(1e-12).log()).sum(-1)).cpu().tolist())

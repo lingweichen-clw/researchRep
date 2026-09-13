@@ -25,6 +25,7 @@ class NodeCandidates:
     level_distances: torch.Tensor  # [B, N, K]
     weights: torch.Tensor  # [B, N, K]
     valid: torch.Tensor  # [B, N, K]
+    node_keys: torch.Tensor | None = None  # [B, N, K, Dr], selected candidate keys
 
 
 @dataclass(frozen=True)
@@ -187,7 +188,8 @@ class TwoStageRetriever:
         candidate_levels = torch.from_numpy(
             np.asarray(self.bank.level_features[safe_ids], dtype=np.float32)
         ).to(self.device)  # [B, R, N, 4C]
-        shape = torch.einsum("bnd,brnd->bnr", query_node_keys, candidate_keys)
+        candidate_keys = candidate_keys.permute(0, 2, 1, 3).contiguous()  # [B, N, R, Dr]
+        shape = torch.einsum("bnd,bnrd->bnr", query_node_keys, candidate_keys)
         level_distance = (query_levels[:, None, :, :] - candidate_levels).abs().mean(dim=-1).permute(0, 2, 1)
         total = shape + self.level_weight * torch.exp(-level_distance / self.level_temperature)
         event_valid = events.valid[:, None, :].expand(batch, nodes, -1)
@@ -204,6 +206,8 @@ class TwoStageRetriever:
         max_value = torch.where(torch.isfinite(max_value), max_value, torch.zeros_like(max_value))
         exponent = torch.where(valid_top, torch.exp(logits - max_value), torch.zeros_like(logits))
         weights = exponent / exponent.sum(dim=-1, keepdim=True).clamp_min(1.0e-8)
+        gather_keys = local_top.unsqueeze(-1).expand(-1, -1, -1, retrieval_dim)
+        selected_keys = candidate_keys.gather(2, gather_keys)
         return NodeCandidates(
             global_ids,
             top_scores,
@@ -211,6 +215,7 @@ class TwoStageRetriever:
             level_top,
             weights,
             valid_top,
+            selected_keys,
         )
 
     @torch.no_grad()
