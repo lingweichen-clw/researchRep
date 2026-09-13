@@ -27,6 +27,7 @@ from stanchor.retrieval.retriever import AggregationOutput, EventCandidates, Two
 from stanchor.retrieval.strategies import (
     candidate_contexts,
     event_candidate_futures,
+    offset_only_aggregation,
     offset_decay_aggregation,
     raw_l1_node_candidates,
 )
@@ -47,6 +48,16 @@ SUPPORTED_CANDIDATE_PROTOCOLS = {
     "broad_causal",
     "pretrain_broad_causal",
 }
+
+
+def _aggregation_for_version(version: str) -> tuple[Any, str]:
+    """Return the candidate payload aggregation matching the visualization teacher."""
+    version = version.lower()
+    if version == OFFSET_ONLY_VISUALIZATION_VERSION:
+        return offset_only_aggregation, "offset_only"
+    if version == CURRENT_VISUALIZATION_VERSION:
+        return offset_decay_aggregation, "offset_decay"
+    raise ValueError(f"version must be one of {sorted(SUPPORTED_VERSIONS)}")
 
 
 def validate_aligned_bank_axes(
@@ -1007,6 +1018,7 @@ def _collect_case_payloads(
     random_bank: MemoryBank,
     device: torch.device,
     candidate_protocol: str,
+    aggregation_fn: Any,
 ) -> dict[str, Any]:
     case_names = ("strong_win", "representative", "failure")
     index_by_sample = {
@@ -1061,7 +1073,7 @@ def _collect_case_payloads(
             config.bank.node_top_k,
             device,
         )
-        raw_l1_deployed = offset_decay_aggregation(
+        raw_l1_deployed = aggregation_fn(
             raw_l1_candidates,
             batch["x"].to(device),
             batch["x_observed"].to(device),
@@ -1071,7 +1083,7 @@ def _collect_case_payloads(
             config.data.context_length,
             device,
         )
-        pretrained_deployed = offset_decay_aggregation(
+        pretrained_deployed = aggregation_fn(
             pretrained_candidates,
             batch["x"].to(device),
             batch["x_observed"].to(device),
@@ -1081,7 +1093,7 @@ def _collect_case_payloads(
             config.data.context_length,
             device,
         )
-        random_deployed = offset_decay_aggregation(
+        random_deployed = aggregation_fn(
             random_candidates,
             batch["x"].to(device),
             batch["x_observed"].to(device),
@@ -1235,6 +1247,7 @@ def run_retrieval_visualization(
     version = version.lower()
     if version not in SUPPORTED_VERSIONS:
         raise ValueError(f"version must be one of {sorted(SUPPORTED_VERSIONS)}")
+    aggregation_fn, candidate_payload_name = _aggregation_for_version(version)
     candidate_protocol = candidate_protocol.lower()
     if candidate_protocol not in SUPPORTED_CANDIDATE_PROTOCOLS:
         raise ValueError(
@@ -1498,7 +1511,7 @@ def run_retrieval_visualization(
                 random_encoding.statistics.level_features,
                 events,
             )
-            pretrained_deployed = offset_decay_aggregation(
+            pretrained_deployed = aggregation_fn(
                 pretrained_candidates,
                 batch["x"].to(device),
                 batch["x_observed"].to(device),
@@ -1508,7 +1521,7 @@ def run_retrieval_visualization(
                 config.data.context_length,
                 device,
             )
-            random_deployed = offset_decay_aggregation(
+            random_deployed = aggregation_fn(
                 random_candidates,
                 batch["x"].to(device),
                 batch["x_observed"].to(device),
@@ -1518,7 +1531,7 @@ def run_retrieval_visualization(
                 config.data.context_length,
                 device,
             )
-            raw_l1_deployed = offset_decay_aggregation(
+            raw_l1_deployed = aggregation_fn(
                 raw_l1_candidates,
                 batch["x"].to(device),
                 batch["x_observed"].to(device),
@@ -1678,6 +1691,7 @@ def run_retrieval_visualization(
             random_bank,
             device,
             candidate_protocol,
+            aggregation_fn,
         )
         candidate_counts = np.concatenate(candidate_count_chunks).astype(np.float64)
         positive_candidate_counts = candidate_counts[candidate_counts > 0]
@@ -1756,7 +1770,7 @@ def run_retrieval_visualization(
                 "random": "cosine distance between matched-random node keys",
             },
             "candidate_payload": {
-                "name": "offset_decay",
+                "name": candidate_payload_name,
                 "shared_across_selectors": True,
                 "selectors": ["pretrained", "raw_l1", "random"],
             },

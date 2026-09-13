@@ -11,6 +11,7 @@ import torch
 
 from stanchor.diagnostics.retrieval_visualization import (
     _anchor_wise_ranking_metrics_chunked,
+    _aggregation_for_version,
     alignment_statistics,
     anchor_wise_ranking_metrics,
     build_diagnostic_event_candidates,
@@ -38,6 +39,14 @@ from scripts.extract_spatiotemporal_mirages import (
 
 
 class RetrievalVisualizationTest(unittest.TestCase):
+    def test_visualization_version_selects_matching_candidate_payload(self) -> None:
+        decay_fn, decay_name = _aggregation_for_version("hn_offset_decay_v2")
+        offset_fn, offset_name = _aggregation_for_version("hn_offset_only_v1")
+
+        self.assertEqual(decay_name, "offset_decay")
+        self.assertEqual(offset_name, "offset_only")
+        self.assertNotEqual(decay_fn, offset_fn)
+
     def test_anchor_ranking_chunk_size_does_not_change_metrics(self) -> None:
         key_distance = np.asarray(
             [
