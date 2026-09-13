@@ -72,7 +72,7 @@ class RetrievalVisualizationTest(unittest.TestCase):
         ):
             self.assertEqual(one_chunk[key], two_chunks[key])
 
-    def test_visualization_cli_is_v2_only(self) -> None:
+    def test_visualization_cli_defaults_to_v2_and_exposes_offset_only(self) -> None:
         result = subprocess.run(
             [sys.executable, "scripts/visualize_retrieval.py", "--help"],
             capture_output=True,
@@ -81,8 +81,9 @@ class RetrievalVisualizationTest(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("HN-OffsetDecay v2", result.stdout)
-        self.assertNotIn("--version", result.stdout)
+        self.assertIn("--version", result.stdout)
+        self.assertIn("hn_offset_decay_v2", result.stdout)
+        self.assertIn("hn_offset_only_v1", result.stdout)
 
     def test_mirage_masked_distance_ignores_invalid_zero_values(self) -> None:
         left = np.asarray([1.0, 99.0, 3.0])
@@ -275,6 +276,25 @@ class RetrievalVisualizationTest(unittest.TestCase):
 
         self.assertTrue(bool(valid.all()))
         self.assertTrue(torch.allclose(signature.flatten(), torch.tensor([2.0, 9.0, 16.0])))
+
+    def test_offset_only_signature_matches_new_teacher(self) -> None:
+        context = torch.tensor([[[[8.0]], [[10.0]]]])
+        observed = torch.ones_like(context, dtype=torch.bool)
+        future = torch.tensor([[[[12.0]], [[14.0]], [[16.0]]]])
+        future_observed = torch.ones_like(future, dtype=torch.bool)
+
+        signature, valid = build_teacher_aligned_signature(
+            "hn_offset_only_v1",
+            future,
+            future_observed,
+            context,
+            observed,
+        )
+
+        self.assertTrue(bool(valid.all()))
+        self.assertTrue(
+            torch.allclose(signature.flatten(), torch.tensor([2.0, 4.0, 6.0]))
+        )
 
     def test_legacy_teacher_versions_are_rejected(self) -> None:
         context = torch.tensor([[[[8.0]], [[10.0]]]])

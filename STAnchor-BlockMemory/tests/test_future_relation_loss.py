@@ -7,6 +7,7 @@ import torch
 
 from stanchor.config import DataConfig, ExperimentConfig, PretrainConfig
 from stanchor.data.normalization import WindowStatistics
+from stanchor.losses import pretraining as pretraining_losses
 from stanchor.losses.pretraining import (
     anchor_mean_normalize_distances,
     build_future_increment,
@@ -54,6 +55,14 @@ class FutureRelationLossTest(unittest.TestCase):
                 relation_distance_normalization="anchor_mean",
             ),
         ).validate()
+        ExperimentConfig(
+            data=DataConfig(raw_path="data.h5", adjacency_path="adj.pkl"),
+            pretrain=PretrainConfig(
+                retrieval_loss_mode="hard_negative_offset_decay",
+                relation_teacher_mode="offset_only",
+                relation_distance_normalization="symmetric_geometric_mean",
+            ),
+        ).validate()
         with self.assertRaisesRegex(ValueError, "anchor_mean"):
             ExperimentConfig(
                 data=DataConfig(raw_path="data.h5", adjacency_path="adj.pkl"),
@@ -82,6 +91,58 @@ class FutureRelationLossTest(unittest.TestCase):
                     future_increment_weight=0.25,
                 ),
             ).validate()
+        with self.assertRaisesRegex(ValueError, "future_increment_weight=0"):
+            ExperimentConfig(
+                data=DataConfig(raw_path="data.h5", adjacency_path="adj.pkl"),
+                pretrain=PretrainConfig(
+                    retrieval_loss_mode="hard_negative_offset_decay",
+                    relation_teacher_mode="offset_only",
+                    relation_distance_normalization="anchor_mean",
+                    future_increment_weight=0.5,
+                ),
+            ).validate()
+
+    def test_offset_only_signature_subtracts_endpoint_at_every_horizon(self) -> None:
+        self.assertTrue(
+            hasattr(pretraining_losses, "build_offset_only_signature"),
+            "Offset-only teacher signature is not implemented",
+        )
+        future = torch.tensor([12.0, 14.0, 17.0]).view(1, 3, 1, 1)
+        future_observed = torch.ones_like(future, dtype=torch.bool)
+        context = torch.tensor([8.0, 10.0]).view(1, 2, 1, 1)
+        context_observed = torch.ones_like(context, dtype=torch.bool)
+
+        signature, valid = pretraining_losses.build_offset_only_signature(
+            future,
+            future_observed,
+            context,
+            context_observed,
+        )
+
+        expected = torch.tensor([2.0, 4.0, 7.0]).view(1, 3, 1, 1)
+        self.assertTrue(torch.equal(signature, expected))
+        self.assertTrue(torch.equal(valid, future_observed))
+
+    def test_offset_only_signature_uses_visible_mean_when_endpoint_is_missing(self) -> None:
+        self.assertTrue(
+            hasattr(pretraining_losses, "build_offset_only_signature"),
+            "Offset-only teacher signature is not implemented",
+        )
+        future = torch.tensor([5.0, 7.0]).view(1, 2, 1, 1)
+        future_observed = torch.ones_like(future, dtype=torch.bool)
+        context = torch.tensor([2.0, 99.0]).view(1, 2, 1, 1)
+        context_observed = torch.tensor([True, False]).view(1, 2, 1, 1)
+
+        signature, valid = pretraining_losses.build_offset_only_signature(
+            future,
+            future_observed,
+            context,
+            context_observed,
+        )
+
+        expected = torch.tensor([3.0, 5.0]).view(1, 2, 1, 1)
+        self.assertTrue(torch.equal(signature, expected))
+        self.assertTrue(torch.equal(valid, future_observed))
 
     def test_hard_mirage_rank_prefers_correct_candidate_order(self) -> None:
         distance = torch.tensor(

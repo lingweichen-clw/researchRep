@@ -518,12 +518,13 @@ class ExperimentConfig:
         teacher_mode = self.pretrain.relation_teacher_mode
         if teacher_mode not in {
             "context_normalized",
+            "offset_only",
             "offset_decay",
             "offset_decay_increment",
         }:
             raise ValueError(
-                "relation_teacher_mode must be context_normalized, offset_decay, "
-                "or offset_decay_increment"
+                "relation_teacher_mode must be context_normalized, offset_only, "
+                "offset_decay, or offset_decay_increment"
             )
         distance_normalization = self.pretrain.relation_distance_normalization
         if distance_normalization not in {
@@ -569,12 +570,12 @@ class ExperimentConfig:
                 "symmetric_geometric_mean",
             }:
                 raise ValueError(
-                    "OffsetDecay relation teachers require anchor_mean or "
+                    "level-aligned relation teachers require anchor_mean or "
                     "symmetric_geometric_mean distance normalization"
                 )
-            if teacher_mode == "offset_decay" and increment_weight != 0.0:
+            if teacher_mode in {"offset_only", "offset_decay"} and increment_weight != 0.0:
                 raise ValueError(
-                    "offset_decay teacher requires future_increment_weight=0"
+                    f"{teacher_mode} teacher requires future_increment_weight=0"
                 )
             if teacher_mode == "offset_decay_increment" and increment_weight != 0.5:
                 raise ValueError(
@@ -738,7 +739,12 @@ def _construct_dataclass(cls: type[T], values: Mapping[str, Any] | None) -> T:
 
 
 SUPPORTED_CANDIDATE_RANKINGS = {"learned_key", "raw_l1"}
-SUPPORTED_CANDIDATE_PAYLOADS = {"auto", "raw_future", "offset_decay"}
+SUPPORTED_CANDIDATE_PAYLOADS = {
+    "auto",
+    "raw_future",
+    "offset_only",
+    "offset_decay",
+}
 
 
 def validate_candidate_ranking(value: str) -> str:

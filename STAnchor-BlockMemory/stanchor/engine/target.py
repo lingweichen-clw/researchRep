@@ -59,8 +59,9 @@ from stanchor.models.baseline.dcrnn import dense_adjacency_from_graph
 from stanchor.retrieval.retriever import AggregationOutput, NodeCandidates, TwoStageRetriever
 from stanchor.retrieval.strategies import (
     calendar_event_candidates,
-    offset_decay_aggregation,
     ContextWindowCache,
+    offset_decay_aggregation,
+    offset_only_aggregation,
     raw_l1_node_candidates,
     raw_l1_topk_aggregation,
     validate_candidate_protocol,
@@ -756,8 +757,16 @@ def retrieve_for_downstream_mode(
                 events,
             )
         aggregation = retriever.aggregate(candidates)
-        if mode == LEARNED_TOPK_ERROR_AWARE and candidate_payload == "offset_decay":
-            aggregation = offset_decay_aggregation(
+        if mode == LEARNED_TOPK_ERROR_AWARE and candidate_payload in {
+            "offset_decay",
+            "offset_only",
+        }:
+            aggregation_fn = (
+                offset_decay_aggregation
+                if candidate_payload == "offset_decay"
+                else offset_only_aggregation
+            )
+            aggregation = aggregation_fn(
                 candidates,
                 x,
                 observed_x,
@@ -1569,7 +1578,6 @@ def evaluate_downstream(
             pretrained, downstream, retriever, bank, data, loader, graph, config,
             data.scaler, device, None, max_batches
         )
-
 
 
 

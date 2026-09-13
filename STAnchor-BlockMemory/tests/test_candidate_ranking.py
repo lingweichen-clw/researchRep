@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import torch
 
+from stanchor.engine import target as target_engine
 from stanchor.config import (
     load_config,
     resolve_candidate_payload,
@@ -30,11 +31,21 @@ class CandidateRankingTest(unittest.TestCase):
 
     def test_candidate_payload_resolution_defaults_new_runs_to_offset_decay(self) -> None:
         self.assertEqual(validate_candidate_payload('raw_future'), 'raw_future')
+        self.assertEqual(validate_candidate_payload('offset_only'), 'offset_only')
         self.assertEqual(validate_candidate_payload('offset_decay'), 'offset_decay')
         self.assertEqual(resolve_candidate_payload('auto', 'learned_key'), 'offset_decay')
         self.assertEqual(resolve_candidate_payload('auto', 'raw_l1'), 'offset_decay')
         with self.assertRaises(ValueError):
             validate_candidate_payload('offset')
+
+    def test_checkpoint_restores_explicit_offset_only_payload(self) -> None:
+        self.assertEqual(
+            checkpoint_candidate_payload(
+                {'candidate_payload': 'offset_only'},
+                'learned_key',
+            ),
+            'offset_only',
+        )
 
     def test_legacy_checkpoint_payload_follows_saved_ranking(self) -> None:
         self.assertEqual(
@@ -226,6 +237,58 @@ class CandidateRankingTest(unittest.TestCase):
         self.assertTrue(torch.equal(result_keys, query_keys))
         offset_decay.assert_not_called()
 
+    def test_learned_key_router_can_use_offset_only_payload(self) -> None:
+        self.assertTrue(
+            hasattr(target_engine, 'offset_only_aggregation'),
+            'Target engine does not expose Offset-only payload routing',
+        )
+        query_keys = torch.randn(1, 2, 4)
+        pretrained = MagicMock()
+        pretrained.encode_clean.return_value = SimpleNamespace(
+            retrieval=SimpleNamespace(node_keys=query_keys),
+            statistics=SimpleNamespace(level_features=torch.zeros(1, 2, 1)),
+        )
+        retriever = MagicMock(event_top_r=3, node_top_k=2)
+        candidates = MagicMock(name='learned_candidates')
+        retriever.rerank_nodes.return_value = candidates
+        offset_only = MagicMock(name='offset_only_aggregation')
+        batch = {
+            'retrieval_x': torch.zeros(1, 288, 2, 1),
+            'retrieval_observed': torch.ones(1, 288, 2, 1, dtype=torch.bool),
+            'retrieval_weekday': torch.zeros(1, 288, dtype=torch.long),
+            'retrieval_slot': torch.zeros(1, 288, dtype=torch.long),
+            'query_weekday': torch.zeros(1, dtype=torch.long),
+            'query_slot': torch.zeros(1, dtype=torch.long),
+            'context_start': torch.ones(1, dtype=torch.long),
+        }
+        with (
+            patch('stanchor.engine.target.calendar_event_candidates', return_value=MagicMock()),
+            patch('stanchor.engine.target.offset_only_aggregation', return_value=offset_only),
+        ):
+            result_candidates, aggregation, result_keys = retrieve_for_downstream_mode(
+                LEARNED_TOPK_ERROR_AWARE,
+                pretrained=pretrained,
+                retriever=retriever,
+                bank=SimpleNamespace(manifest=SimpleNamespace(retrieval_dim=4)),
+                data=SimpleNamespace(
+                    train=SimpleNamespace(context_length=12),
+                    series=object(),
+                    scaler=object(),
+                ),
+                graph=object(),
+                batch=batch,
+                x=torch.zeros(1, 12, 2, 1),
+                observed_x=torch.ones(1, 12, 2, 1, dtype=torch.bool),
+                device=torch.device('cpu'),
+                candidate_protocol='weekday_radius1_overlap',
+                include_query_keys=True,
+                candidate_ranking='learned_key',
+                candidate_payload='offset_only',
+            )
+        self.assertIs(result_candidates, candidates)
+        self.assertIs(aggregation, offset_only)
+        self.assertTrue(torch.equal(result_keys, query_keys))
+
     def test_baseonly_rejects_raw_l1_ranking(self) -> None:
         config = load_config('configs/formal_baseonly_st_norm.yaml')
         with self.assertRaises(ValueError):
@@ -316,6 +379,87 @@ class CandidateRankingTest(unittest.TestCase):
         self.assertIn("Label = 'rawl1_offset_decay_router_gwn'", script)
         self.assertNotIn("Label = 'random_router_staeformer'", script)
         self.assertNotIn("Label = 'rawl1_router_staeformer'", script)
+
+    def test_offset_only_pretraining_config_is_a_single_variable_control(self) -> None:
+        offset_decay = load_config(
+            'configs/metrla_e5_tgge_hn_offset_decay_v2_transfer_hidden128_ffn2_b16.yaml'
+        )
+        offset_only = load_config(
+            'configs/metrla_e5_tgge_hn_offset_only_v1_transfer_hidden128_ffn2_b16.yaml'
+        )
+        offset_only.validate()
+        self.assertEqual(
+            offset_only,
+            replace(
+                offset_decay,
+                pretrain=replace(
+                    offset_decay.pretrain,
+                    relation_teacher_mode='offset_only',
+                ),
+                bank=replace(
+                    offset_decay.bank,
+                    output_dir=(
+                        'artifacts/case_bank_hn_offset_only_v1_transfer_'
+                        'hidden128_ffn2_b16_seed42'
+                    ),
+                ),
+                runtime=replace(
+                    offset_decay.runtime,
+                    run_name=(
+                        'metrla_e5_tgge_hn_offset_only_v1_transfer_'
+                        'hidden128_ffn2_b16_seed42'
+                    ),
+                ),
+            ),
+        )
+
+    def test_offset_only_downstream_configs_form_the_crossed_control(self) -> None:
+        anchor = load_config('configs/formal_base_as_candidate_argcn.yaml')
+        bank_path = (
+            'artifacts/case_bank_hn_offset_only_v1_transfer_'
+            'hidden128_ffn2_b16_seed42'
+        )
+        configurations = (
+            (
+                'configs/ablation_offset_only_teacher_offset_decay_router_argcn.yaml',
+                'offset_decay',
+                'convergence/ablation_offset_only_teacher_offset_decay_router_argcn_seed42',
+            ),
+            (
+                'configs/ablation_offset_only_teacher_offset_only_router_argcn.yaml',
+                'offset_only',
+                'convergence/ablation_offset_only_teacher_offset_only_router_argcn_seed42',
+            ),
+        )
+        for path, payload, run_name in configurations:
+            config = load_config(path)
+            config.validate()
+            self.assertEqual(
+                config,
+                replace(
+                    anchor,
+                    pretrain=replace(
+                        anchor.pretrain,
+                        relation_teacher_mode='offset_only',
+                    ),
+                    bank=replace(anchor.bank, output_dir=bank_path),
+                    target=replace(anchor.target, candidate_payload=payload),
+                    runtime=replace(anchor.runtime, run_name=run_name),
+                ),
+            )
+
+    def test_offset_only_queue_runs_one_pretrain_and_two_downstream_controls(self) -> None:
+        script = Path('scripts/run_offset_only_consistency_ablation.ps1').read_text(
+            encoding='utf-8'
+        )
+        self.assertEqual(script.count('scripts/pretrain.py'), 1)
+        self.assertEqual(script.count('scripts/build_bank.py'), 1)
+        self.assertEqual(script.count('scripts/train_downstream.py'), 1)
+        self.assertEqual(script.count("Config = 'configs\\ablation_offset_only"), 2)
+        self.assertEqual(script.count('scripts/visualize_retrieval.py'), 1)
+        self.assertEqual(script.count('scripts/compare_future_payloads.py'), 1)
+        self.assertIn('offset_only_teacher_offset_decay_router_argcn', script)
+        self.assertIn('offset_only_teacher_offset_only_router_argcn', script)
 
     def test_random_ablation_configs_keep_router_protocol(self) -> None:
         for backbone in ('staeformer', 'argcn'):

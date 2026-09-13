@@ -13,13 +13,19 @@ if str(PROJECT_ROOT) not in sys.path:
 from stanchor.config import load_config
 from stanchor.diagnostics.retrieval_visualization import (
     CURRENT_VISUALIZATION_VERSION,
+    SUPPORTED_VERSIONS,
     run_retrieval_visualization,
 )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Visualize teacher-aligned historical retrieval for HN-OffsetDecay v2."
+        description="Visualize teacher-aligned historical retrieval."
+    )
+    parser.add_argument(
+        "--version",
+        choices=sorted(SUPPORTED_VERSIONS),
+        default=CURRENT_VISUALIZATION_VERSION,
     )
     parser.add_argument("--config", required=True)
     parser.add_argument("--checkpoint", required=True)
@@ -103,7 +109,7 @@ def main() -> None:
         )
         config.validate()
     result = run_retrieval_visualization(
-        version=CURRENT_VISUALIZATION_VERSION,
+        version=args.version,
         config=config,
         checkpoint_path=args.checkpoint,
         bank_path=args.bank,

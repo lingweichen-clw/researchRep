@@ -20,6 +20,7 @@ from stanchor.engine.target import _validate_bank
 from stanchor.losses.pretraining import (
     anchor_mean_normalize_distances,
     build_offset_decay_signature,
+    build_offset_only_signature,
 )
 from stanchor.metrics import ForecastMetricAccumulator
 from stanchor.retrieval.retriever import AggregationOutput, EventCandidates, TwoStageRetriever
@@ -33,7 +34,11 @@ from stanchor.utils import resolve_device, save_json
 
 
 CURRENT_VISUALIZATION_VERSION = "hn_offset_decay_v2"
-SUPPORTED_VERSIONS = {CURRENT_VISUALIZATION_VERSION}
+OFFSET_ONLY_VISUALIZATION_VERSION = "hn_offset_only_v1"
+SUPPORTED_VERSIONS = {
+    CURRENT_VISUALIZATION_VERSION,
+    OFFSET_ONLY_VISUALIZATION_VERSION,
+}
 SUPPORTED_CANDIDATE_PROTOCOLS = {
     "exact_calendar",
     "relaxed_calendar",
@@ -83,7 +88,7 @@ def build_teacher_aligned_signature(
     context: torch.Tensor,
     context_observed: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Build the current HN-OffsetDecay v2 future representation."""
+    """Build the teacher future representation selected by experiment version."""
     version = version.lower()
     if version not in SUPPORTED_VERSIONS:
         raise ValueError(f"version must be one of {sorted(SUPPORTED_VERSIONS)}")
@@ -94,12 +99,12 @@ def build_teacher_aligned_signature(
     if future.shape[0] != context.shape[0] or future.shape[2:] != context.shape[2:]:
         raise ValueError("future and context batch/node/channel dimensions must align")
 
-    return build_offset_decay_signature(
-        future,
-        future_observed,
-        context,
-        context_observed,
+    builder = (
+        build_offset_only_signature
+        if version == OFFSET_ONLY_VISUALIZATION_VERSION
+        else build_offset_decay_signature
     )
+    return builder(future, future_observed, context, context_observed)
 
 
 def masked_candidate_future_mae(
@@ -876,6 +881,7 @@ def _candidate_node_keys(
 
 
 def _candidate_teacher_signatures(
+    version: str,
     bank: MemoryBank,
     events: EventCandidates,
     candidate_future: torch.Tensor,
@@ -900,7 +906,7 @@ def _candidate_teacher_signatures(
             device,
         )
         chunk_signature, chunk_valid = build_teacher_aligned_signature(
-            CURRENT_VISUALIZATION_VERSION,
+            version,
             candidate_future[:, start:stop].reshape(
                 batch * (stop - start), horizon, nodes, channels
             ),
@@ -1393,6 +1399,7 @@ def run_retrieval_visualization(
                 batch["x_observed"].to(device),
             )
             candidate_signature, candidate_signature_valid = _candidate_teacher_signatures(
+                version,
                 pretrained_bank,
                 events,
                 candidate_future,
@@ -1735,7 +1742,11 @@ def run_retrieval_visualization(
                 ),
             },
             "teacher_signature": {
-                "name": "DeploymentAlignedOffsetDecaySignature",
+                "name": (
+                    "EndpointAlignedOffsetOnlySignature"
+                    if version == OFFSET_ONLY_VISUALIZATION_VERSION
+                    else "DeploymentAlignedOffsetDecaySignature"
+                ),
                 "context_steps": config.data.context_length,
                 "distance_normalization": config.pretrain.relation_distance_normalization,
             },

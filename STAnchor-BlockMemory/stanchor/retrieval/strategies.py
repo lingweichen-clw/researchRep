@@ -410,7 +410,7 @@ def event_candidate_futures_for_nodes(
     return future, valid
 
 
-def offset_decay_aggregation(
+def _level_aligned_aggregation(
     candidates: NodeCandidates,
     query_context: torch.Tensor,
     query_observed: torch.Tensor,
@@ -419,8 +419,10 @@ def offset_decay_aggregation(
     scaler: Any,
     context_length: int,
     device: torch.device,
+    *,
+    decay_to_raw: bool,
 ) -> AggregationOutput:
-    """Aggregate learned candidates in the zero-parameter OffsetDecay coordinate."""
+    """Aggregate candidates after aligning their endpoint level to the query."""
     if query_context.ndim != 4 or query_observed.shape != query_context.shape:
         raise ValueError("query context and mask must be [B, T, N, C]")
     batch, time, nodes, channels = query_context.shape
@@ -471,37 +473,88 @@ def offset_decay_aggregation(
     query_level = query_statistics.level[:, None, :, None, :]
     candidate_level = candidate_levels[:, None, :, :, :]
     aligned = query_level + selected_future - candidate_level
-    decay = torch.linspace(
-        1.0,
-        0.0,
-        horizon,
-        dtype=selected_future.dtype,
-        device=device,
-    ).view(1, horizon, 1, 1, 1)
-    offset_decay = selected_future + decay * (aligned - selected_future)
+    if decay_to_raw:
+        decay = torch.linspace(
+            1.0,
+            0.0,
+            horizon,
+            dtype=selected_future.dtype,
+            device=device,
+        ).view(1, horizon, 1, 1, 1)
+        payload = selected_future + decay * (aligned - selected_future)
+    else:
+        payload = aligned
     valid = (
         selected_future_valid
         & query_statistics.valid[:, None, :, None, :]
         & candidate_level_valid[:, None, :, :, :]
     )
-    offset_decay = torch.where(valid, offset_decay, torch.zeros_like(offset_decay))
+    payload = torch.where(valid, payload, torch.zeros_like(payload))
 
     effective = candidates.weights[:, None, :, :, None] * valid.to(
         candidates.weights.dtype
     )
     denominator = effective.sum(dim=3)
-    prediction = (effective * offset_decay).sum(dim=3) / denominator.clamp_min(1.0e-8)
+    prediction = (effective * payload).sum(dim=3) / denominator.clamp_min(1.0e-8)
     prediction_valid = denominator > 0
     prediction = torch.where(prediction_valid, prediction, torch.zeros_like(prediction))
-    difference = offset_decay - prediction.unsqueeze(3)
+    difference = payload - prediction.unsqueeze(3)
     variance = (effective * difference.square()).sum(dim=3) / denominator.clamp_min(1.0e-8)
     variance = torch.where(prediction_valid, variance, torch.zeros_like(variance))
     return AggregationOutput(
         prediction=prediction,
         variance=variance,
         valid=prediction_valid,
-        candidate_futures=offset_decay,
+        candidate_futures=payload,
         candidate_masks=valid,
+    )
+
+
+def offset_only_aggregation(
+    candidates: NodeCandidates,
+    query_context: torch.Tensor,
+    query_observed: torch.Tensor,
+    bank: Any,
+    series: Any,
+    scaler: Any,
+    context_length: int,
+    device: torch.device,
+) -> AggregationOutput:
+    """Align every retrieved horizon to the query endpoint level."""
+    return _level_aligned_aggregation(
+        candidates,
+        query_context,
+        query_observed,
+        bank,
+        series,
+        scaler,
+        context_length,
+        device,
+        decay_to_raw=False,
+    )
+
+
+def offset_decay_aggregation(
+    candidates: NodeCandidates,
+    query_context: torch.Tensor,
+    query_observed: torch.Tensor,
+    bank: Any,
+    series: Any,
+    scaler: Any,
+    context_length: int,
+    device: torch.device,
+) -> AggregationOutput:
+    """Align near horizons and decay linearly back to raw candidate values."""
+    return _level_aligned_aggregation(
+        candidates,
+        query_context,
+        query_observed,
+        bank,
+        series,
+        scaler,
+        context_length,
+        device,
+        decay_to_raw=True,
     )
 
 

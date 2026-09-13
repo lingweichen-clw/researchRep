@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
+from stanchor.retrieval import strategies as retrieval_strategies
 from stanchor.retrieval.strategies import (
     ContextWindowCache,
     calendar_event_candidates,
@@ -319,6 +320,72 @@ class RetrievalStrategiesTest(unittest.TestCase):
         self.assertTrue(torch.allclose(result.prediction, expected, atol=1.0e-6))
         self.assertTrue(bool(result.valid.all()))
         self.assertTrue(torch.allclose(result.candidate_futures[:, 0], torch.tensor([[[[11.0], [11.0]]]])))
+
+    def test_offset_only_aggregation_aligns_every_horizon_to_query_level(self) -> None:
+        self.assertTrue(
+            hasattr(retrieval_strategies, "offset_only_aggregation"),
+            "Formal Offset-only candidate aggregation is not implemented",
+        )
+        values = np.concatenate(
+            (
+                np.full((12, 1, 1), 2.0, dtype=np.float32),
+                np.full((12, 1, 1), 12.0, dtype=np.float32),
+            ),
+            axis=0,
+        )
+        series = SimpleNamespace(values=values, observed=np.ones_like(values, dtype=bool))
+        scaler = SimpleNamespace(
+            mean=np.zeros((1, 1), dtype=np.float32),
+            std=np.ones((1, 1), dtype=np.float32),
+            eps=1.0e-6,
+        )
+        bank = SimpleNamespace(
+            context_end=np.asarray([11, 23], dtype=np.int64),
+            future_values=np.asarray(
+                [
+                    [[[3.0]], [[4.0]]],
+                    [[[13.0]], [[14.0]]],
+                ],
+                dtype=np.float32,
+            ),
+            future_masks=np.ones((2, 2, 1, 1), dtype=np.uint8),
+        )
+        candidates = NodeCandidates(
+            event_ids=torch.tensor([[[0, 1]]]),
+            total_scores=torch.ones(1, 1, 2),
+            shape_scores=torch.ones(1, 1, 2),
+            level_distances=torch.zeros(1, 1, 2),
+            weights=torch.tensor([[[0.5, 0.5]]]),
+            valid=torch.ones(1, 1, 2, dtype=torch.bool),
+        )
+        query = torch.full((1, 12, 1, 1), 10.0)
+
+        result = retrieval_strategies.offset_only_aggregation(
+            candidates,
+            query,
+            torch.ones_like(query, dtype=torch.bool),
+            bank,
+            series,
+            scaler,
+            context_length=12,
+            device=torch.device("cpu"),
+        )
+
+        expected_candidates = torch.tensor(
+            [11.0, 11.0, 12.0, 12.0]
+        ).view(1, 2, 1, 2, 1)
+        self.assertTrue(
+            torch.allclose(result.candidate_futures, expected_candidates, atol=1.0e-6),
+            msg=f"actual={result.candidate_futures}",
+        )
+        self.assertTrue(
+            torch.allclose(
+                result.prediction,
+                torch.tensor([[[[11.0]], [[12.0]]]]),
+                atol=1.0e-6,
+            )
+        )
+        self.assertTrue(bool(result.valid.all()))
 
     def test_offset_decay_aggregation_has_exact_empty_candidate_fallback_mask(self) -> None:
         values = np.full((12, 1, 1), 2.0, dtype=np.float32)

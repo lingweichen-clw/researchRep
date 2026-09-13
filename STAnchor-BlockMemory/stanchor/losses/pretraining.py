@@ -147,6 +147,32 @@ def build_offset_decay_signature(
     return torch.where(valid, signature, torch.zeros_like(signature)), valid
 
 
+def build_offset_only_signature(
+    future_model: torch.Tensor,
+    future_observed: torch.Tensor,
+    forecast_context: torch.Tensor,
+    context_observed: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Build ``Y - endpoint`` and its mask as ``[B,H,N,C]``."""
+    if future_model.ndim != 4 or future_observed.shape != future_model.shape:
+        raise ValueError("future_model and future_observed must be [B, H, N, C]")
+    if forecast_context.ndim != 4 or context_observed.shape != forecast_context.shape:
+        raise ValueError("forecast_context and context_observed must be [B, T, N, C]")
+    if future_model.shape[0] != forecast_context.shape[0] or future_model.shape[2:] != forecast_context.shape[2:]:
+        raise ValueError("future and forecast context batch/node/channel dimensions must align")
+    endpoint, endpoint_valid = _endpoint_level_from_context(
+        forecast_context,
+        context_observed,
+    )
+    valid = (
+        future_observed.bool()
+        & torch.isfinite(future_model)
+        & endpoint_valid.unsqueeze(1)
+    )
+    signature = future_model - endpoint.unsqueeze(1)
+    return torch.where(valid, signature, torch.zeros_like(signature)), valid
+
+
 def build_future_increment(
     future_model: torch.Tensor,
     future_observed: torch.Tensor,
@@ -432,6 +458,7 @@ def build_future_relation_targets(
         raise ValueError("teacher_temperature must be positive")
     if relation_teacher_mode not in {
         "context_normalized",
+        "offset_only",
         "offset_decay",
         "offset_decay_increment",
     }:
@@ -472,19 +499,21 @@ def build_future_relation_targets(
         else:
             if forecast_context is None or forecast_context_observed is None:
                 raise ValueError(
-                    "OffsetDecay relation teachers require forecast_context and its mask"
+                    "level-aligned relation teachers require forecast_context and its mask"
                 )
-            offset_signature, offset_observed = build_offset_decay_signature(
-                future_model,
-                future_observed,
-                forecast_context,
-                forecast_context_observed,
+            signature_builder = (
+                build_offset_only_signature
+                if relation_teacher_mode == "offset_only"
+                else build_offset_decay_signature
+            )
+            offset_signature, offset_observed = signature_builder(
+                future_model, future_observed, forecast_context, forecast_context_observed
             )
             offset_distance, offset_pair_valid = _pairwise_masked_mae(
                 offset_signature,
                 offset_observed,
             )
-            if relation_teacher_mode == "offset_decay":
+            if relation_teacher_mode in {"offset_only", "offset_decay"}:
                 candidate_mask = temporal_candidates & offset_pair_valid
                 future_distance = offset_distance
                 if relation_distance_normalization == "anchor_mean":
