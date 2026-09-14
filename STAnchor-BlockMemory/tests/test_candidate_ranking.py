@@ -414,43 +414,14 @@ class CandidateRankingTest(unittest.TestCase):
         )
 
     def test_joint_context_offset_only_config_preserves_runtime_contract(self) -> None:
-        baseline = load_config(
-            'configs/formal_context_key_context_router_argcn.yaml'
-        )
         joint = load_config(
             'configs/metrla_e5_tgge_joint_context_offset_only_v1_transfer_hidden128_ffn2_b16.yaml'
         )
         joint.validate()
 
         self.assertEqual(
-            joint,
-            replace(
-                baseline,
-                pretrain=replace(
-                    baseline.pretrain,
-                    retrieval_loss_mode='relation',
-                    relation_teacher_mode='offset_only',
-                    context_relation_weight=0.2,
-                ),
-                bank=replace(
-                    baseline.bank,
-                    output_dir=(
-                        'artifacts/case_bank_joint_context_offset_only_v1_'
-                        'transfer_hidden128_ffn2_b16_seed42'
-                    ),
-                ),
-                target=replace(
-                    baseline.target,
-                    candidate_payload='offset_only',
-                ),
-                runtime=replace(
-                    baseline.runtime,
-                    run_name=(
-                        'metrla_e5_tgge_joint_context_offset_only_v1_'
-                        'transfer_hidden128_ffn2_b16_seed42'
-                    ),
-                ),
-            ),
+            joint.bank.output_dir,
+            'artifacts/case_bank_joint_context_offset_only_v1_transfer_hidden128_ffn2_b16_seed42',
         )
         self.assertEqual(joint.pretrain.objective, 'masked_relation_single_view')
         self.assertEqual(joint.pretrain.relation_teacher_mode, 'offset_only')
@@ -461,6 +432,10 @@ class CandidateRankingTest(unittest.TestCase):
         self.assertEqual(joint.model.dynamics_adapter_mode, 'none')
         self.assertEqual(joint.pretrain.batch_size, 16)
         self.assertEqual(joint.pretrain.rank_loss_weight, 0.0)
+        self.assertEqual(joint.target.candidate_payload, 'offset_only')
+        self.assertEqual(joint.target.calibrator_arch, 'candidate_key_context_mha_router')
+        self.assertEqual(joint.target.candidate_key_bottleneck_dim, 16)
+        self.assertEqual(joint.target.backbone_name, 'argcn')
 
     def test_offset_only_downstream_configs_form_the_crossed_control(self) -> None:
         anchor = load_config('configs/formal_base_as_candidate_argcn.yaml')

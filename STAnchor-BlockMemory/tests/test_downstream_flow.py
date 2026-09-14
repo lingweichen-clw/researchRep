@@ -90,7 +90,22 @@ class DownstreamFlowTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "candidate protocol"):
             config.validate()
 
-    def test_config_accepts_context_key_context_router(self) -> None:
+    def test_config_accepts_candidate_key_context_router(self) -> None:
+        config = ExperimentConfig(
+            data=DataConfig(raw_path="data.h5", adjacency_path="adj.pkl"),
+            target=TargetConfig(
+                downstream_mode="learned_topk_error_aware",
+                training_protocol="posthoc_frozen_base",
+                validation_correction_variant="base_as_candidate",
+                calibrator_arch="candidate_key_context_mha_router",
+                candidate_ranking="learned_key",
+                candidate_key_bottleneck_dim=16,
+                calibrator_warmup_epochs=0,
+            ),
+        )
+        config.validate()
+
+    def test_config_rejects_removed_raw_context_router(self) -> None:
         config = ExperimentConfig(
             data=DataConfig(raw_path="data.h5", adjacency_path="adj.pkl"),
             target=TargetConfig(
@@ -99,9 +114,11 @@ class DownstreamFlowTest(unittest.TestCase):
                 validation_correction_variant="base_as_candidate",
                 calibrator_arch="context_retrieval_aware_mha_router",
                 candidate_ranking="learned_key",
+                calibrator_warmup_epochs=0,
             ),
         )
-        config.validate()
+        with self.assertRaisesRegex(ValueError, "unsupported calibrator_arch"):
+            config.validate()
 
     def test_legacy_checkpoint_defaults_to_existing_confidence_mode(self) -> None:
         self.assertEqual(
