@@ -20,7 +20,11 @@ from stanchor.engine.common import build_data_and_graph, load_pretrained_model
 from stanchor.metrics import ForecastMetricAccumulator
 from stanchor.models.retrieval_head import RetrievalOutput
 from stanchor.retrieval.retriever import TwoStageRetriever
-from stanchor.retrieval.strategies import event_candidate_futures, offset_decay_aggregation
+from stanchor.retrieval.strategies import (
+    event_candidate_futures,
+    offset_decay_aggregation,
+    offset_only_aggregation,
+)
 from stanchor.utils import resolve_device, save_json
 
 
@@ -285,6 +289,16 @@ def _sample_bank_node_keys(
     return np.asarray(bank.node_keys[event_ids, node_ids], dtype=np.float32)
 
 
+def _aggregation_for_version(version: str) -> tuple[Any, str]:
+    """Return the forecast payload matching the frozen teacher version."""
+    version = version.lower()
+    if version == "hn_offset_only_v1":
+        return offset_only_aggregation, "offset_only"
+    if version == "hn_offset_decay_v2":
+        return offset_decay_aggregation, "offset_decay"
+    raise ValueError("version must be hn_offset_decay_v2 or hn_offset_only_v1")
+
+
 @torch.inference_mode()
 def run_retrieval_collapse_diagnostic(
     *,
@@ -321,6 +335,7 @@ def run_retrieval_collapse_diagnostic(
     )
 
     started = time.perf_counter()
+    aggregation_fn, candidate_payload = _aggregation_for_version(version)
     device = torch.device(device_override) if device_override else resolve_device(config.runtime.device)
     if device.type == "cuda":
         # PyTorch 2.11 on Windows rejects a ``torch.device`` argument here.
@@ -567,7 +582,7 @@ def run_retrieval_collapse_diagnostic(
                     query_statistics.level_features,
                     events,
                 )
-                aggregations[name] = offset_decay_aggregation(
+                aggregations[name] = aggregation_fn(
                     node_candidates,
                     query_batch["x"].to(device),
                     query_batch["x_observed"].to(device),
@@ -626,6 +641,7 @@ def run_retrieval_collapse_diagnostic(
         "diagnostic": "retrieval_context_reliance",
         "version": version,
         "candidate_protocol": candidate_protocol,
+        "candidate_payload": candidate_payload,
         "query_count": processed,
         "donor_rule": "same calendar position exactly seven days away",
         "interventions": {
