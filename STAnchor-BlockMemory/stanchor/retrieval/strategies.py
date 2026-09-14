@@ -384,9 +384,11 @@ def candidate_context_pair_features(
     """Build compact query/candidate context differences for the Router.
 
     The returned feature is ``[B, N, K, 2*T*C]`` containing the visible
-    normalized context difference and its magnitude.  Candidate contexts are
-    loaded from the causal event windows already used by retrieval; no query
-    future values are involved.
+    shape-normalized context difference and its magnitude.  Each query and
+    candidate window is centered and scaled on their jointly visible steps,
+    so absolute level and scale remain isolated from this context branch.
+    Candidate contexts are loaded from the causal event windows already used
+    by retrieval; no query future values are involved.
     """
     if query_context.ndim != 4 or query_observed.shape != query_context.shape:
         raise ValueError("query context and mask must be [B, T, N, C]")
@@ -412,14 +414,34 @@ def candidate_context_pair_features(
     candidate_observed = candidate_observed.permute(0, 1, 3, 2, 4).contiguous()
     query_values = query_context.permute(0, 2, 1, 3).unsqueeze(2)
     query_mask = query_observed.bool().permute(0, 2, 1, 3).unsqueeze(2)
-    common = candidate_observed.bool() & query_mask
+    query_values = query_values.expand_as(candidate_values)
+    query_mask = query_mask.expand_as(candidate_observed)
+    common = (
+        candidate_observed.bool()
+        & query_mask
+        & torch.isfinite(candidate_values)
+        & torch.isfinite(query_values)
+    )
+
+    def normalize_on_common_support(values: torch.Tensor) -> torch.Tensor:
+        visible = common.to(values.dtype)
+        count = visible.sum(dim=-2, keepdim=True).clamp_min(1.0)
+        safe_values = torch.where(common, values, torch.zeros_like(values))
+        mean = safe_values.sum(dim=-2, keepdim=True) / count
+        centered = torch.where(common, values - mean, torch.zeros_like(values))
+        variance = centered.square().sum(dim=-2, keepdim=True) / count
+        normalized = centered / (variance + 1.0e-6).sqrt()
+        return torch.where(common, normalized, torch.zeros_like(normalized))
+
+    candidate_shape = normalize_on_common_support(candidate_values)
+    query_shape = normalize_on_common_support(query_values)
     delta = torch.where(
         common,
-        candidate_values - query_values,
+        candidate_shape - query_shape,
         torch.zeros_like(candidate_values),
     )
-    features = torch.cat((delta, delta.abs()), dim=-1)
-    features = features.reshape(batch, nodes, candidates.event_ids.shape[-1], -1)
+    signed = delta.reshape(batch, nodes, candidates.event_ids.shape[-1], -1)
+    features = torch.cat((signed, signed.abs()), dim=-1)
     valid = candidates.valid.unsqueeze(-1)
     return torch.where(valid, features, torch.zeros_like(features))
 
