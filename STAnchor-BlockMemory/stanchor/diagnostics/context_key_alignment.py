@@ -142,6 +142,163 @@ def select_context_future_quadrants(
     return quadrants, thresholds
 
 
+def select_level_controlled_quadrants(
+    records: Iterable[Mapping[str, object]],
+    *,
+    tail_quantile: float = 0.20,
+    level_quantile: float = 0.30,
+    require_calendar_compatible: bool = True,
+) -> tuple[dict[str, list[dict[str, object]]], dict[str, float]]:
+    """Split context/future tails after restricting pairs to similar levels.
+
+    This differs from :func:`select_context_future_quadrants`: level is held
+    approximately constant by a low-distance filter, so the context axis
+    measures normalized temporal shape instead of a joint shape-and-level
+    condition.
+    """
+    if not 0.0 < tail_quantile < 0.5:
+        raise ValueError("tail_quantile must lie strictly between 0 and 0.5")
+    if not 0.0 < level_quantile <= 1.0:
+        raise ValueError("level_quantile must lie in (0, 1]")
+    rows = [
+        dict(row)
+        for row in records
+        if not require_calendar_compatible or bool(row.get("calendar_compatible", False))
+    ]
+    if not rows:
+        raise ValueError("no eligible pair records")
+    for name in ("context_distance", "level_distance", "future_distance"):
+        if not np.isfinite([float(row[name]) for row in rows]).all():
+            raise ValueError("pair distances must be finite")
+
+    level_limit = float(
+        np.quantile(
+            np.asarray([float(row["level_distance"]) for row in rows], dtype=np.float64),
+            level_quantile,
+        )
+    )
+    matched = [row for row in rows if float(row["level_distance"]) <= level_limit]
+    if not matched:
+        raise ValueError("level control removed every pair")
+    context_values = np.asarray(
+        [float(row["context_distance"]) for row in matched], dtype=np.float64
+    )
+    future_values = np.asarray(
+        [float(row["future_distance"]) for row in matched], dtype=np.float64
+    )
+    thresholds = {
+        "level_distance_max": level_limit,
+        "context_distance_low": float(np.quantile(context_values, tail_quantile)),
+        "context_distance_high": float(np.quantile(context_values, 1.0 - tail_quantile)),
+        "future_distance_low": float(np.quantile(future_values, tail_quantile)),
+        "future_distance_high": float(np.quantile(future_values, 1.0 - tail_quantile)),
+    }
+    quadrants = {name: [] for name in QUADRANT_NAMES}
+    for row in matched:
+        context_low = float(row["context_distance"]) <= thresholds["context_distance_low"]
+        context_high = float(row["context_distance"]) >= thresholds["context_distance_high"]
+        future_low = float(row["future_distance"]) <= thresholds["future_distance_low"]
+        future_high = float(row["future_distance"]) >= thresholds["future_distance_high"]
+        if context_low and future_low:
+            quadrants[QUADRANT_NAMES[0]].append(row)
+        elif context_low and future_high:
+            quadrants[QUADRANT_NAMES[1]].append(row)
+        elif context_high and future_low:
+            quadrants[QUADRANT_NAMES[2]].append(row)
+        elif context_high and future_high:
+            quadrants[QUADRANT_NAMES[3]].append(row)
+    return quadrants, thresholds
+
+
+def _average_ranks(values: np.ndarray) -> np.ndarray:
+    values = np.asarray(values, dtype=np.float64)
+    unique, inverse, counts = np.unique(values, return_inverse=True, return_counts=True)
+    del unique
+    ends = np.cumsum(counts)
+    starts = ends - counts
+    average = (starts + ends - 1) / 2.0 + 1.0
+    return average[inverse]
+
+
+def partial_rank_correlation(
+    records: Iterable[Mapping[str, object]],
+    *,
+    outcome: str,
+    predictor: str,
+    controls: tuple[str, ...] = (),
+) -> float:
+    """Return a residualized Spearman correlation with named controls."""
+    names = (outcome, predictor, *controls)
+    matrix = np.asarray(
+        [[float(row[name]) for name in names] for row in records], dtype=np.float64
+    )
+    if matrix.ndim != 2 or matrix.shape[0] < 3:
+        return float("nan")
+    matrix = matrix[np.isfinite(matrix).all(axis=1)]
+    if matrix.shape[0] < 3:
+        return float("nan")
+    ranked = np.column_stack([_average_ranks(matrix[:, column]) for column in range(matrix.shape[1])])
+    if controls:
+        design = np.column_stack((np.ones(matrix.shape[0]), ranked[:, 2:]))
+        outcome_residual = ranked[:, 0] - design @ np.linalg.lstsq(
+            design, ranked[:, 0], rcond=None
+        )[0]
+        predictor_residual = ranked[:, 1] - design @ np.linalg.lstsq(
+            design, ranked[:, 1], rcond=None
+        )[0]
+    else:
+        outcome_residual = ranked[:, 0] - ranked[:, 0].mean()
+        predictor_residual = ranked[:, 1] - ranked[:, 1].mean()
+    denominator = float(
+        np.linalg.norm(outcome_residual) * np.linalg.norm(predictor_residual)
+    )
+    if denominator <= 1.0e-12:
+        return float("nan")
+    return float(np.dot(outcome_residual, predictor_residual) / denominator)
+
+
+def build_quantile_relation_surface(
+    records: Iterable[Mapping[str, object]],
+    *,
+    value_name: str,
+    bins: int = 8,
+    context_name: str = "context_distance",
+    future_name: str = "future_distance",
+) -> dict[str, object]:
+    """Aggregate a value over context-by-future quantile cells."""
+    if bins < 2:
+        raise ValueError("bins must be at least 2")
+    matrix = np.asarray(
+        [
+            [float(row[context_name]), float(row[future_name]), float(row[value_name])]
+            for row in records
+        ],
+        dtype=np.float64,
+    )
+    if matrix.ndim != 2 or matrix.shape[0] == 0:
+        raise ValueError("no pair records for relation surface")
+    matrix = matrix[np.isfinite(matrix).all(axis=1)]
+    if matrix.shape[0] == 0:
+        raise ValueError("no finite pair records for relation surface")
+    quantiles = np.linspace(0.0, 1.0, bins + 1)
+    context_edges = np.quantile(matrix[:, 0], quantiles)
+    future_edges = np.quantile(matrix[:, 1], quantiles)
+    context_bins = np.searchsorted(context_edges[1:-1], matrix[:, 0], side="right")
+    future_bins = np.searchsorted(future_edges[1:-1], matrix[:, 1], side="right")
+    sums = np.zeros((bins, bins), dtype=np.float64)
+    counts = np.zeros((bins, bins), dtype=np.int64)
+    np.add.at(sums, (future_bins, context_bins), matrix[:, 2])
+    np.add.at(counts, (future_bins, context_bins), 1)
+    means = np.full((bins, bins), np.nan, dtype=np.float64)
+    np.divide(sums, counts, out=means, where=counts > 0)
+    return {
+        "mean": means.tolist(),
+        "count": counts.tolist(),
+        "context_edges": context_edges.tolist(),
+        "future_edges": future_edges.tolist(),
+    }
+
+
 def _distance_summary(rows: list[Mapping[str, object]], name: str) -> dict[str, float | int]:
     if not rows:
         return {"count": 0, "mean": float("nan"), "median": float("nan"), "std": float("nan")}

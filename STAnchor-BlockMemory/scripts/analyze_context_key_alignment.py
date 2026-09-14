@@ -7,12 +7,18 @@ import json
 from itertools import combinations
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
 from stanchor.diagnostics.context_key_alignment import (
     add_key_and_control_distances,
+    build_quantile_relation_surface,
+    partial_rank_correlation,
     select_context_future_quadrants,
+    select_level_controlled_quadrants,
     summarize_quadrant_contrasts,
 )
 
@@ -200,6 +206,190 @@ def _spearman(rows: list[dict[str, object]], left_name: str, right_name: str) ->
     return float(left.corr(right, method="spearman"))
 
 
+def _bootstrap_similarity_summary(
+    rows: list[dict[str, object]],
+    key_name: str,
+    *,
+    samples: int,
+    seed: int,
+) -> dict[str, float | int]:
+    values = 1.0 - np.asarray([float(row[key_name]) for row in rows], dtype=np.float64)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return {
+            "count": 0,
+            "mean": float("nan"),
+            "ci_low": float("nan"),
+            "ci_high": float("nan"),
+        }
+    rng = np.random.default_rng(seed)
+    if samples <= 0:
+        low = high = float(values.mean())
+    else:
+        bootstrap = np.empty(samples, dtype=np.float64)
+        for index in range(samples):
+            bootstrap[index] = rng.choice(values, size=values.size, replace=True).mean()
+        low, high = np.quantile(bootstrap, [0.025, 0.975]).tolist()
+    return {
+        "count": int(values.size),
+        "mean": float(values.mean()),
+        "ci_low": float(low),
+        "ci_high": float(high),
+    }
+
+
+def _surface_rows(surface: dict[str, object]) -> list[dict[str, float | int]]:
+    means = np.asarray(surface["mean"], dtype=np.float64)
+    counts = np.asarray(surface["count"], dtype=np.int64)
+    context_edges = np.asarray(surface["context_edges"], dtype=np.float64)
+    future_edges = np.asarray(surface["future_edges"], dtype=np.float64)
+    rows: list[dict[str, float | int]] = []
+    for future_bin in range(means.shape[0]):
+        for context_bin in range(means.shape[1]):
+            rows.append(
+                {
+                    "future_bin": future_bin + 1,
+                    "context_bin": context_bin + 1,
+                    "future_low": float(future_edges[future_bin]),
+                    "future_high": float(future_edges[future_bin + 1]),
+                    "context_low": float(context_edges[context_bin]),
+                    "context_high": float(context_edges[context_bin + 1]),
+                    "count": int(counts[future_bin, context_bin]),
+                    "mean_key_distance": float(means[future_bin, context_bin]),
+                    "mean_key_similarity": float(1.0 - means[future_bin, context_bin]),
+                }
+            )
+    return rows
+
+
+def _save_relation_figure(
+    output_dir: Path,
+    *,
+    surface: dict[str, object],
+    quadrants: dict[str, list[dict[str, object]]],
+    partial_correlations: dict[str, dict[str, float]],
+    bootstrap_samples: int,
+    seed: int,
+) -> tuple[list[dict[str, object]], list[str]]:
+    model_specs = (
+        ("current", "Final joint-context", "#0072B2"),
+        ("reference", "OffsetDecay", "#D55E00"),
+        ("random", "Random encoder", "#7F7F7F"),
+    )
+    quadrant_specs = (
+        ("context_similar_future_similar", "Both\nsimilar"),
+        ("context_similar_future_different", "Context\nonly"),
+        ("context_different_future_similar", "Future\nonly"),
+        ("context_different_future_different", "Both\ndifferent"),
+    )
+    quadrant_rows: list[dict[str, object]] = []
+    for model_index, (prefix, model_label, _) in enumerate(model_specs):
+        for quadrant_index, (name, display) in enumerate(quadrant_specs):
+            summary = _bootstrap_similarity_summary(
+                quadrants[name],
+                f"{prefix}_key_distance",
+                samples=bootstrap_samples,
+                seed=seed + 101 * model_index + quadrant_index,
+            )
+            quadrant_rows.append(
+                {
+                    "model": prefix,
+                    "model_label": model_label,
+                    "quadrant": name,
+                    "quadrant_label": display.replace("\n", " "),
+                    **summary,
+                }
+            )
+
+    plt.rcParams.update(
+        {
+            "font.size": 9.5,
+            "axes.titlesize": 11,
+            "axes.labelsize": 9.5,
+            "legend.fontsize": 8.5,
+        }
+    )
+    figure, axes = plt.subplots(1, 3, figsize=(16.2, 4.55), constrained_layout=True)
+
+    mean_distance = np.asarray(surface["mean"], dtype=np.float64)
+    mean_similarity = 1.0 - mean_distance
+    finite = mean_similarity[np.isfinite(mean_similarity)]
+    vmin, vmax = (float(finite.min()), float(finite.max())) if finite.size else (0.0, 1.0)
+    image = axes[0].imshow(
+        mean_similarity,
+        origin="lower",
+        aspect="auto",
+        cmap="viridis",
+        vmin=vmin,
+        vmax=vmax,
+    )
+    bins = mean_similarity.shape[0]
+    ticks = np.arange(bins)
+    axes[0].set_xticks(ticks, labels=[f"Q{index + 1}" for index in ticks])
+    axes[0].set_yticks(ticks, labels=[f"Q{index + 1}" for index in ticks])
+    axes[0].set_xlabel("Context-shape distance  (similar → different)")
+    axes[0].set_ylabel("Offset-future distance  (similar → different)")
+    axes[0].set_title("(a) Level-controlled relation surface")
+    colorbar = figure.colorbar(image, ax=axes[0], fraction=0.046, pad=0.03)
+    colorbar.set_label("Mean Key cosine similarity")
+
+    x = np.arange(len(quadrant_specs), dtype=np.float64)
+    offsets = (-0.22, 0.0, 0.22)
+    for model_index, ((prefix, model_label, color), offset) in enumerate(
+        zip(model_specs, offsets)
+    ):
+        model_rows = [row for row in quadrant_rows if row["model"] == prefix]
+        means = np.asarray([float(row["mean"]) for row in model_rows])
+        low = np.asarray([float(row["ci_low"]) for row in model_rows])
+        high = np.asarray([float(row["ci_high"]) for row in model_rows])
+        axes[1].errorbar(
+            x + offset,
+            means,
+            yerr=np.vstack((means - low, high - means)),
+            fmt="o-",
+            linewidth=1.4,
+            markersize=4.5,
+            capsize=2.5,
+            color=color,
+            label=model_label,
+        )
+    axes[1].set_xticks(x, labels=[display for _, display in quadrant_specs])
+    axes[1].set_ylabel("Key cosine similarity (mean ± 95% CI)")
+    axes[1].set_title("(b) Four controlled pair types")
+    axes[1].grid(axis="y", alpha=0.22)
+    axes[1].legend(frameon=False, loc="best")
+
+    factor_specs = (
+        ("context_shape", "Context\nshape"),
+        ("offset_only_future", "Offset\nfuture"),
+        ("context_level", "Context\nlevel"),
+    )
+    width = 0.24
+    factor_x = np.arange(len(factor_specs), dtype=np.float64)
+    for model_index, (prefix, model_label, color) in enumerate(model_specs):
+        values = [float(partial_correlations[prefix][name]) for name, _ in factor_specs]
+        axes[2].bar(
+            factor_x + (model_index - 1) * width,
+            values,
+            width=width,
+            color=color,
+            alpha=0.9,
+            label=model_label,
+        )
+    axes[2].axhline(0.0, color="black", linewidth=0.8)
+    axes[2].set_xticks(factor_x, labels=[display for _, display in factor_specs])
+    axes[2].set_ylabel("Partial Spearman ρ with Key distance")
+    axes[2].set_title("(c) Independent relation after controls")
+    axes[2].grid(axis="y", alpha=0.22)
+
+    png_path = output_dir / "context_future_key_relation.png"
+    pdf_path = output_dir / "context_future_key_relation.pdf"
+    figure.savefig(png_path, dpi=320, facecolor="white")
+    figure.savefig(pdf_path, facecolor="white")
+    plt.close(figure)
+    return quadrant_rows, [str(png_path), str(pdf_path)]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Controlled context-key alignment test for an Offset-only retrieval Bank."
@@ -228,6 +418,9 @@ def main() -> None:
     parser.add_argument("--num-nodes", type=int, default=64)
     parser.add_argument("--max-pairs-per-node", type=int, default=1500)
     parser.add_argument("--quantile", type=float, default=0.20)
+    parser.add_argument("--level-control-quantile", type=float, default=0.30)
+    parser.add_argument("--surface-bins", type=int, default=8)
+    parser.add_argument("--bootstrap-samples", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -327,6 +520,64 @@ def main() -> None:
         quantile=args.quantile,
         require_calendar_compatible=True,
     )
+    controlled_quadrants, controlled_thresholds = select_level_controlled_quadrants(
+        records,
+        tail_quantile=args.quantile,
+        level_quantile=args.level_control_quantile,
+        require_calendar_compatible=True,
+    )
+    controlled_records = [
+        row
+        for row in records
+        if bool(row["calendar_compatible"])
+        and float(row["level_distance"]) <= controlled_thresholds["level_distance_max"]
+    ]
+    relation_surface = build_quantile_relation_surface(
+        controlled_records,
+        value_name="current_key_distance",
+        bins=args.surface_bins,
+    )
+    factors = {
+        "context_shape": ("context_distance", ("future_distance", "level_distance")),
+        "offset_only_future": ("future_distance", ("context_distance", "level_distance")),
+        "context_level": ("level_distance", ("context_distance", "future_distance")),
+    }
+    partial_correlations = {
+        prefix: {
+            factor: partial_rank_correlation(
+                records,
+                outcome=f"{prefix}_key_distance",
+                predictor=predictor,
+                controls=controls,
+            )
+            for factor, (predictor, controls) in factors.items()
+        }
+        for prefix in ("current", "reference", "random")
+    }
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    quadrant_rows, figure_paths = _save_relation_figure(
+        output.parent,
+        surface=relation_surface,
+        quadrants=controlled_quadrants,
+        partial_correlations=partial_correlations,
+        bootstrap_samples=args.bootstrap_samples,
+        seed=args.seed,
+    )
+    surface_path = output.parent / "context_future_key_surface.csv"
+    quadrant_path = output.parent / "level_controlled_quadrants.csv"
+    partial_path = output.parent / "partial_rank_correlations.csv"
+    records_path = output.parent / "level_controlled_pair_records.csv.gz"
+    pd.DataFrame(_surface_rows(relation_surface)).to_csv(surface_path, index=False)
+    pd.DataFrame(quadrant_rows).to_csv(quadrant_path, index=False)
+    pd.DataFrame(
+        [
+            {"model": model, "factor": factor, "partial_spearman": value}
+            for model, factor_values in partial_correlations.items()
+            for factor, value in factor_values.items()
+        ]
+    ).to_csv(partial_path, index=False)
+    pd.DataFrame(controlled_records).to_csv(records_path, index=False, compression="gzip")
     result = {
         "protocol": {
             "current_bank": str(banks[0]),
@@ -339,6 +590,7 @@ def main() -> None:
             "evaluated_node_pairs": int(len(records)),
             "seed": int(args.seed),
             "tail_quantile": float(args.quantile),
+            "level_control_quantile": float(args.level_control_quantile),
             "calendar_control": "same slot and cyclic weekday distance <= 1",
             "context_shape": "masked RMS over 24 patch means after the encoder's per-window normalization",
             "context_level": "mean absolute distance over Bank [mean,std,last,slope] features",
@@ -356,9 +608,28 @@ def main() -> None:
             }
             for prefix in ("current", "reference", "random")
         },
+        "level_controlled_relation": {
+            "definition": (
+                "calendar-compatible same-node pairs restricted to the lowest configured "
+                "quantile of [mean,std,last,slope] distance; context and future tails are "
+                "then selected independently"
+            ),
+            "thresholds": controlled_thresholds,
+            "counts": {
+                name: len(rows) for name, rows in controlled_quadrants.items()
+            },
+            "summary": summarize_quadrant_contrasts(controlled_quadrants),
+            "partial_rank_correlations": partial_correlations,
+            "relation_surface": relation_surface,
+        },
+        "outputs": {
+            "figures": figure_paths,
+            "surface_csv": str(surface_path),
+            "quadrants_csv": str(quadrant_path),
+            "partial_correlations_csv": str(partial_path),
+            "controlled_pair_records": str(records_path),
+        },
     }
-    output = Path(args.output)
-    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(result, ensure_ascii=False, indent=2))
 

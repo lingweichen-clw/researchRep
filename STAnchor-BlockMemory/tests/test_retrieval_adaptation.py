@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -227,6 +228,51 @@ class RetrievalAdaptationTest(unittest.TestCase):
         self.assertFalse(self.model.encoder.training)
         self.assertTrue(self.model.retrieval_head.training)
         self.assertEqual(progress, [(1, 1)])
+
+    def test_t1_joint_context_teacher_matches_source_pretraining_contract(self) -> None:
+        source = copy.deepcopy(self.model)
+        for parameter in source.parameters():
+            parameter.requires_grad_(False)
+        batch = {
+            "retrieval_x": self.x,
+            "retrieval_observed": self.observed,
+            "retrieval_weekday": self.weekday,
+            "retrieval_slot": self.slot,
+            "x": self.x,
+            "x_observed": self.observed,
+            "y": self.future,
+            "y_observed": self.future_observed,
+            "context_start": self.context_start,
+            "future_end": self.future_end,
+        }
+        pretrain = PretrainConfig(
+            retrieval_loss_mode="relation",
+            relation_teacher_mode="offset_only",
+            relation_distance_normalization="symmetric_geometric_mean",
+            context_relation_weight=0.2,
+            rank_loss_weight=0.0,
+        )
+
+        with patch(
+            "stanchor.engine.retrieval_adaptation.compute_relation_only_loss",
+            wraps=compute_relation_only_loss,
+        ) as relation_mock:
+            run_retrieval_adaptation_epoch(
+                model=self.model,
+                source_model=source,
+                loader=[batch],
+                graph=self.graph,
+                config=AdaptationConfig(),
+                pretrain_config=pretrain,
+                device=torch.device("cpu"),
+                optimizer=None,
+            )
+
+        kwargs = relation_mock.call_args.kwargs
+        self.assertEqual(kwargs["context_relation_weight"], 0.2)
+        self.assertTrue(torch.equal(kwargs["context_relation_observed"], self.observed))
+        self.assertEqual(kwargs["context_relation_normalized"].shape, self.x.shape)
+        self.assertTrue(torch.isfinite(kwargs["context_relation_normalized"]).all())
 
     def test_t1_checkpoint_preserves_transfer_provenance(self) -> None:
         config = ExperimentConfig(

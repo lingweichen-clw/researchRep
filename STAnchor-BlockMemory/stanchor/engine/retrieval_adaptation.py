@@ -19,6 +19,7 @@ from stanchor.config import (
     resolve_project_path,
 )
 from stanchor.data.graph import GraphData
+from stanchor.data.normalization import normalize_window
 from stanchor.losses.adaptation import compute_t1_adaptation_loss
 from stanchor.losses.pretraining import compute_relation_only_loss
 from stanchor.models.pretraining import STAnchorPretrainModel
@@ -153,6 +154,13 @@ def run_retrieval_adaptation_epoch(
                 optimizer.zero_grad(set_to_none=True)
             retrieval_x = batch["retrieval_x"].to(device)
             retrieval_observed = batch["retrieval_observed"].to(device).bool()
+            context_relation_statistics = None
+            if pretrain_config.context_relation_weight > 0.0:
+                with torch.no_grad():
+                    context_relation_statistics = normalize_window(
+                        retrieval_x,
+                        retrieval_observed,
+                    )
             clean = model.forward_relation(
                 retrieval_x,
                 retrieval_observed,
@@ -186,6 +194,17 @@ def run_retrieval_adaptation_epoch(
                     pretrain_config.relation_distance_normalization
                 ),
                 future_increment_weight=pretrain_config.future_increment_weight,
+                context_relation_weight=pretrain_config.context_relation_weight,
+                context_relation_normalized=(
+                    None
+                    if context_relation_statistics is None
+                    else context_relation_statistics.normalized
+                ),
+                context_relation_observed=(
+                    None
+                    if context_relation_statistics is None
+                    else retrieval_observed
+                ),
                 rank_loss_weight=pretrain_config.rank_loss_weight,
                 rank_positive_count=pretrain_config.rank_positive_count,
                 rank_negative_count=pretrain_config.rank_negative_count,

@@ -8,12 +8,94 @@ import numpy as np
 
 from stanchor.diagnostics.context_key_alignment import (
     add_key_and_control_distances,
+    build_quantile_relation_surface,
+    partial_rank_correlation,
     select_context_future_quadrants,
+    select_level_controlled_quadrants,
     summarize_quadrant_contrasts,
 )
 
 
 class ContextKeyAlignmentTest(unittest.TestCase):
+    def test_level_controlled_quadrants_hold_level_similar(self) -> None:
+        records = []
+        for context_name, context in (("similar", 0.05), ("different", 0.95)):
+            for future_name, future in (("similar", 0.05), ("different", 0.95)):
+                for repeat in range(4):
+                    records.append(
+                        {
+                            "pair": f"{context_name}_{future_name}_{repeat}",
+                            "context_distance": context,
+                            "future_distance": future,
+                            "level_distance": 0.05,
+                            "calendar_compatible": True,
+                        }
+                    )
+        records.extend(
+            {
+                "pair": f"high_level_{repeat}",
+                "context_distance": 0.05,
+                "future_distance": 0.05,
+                "level_distance": 1.0,
+                "calendar_compatible": True,
+            }
+            for repeat in range(4)
+        )
+
+        quadrants, thresholds = select_level_controlled_quadrants(
+            records,
+            tail_quantile=0.25,
+            level_quantile=0.80,
+        )
+
+        selected = [row for rows in quadrants.values() for row in rows]
+        self.assertEqual(len(selected), 16)
+        self.assertTrue(all(float(row["level_distance"]) <= 0.05 for row in selected))
+        self.assertLess(thresholds["level_distance_max"], 1.0)
+
+    def test_partial_rank_correlation_controls_future_and_level(self) -> None:
+        rng = np.random.default_rng(7)
+        context = rng.normal(size=200)
+        future = rng.normal(size=200)
+        level = rng.normal(size=200)
+        rows = [
+            {
+                "context_distance": float(context[index]),
+                "future_distance": float(future[index]),
+                "level_distance": float(level[index]),
+                "current_key_distance": float(2.0 * context[index] + 0.05 * rng.normal()),
+            }
+            for index in range(200)
+        ]
+
+        correlation = partial_rank_correlation(
+            rows,
+            outcome="current_key_distance",
+            predictor="context_distance",
+            controls=("future_distance", "level_distance"),
+        )
+
+        self.assertGreater(correlation, 0.95)
+
+    def test_quantile_relation_surface_preserves_all_pairs(self) -> None:
+        rows = [
+            {
+                "context_distance": float(index % 10),
+                "future_distance": float(index // 10),
+                "current_key_distance": float(index),
+            }
+            for index in range(100)
+        ]
+
+        surface = build_quantile_relation_surface(
+            rows,
+            value_name="current_key_distance",
+            bins=5,
+        )
+
+        self.assertEqual(np.asarray(surface["mean"]).shape, (5, 5))
+        self.assertEqual(int(np.asarray(surface["count"]).sum()), 100)
+
     def test_key_distances_are_measured_on_the_same_event_pair(self) -> None:
         records = [
             {

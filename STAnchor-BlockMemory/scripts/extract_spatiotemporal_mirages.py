@@ -1145,7 +1145,7 @@ def _select_mirage_cases(
     }, thresholds
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", required=True)
     parser.add_argument("--bank", required=True)
@@ -1165,7 +1165,19 @@ def main() -> None:
     parser.add_argument("--core-min-centroid-distance", type=float, default=0.12)
     parser.add_argument("--umap-neighbors", type=int, default=15)
     parser.add_argument("--umap-min-dist", type=float, default=0.25)
-    args = parser.parse_args()
+    parser.add_argument(
+        "--skip-population-clustering",
+        action="store_true",
+        help=(
+            "Skip population trend clustering and local-region UMAP while retaining "
+            "deterministic mirage A/B selection and its 2-D key case panels."
+        ),
+    )
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
     rng = np.random.default_rng(args.seed)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1219,29 +1231,31 @@ def main() -> None:
     flat_context = context_embeddings.reshape(-1, context_embeddings.shape[-1])
     flat_keys = keys.reshape(-1, dimension)
     cluster_eligible = flat_future_valid >= args.future_overlap_threshold
-    cluster_count = min(
-        args.future_trend_clusters,
-        max(2, int(cluster_eligible.sum() // args.min_cluster_size)),
-    )
-    cluster_model = MiniBatchKMeans(
-        n_clusters=cluster_count,
-        random_state=args.seed,
-        batch_size=16384,
-        n_init=5,
-        max_iter=100,
-    )
-    eligible_labels = cluster_model.fit_predict(flat_signatures[cluster_eligible])
-    labels = np.full(flat_signatures.shape[0], -1, dtype=np.int64)
-    labels[cluster_eligible] = eligible_labels
-    retained = select_min_size_clusters(labels, args.min_cluster_size)
-    labels[~retained] = -1
-    cluster_summary = summarize_trend_clusters(
-        flat_signatures[labels >= 0],
-        labels[labels >= 0],
-        valid_fractions=flat_future_valid[labels >= 0],
-        context_embeddings=flat_context[labels >= 0],
-        keys=flat_keys[labels >= 0],
-    )
+    cluster_summary: list[dict[str, object]] = []
+    if not args.skip_population_clustering:
+        cluster_count = min(
+            args.future_trend_clusters,
+            max(2, int(cluster_eligible.sum() // args.min_cluster_size)),
+        )
+        cluster_model = MiniBatchKMeans(
+            n_clusters=cluster_count,
+            random_state=args.seed,
+            batch_size=16384,
+            n_init=5,
+            max_iter=100,
+        )
+        eligible_labels = cluster_model.fit_predict(flat_signatures[cluster_eligible])
+        labels = np.full(flat_signatures.shape[0], -1, dtype=np.int64)
+        labels[cluster_eligible] = eligible_labels
+        retained = select_min_size_clusters(labels, args.min_cluster_size)
+        labels[~retained] = -1
+        cluster_summary = summarize_trend_clusters(
+            flat_signatures[labels >= 0],
+            labels[labels >= 0],
+            valid_fractions=flat_future_valid[labels >= 0],
+            context_embeddings=flat_context[labels >= 0],
+            keys=flat_keys[labels >= 0],
+        )
     context_records, future_records = _candidate_pair_records(
         contexts, context_masks, signatures, future_masks, keys,
         args.future_overlap_threshold,
@@ -1260,36 +1274,9 @@ def main() -> None:
                     "node_id": int(row["node"]),
                 }
             )
-    pca, pca_fit_keys = _fit_population_pca(keys, sample_count=24000, seed=args.seed)
-    normalized_key_space = _unit_rows(flat_keys).astype(np.float32, copy=False)
-    display_cores = select_node_local_key_cores(
-        keys,
-        signatures,
-        normalized_key_space.reshape(event_count, nodes, dimension),
-        points_per_core=args.cluster_pool_points,
-        max_cores=args.max_clusters,
-        min_future_cosine=args.core_min_future_cosine,
-        min_centroid_cosine_distance=args.core_min_centroid_distance,
-    )
-    umap_coordinates = fit_key_umap(
-        flat_keys,
-        display_cores,
-        seed=args.seed,
-        n_neighbors=args.umap_neighbors,
-        min_dist=args.umap_min_dist,
-    )
-    core_display_indices = select_core_display_indices(
-        display_cores,
-        keep_probability=args.cluster_display_probability,
-        seed=args.seed,
-    )
-    core_summary, overall_future_similarity = summarize_key_core_regions(
-        display_cores,
-        core_display_indices,
-    )
-    overall_future_similarity["all_cluster_statistics"] = summarize_overall_future_similarity(
-        cluster_summary
-    )
+    pca, _ = _fit_population_pca(keys, sample_count=24000, seed=args.seed)
+    core_summary: list[dict[str, object]] = []
+    overall_future_similarity: dict[str, object] = {}
     plot_summary = {
         kind: _case_plot(
             output_dir, kind, rows, contexts, context_masks, futures, future_masks,
@@ -1297,19 +1284,53 @@ def main() -> None:
         )
         for kind, rows in chosen.items()
     }
-    plot_summary["local_region_umap"] = _population_cluster_plot(
-        output_dir,
-        umap_coordinates,
-        display_cores,
-        core_display_indices,
-    )
-    _cluster_evidence_plot(
-        output_dir,
-        core_summary,
-        min_future_cosine=args.core_min_future_cosine,
-    )
-    pd.DataFrame(cluster_summary).to_csv(output_dir / "trend_cluster_summary.csv", index=False)
-    pd.DataFrame(core_summary).to_csv(output_dir / "key_umap_local_regions.csv", index=False)
+    if not args.skip_population_clustering:
+        normalized_key_space = _unit_rows(flat_keys).astype(np.float32, copy=False)
+        display_cores = select_node_local_key_cores(
+            keys,
+            signatures,
+            normalized_key_space.reshape(event_count, nodes, dimension),
+            points_per_core=args.cluster_pool_points,
+            max_cores=args.max_clusters,
+            min_future_cosine=args.core_min_future_cosine,
+            min_centroid_cosine_distance=args.core_min_centroid_distance,
+        )
+        umap_coordinates = fit_key_umap(
+            flat_keys,
+            display_cores,
+            seed=args.seed,
+            n_neighbors=args.umap_neighbors,
+            min_dist=args.umap_min_dist,
+        )
+        core_display_indices = select_core_display_indices(
+            display_cores,
+            keep_probability=args.cluster_display_probability,
+            seed=args.seed,
+        )
+        core_summary, overall_future_similarity = summarize_key_core_regions(
+            display_cores,
+            core_display_indices,
+        )
+        overall_future_similarity["all_cluster_statistics"] = (
+            summarize_overall_future_similarity(cluster_summary)
+        )
+        plot_summary["local_region_umap"] = _population_cluster_plot(
+            output_dir,
+            umap_coordinates,
+            display_cores,
+            core_display_indices,
+        )
+        _cluster_evidence_plot(
+            output_dir,
+            core_summary,
+            min_future_cosine=args.core_min_future_cosine,
+        )
+        pd.DataFrame(cluster_summary).to_csv(
+            output_dir / "trend_cluster_summary.csv", index=False
+        )
+        pd.DataFrame(core_summary).to_csv(
+            output_dir / "key_umap_local_regions.csv", index=False
+        )
     payload = {
         "schema_version": 7,
         "selection": {
@@ -1320,6 +1341,7 @@ def main() -> None:
                 "future-neighbor proposals: context >= P92, future trend <= P8, key <= P8"
             ),
             "manual_selection": False,
+            "population_clustering_enabled": not args.skip_population_clustering,
             "pairs_per_cluster": args.pairs_per_cluster,
             "future_overlap_threshold": args.future_overlap_threshold,
             "context_overlap_threshold": args.context_overlap_threshold,
@@ -1352,6 +1374,12 @@ def main() -> None:
             "missing_value_policy": "zero/unobserved values are masked, never treated as observations",
         },
         "trend_clustering": {
+            "enabled": not args.skip_population_clustering,
+            "disabled_reason": (
+                "disabled by --skip-population-clustering; A/B pair selection is unchanged"
+                if args.skip_population_clustering
+                else None
+            ),
             "definition": (
                 "future trajectory minus its first valid level, divided by its temporal standard deviation"
             ),
@@ -1363,6 +1391,12 @@ def main() -> None:
             "cluster_summary": cluster_summary,
         },
         "key_umap_local_display": {
+            "enabled": not args.skip_population_clustering,
+            "disabled_reason": (
+                "disabled by --skip-population-clustering; only A/B case PCA panels are retained"
+                if args.skip_population_clustering
+                else None
+            ),
             "definition": (
                 "same-node local regions formed from fixed-size cosine nearest neighbours "
                 "in the original 64-D learned-key space. Query future is used only for "

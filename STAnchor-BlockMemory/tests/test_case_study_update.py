@@ -14,6 +14,7 @@ import torch
 from stanchor.retrieval.retriever import EventCandidates
 from stanchor.retrieval.strategies import raw_l1_node_candidates
 from scripts.extract_spatiotemporal_mirages import (
+    build_parser as build_mirage_parser,
     irregular_core_boundary,
     fit_key_umap,
     _population_cluster_plot,
@@ -29,6 +30,21 @@ from scripts.plot_key_umap import _future_trend_signatures
 
 
 class CaseStudyUpdateTest(unittest.TestCase):
+    def test_mirage_cli_can_skip_population_clustering(self) -> None:
+        args = build_mirage_parser().parse_args(
+            [
+                "--data",
+                "metrla.h5",
+                "--bank",
+                "bank",
+                "--output-dir",
+                "output",
+                "--skip-population-clustering",
+            ]
+        )
+
+        self.assertTrue(args.skip_population_clustering)
+
     def test_raw_l1_node_candidates_rank_same_pool_and_use_raw_uniform_weights(self) -> None:
         values = np.asarray(
             [0.0, 0.0, 1.0, 1.0, 5.0, 5.0, 9.0, 9.0], dtype=np.float32
