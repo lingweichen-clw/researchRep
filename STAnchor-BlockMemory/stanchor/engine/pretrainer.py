@@ -13,6 +13,7 @@ from torch.utils.data import DataLoader, Dataset, Subset
 
 from stanchor.config import ExperimentConfig, resolve_project_path
 from stanchor.data.graph import GraphData
+from stanchor.data.normalization import normalize_window
 from stanchor.losses.pretraining import compute_pretraining_loss, compute_relation_only_loss
 from stanchor.models.dynamics_adapter import summarize_adapter_output
 from stanchor.models.pretraining import STAnchorPretrainModel
@@ -178,6 +179,25 @@ def run_pretrain_epoch(
             future_end = batch["future_end"].to(device)
             forecast_context = batch["x"].to(device)
             forecast_context_observed = batch["x_observed"].to(device)
+            context_relation_statistics = None
+            if config.pretrain.context_relation_weight > 0.0:
+                # Teacher-only clean history. This does not invoke the encoder
+                # and cannot leak into the masked reconstruction input.
+                with torch.no_grad():
+                    context_relation_statistics = normalize_window(
+                        retrieval_x,
+                        retrieval_observed,
+                    )
+            context_relation_normalized = (
+                None
+                if context_relation_statistics is None
+                else context_relation_statistics.normalized
+            )
+            context_relation_observed = (
+                None
+                if context_relation_statistics is None
+                else retrieval_observed
+            )
             if config.pretrain.objective == "relation_only":
                 clean = model.forward_relation(
                     retrieval_x,
@@ -202,6 +222,9 @@ def run_pretrain_epoch(
                         config.pretrain.relation_distance_normalization
                     ),
                     future_increment_weight=config.pretrain.future_increment_weight,
+                    context_relation_weight=config.pretrain.context_relation_weight,
+                    context_relation_normalized=context_relation_normalized,
+                    context_relation_observed=context_relation_observed,
                     rank_loss_weight=config.pretrain.rank_loss_weight,
                     rank_positive_count=config.pretrain.rank_positive_count,
                     rank_negative_count=config.pretrain.rank_negative_count,
@@ -243,6 +266,9 @@ def run_pretrain_epoch(
                         config.pretrain.relation_distance_normalization
                     ),
                     future_increment_weight=config.pretrain.future_increment_weight,
+                    context_relation_weight=config.pretrain.context_relation_weight,
+                    context_relation_normalized=context_relation_normalized,
+                    context_relation_observed=context_relation_observed,
                     rank_loss_weight=config.pretrain.rank_loss_weight,
                     rank_positive_count=config.pretrain.rank_positive_count,
                     rank_negative_count=config.pretrain.rank_negative_count,
@@ -286,6 +312,9 @@ def run_pretrain_epoch(
                         config.pretrain.relation_distance_normalization
                     ),
                     future_increment_weight=config.pretrain.future_increment_weight,
+                    context_relation_weight=config.pretrain.context_relation_weight,
+                    context_relation_normalized=context_relation_normalized,
+                    context_relation_observed=context_relation_observed,
                     rank_loss_weight=config.pretrain.rank_loss_weight,
                     rank_positive_count=config.pretrain.rank_positive_count,
                     rank_negative_count=config.pretrain.rank_negative_count,
@@ -489,7 +518,8 @@ def train_pretraining(
         "objective=%s | reconstruction_weight=%.3f | validation_interval=%d | "
         "time_mask=%.3f | time_mask_block=%d steps | space_mask=%.3f | "
         "retrieval_loss=%s | teacher_mode=%s | distance_normalization=%s | "
-        "future_increment_weight=%.3f | retrieval_weight=%.3f | "
+        "future_increment_weight=%.3f | context_relation_weight=%.3f | "
+        "retrieval_weight=%.3f | "
         "student_tau=%.3f | teacher_tau=%.3f | patience=%d",
         config.pretrain.epochs,
         config.pretrain.batch_size,
@@ -505,6 +535,7 @@ def train_pretraining(
         config.pretrain.relation_teacher_mode,
         config.pretrain.relation_distance_normalization,
         config.pretrain.future_increment_weight,
+        config.pretrain.context_relation_weight,
         config.pretrain.retrieval_weight,
         config.pretrain.relation_student_temperature,
         config.pretrain.relation_teacher_temperature,

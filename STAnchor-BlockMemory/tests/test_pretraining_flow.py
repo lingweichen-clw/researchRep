@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -15,7 +16,7 @@ from stanchor.config import (
 )
 from stanchor.data.dataset import TrafficSeries, TrafficWindowDataset
 from stanchor.data.graph import graph_from_dense
-from stanchor.data.normalization import NodeStandardScaler
+from stanchor.data.normalization import NodeStandardScaler, normalize_window
 from stanchor.engine.pretrainer import (
     build_validation_loader,
     early_stopping_metric,
@@ -208,6 +209,100 @@ class PretrainingFlowTest(unittest.TestCase):
                 parameter.grad is not None and float(parameter.grad.abs().sum()) > 0.0
                 for parameter in self.model.encoder.parameters()
             )
+        )
+
+    def test_joint_context_epoch_uses_clean_teacher_and_one_encoder_forward(self) -> None:
+        pretrain = PretrainConfig(
+            batch_size=self.batch,
+            objective="masked_relation_single_view",
+            reconstruction_weight=2.0,
+            time_mask_ratio=0.25,
+            time_mask_block_size=3,
+            space_mask_ratio=0.25,
+            retrieval_weight=1.0,
+            retrieval_loss_mode="relation",
+            relation_teacher_mode="offset_only",
+            relation_distance_normalization="symmetric_geometric_mean",
+            context_relation_weight=0.2,
+            rank_loss_weight=0.0,
+        )
+        config = ExperimentConfig(
+            data=DataConfig(
+                raw_path="unused.h5",
+                adjacency_path="unused.pkl",
+                context_length=self.time,
+                retrieval_context_length=self.time,
+                horizon=self.y.shape[1],
+            ),
+            model=ModelConfig(
+                input_channels=1,
+                output_channels=1,
+                patch_size=3,
+                hidden_dim=16,
+                retrieval_dim=8,
+                num_heads=4,
+                encoder_layers=2,
+                dropout=0.0,
+            ),
+            pretrain=pretrain,
+            runtime=RuntimeConfig(device="cpu"),
+        )
+        config.validate()
+        model = STAnchorPretrainModel(
+            config.model,
+            config.pretrain,
+            context_length=self.time,
+            slots_per_day=288,
+        )
+        batch = {
+            "retrieval_x": self.x,
+            "retrieval_observed": self.observed,
+            "retrieval_weekday": self.weekday,
+            "retrieval_slot": self.slot,
+            "y": self.y,
+            "y_observed": torch.ones_like(self.y, dtype=torch.bool),
+            "context_start": self.context_start,
+            "future_end": self.future_end,
+            "x": self.x,
+            "x_observed": self.observed,
+        }
+        expected_context = normalize_window(self.x, self.observed).normalized
+        captured: dict[str, object] = {}
+        encoder_calls: list[int] = []
+        hook = model.encoder.register_forward_hook(lambda *_args: encoder_calls.append(1))
+        real_compute = compute_pretraining_loss
+
+        def capture_compute(**kwargs):
+            captured.update(kwargs)
+            return real_compute(**kwargs)
+
+        try:
+            with patch(
+                "stanchor.engine.pretrainer.compute_pretraining_loss",
+                side_effect=capture_compute,
+            ):
+                result = run_pretrain_epoch(
+                    model=model,
+                    loader=[batch],
+                    graph=self.graph,
+                    neighbors=self.neighbors,
+                    config=config,
+                    device=torch.device("cpu"),
+                    optimizer=None,
+                    max_batches=1,
+                )
+        finally:
+            hook.remove()
+
+        self.assertEqual(result.batches, 1)
+        self.assertEqual(encoder_calls, [1])
+        self.assertEqual(captured["context_relation_weight"], 0.2)
+        teacher_context = captured["context_relation_normalized"]
+        self.assertIsInstance(teacher_context, torch.Tensor)
+        self.assertFalse(teacher_context.requires_grad)
+        self.assertTrue(torch.allclose(teacher_context, expected_context))
+        self.assertTrue(
+            torch.equal(captured["context_relation_observed"], self.observed)
         )
 
     def test_reconstruction_weight_controls_joint_total(self) -> None:

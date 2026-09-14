@@ -102,6 +102,7 @@ class PretrainConfig:
     relation_teacher_mode: str = "context_normalized"
     relation_distance_normalization: str = "none"
     future_increment_weight: float = 0.0
+    context_relation_weight: float = 0.0
     rank_loss_weight: float = 0.0
     rank_positive_count: int = 2
     rank_negative_count: int = 2
@@ -554,6 +555,27 @@ class ExperimentConfig:
         increment_weight = self.pretrain.future_increment_weight
         if not 0.0 <= increment_weight <= 1.0:
             raise ValueError("future_increment_weight must be in [0, 1]")
+        context_relation_weight = self.pretrain.context_relation_weight
+        if not 0.0 <= context_relation_weight <= 1.0:
+            raise ValueError("context_relation_weight must be in [0, 1]")
+        if context_relation_weight > 0.0:
+            if self.pretrain.retrieval_loss_mode != "relation":
+                raise ValueError(
+                    "positive context_relation_weight requires retrieval_loss_mode=relation"
+                )
+            if teacher_mode != "offset_only":
+                raise ValueError(
+                    "positive context_relation_weight requires relation_teacher_mode=offset_only"
+                )
+            if distance_normalization != "symmetric_geometric_mean":
+                raise ValueError(
+                    "positive context_relation_weight requires "
+                    "symmetric_geometric_mean distance normalization"
+                )
+            if self.pretrain.rank_loss_weight != 0.0:
+                raise ValueError(
+                    "positive context_relation_weight requires rank_loss_weight=0"
+                )
         if self.pretrain.rank_loss_weight < 0.0:
             raise ValueError("rank_loss_weight must be non-negative")
         if self.pretrain.rank_positive_count <= 0:

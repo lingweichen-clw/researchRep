@@ -11,6 +11,7 @@ from stanchor.config import ModelConfig, PretrainConfig
 from stanchor.data.graph import graph_from_dense
 from stanchor.data.normalization import normalize_window
 from stanchor.diagnostics.retrieval_collapse import (
+    _aggregation_for_version,
     encode_components,
     key_geometry_summary,
     mean_cosine_change,
@@ -25,6 +26,14 @@ from stanchor.models.pretraining import STAnchorPretrainModel
 
 
 class RetrievalCollapseDiagnosticTest(unittest.TestCase):
+    def test_collapse_diagnostic_uses_matching_payload(self) -> None:
+        decay_fn, decay_name = _aggregation_for_version("hn_offset_decay_v2")
+        offset_fn, offset_name = _aggregation_for_version("hn_offset_only_v1")
+
+        self.assertEqual(decay_name, "offset_decay")
+        self.assertEqual(offset_name, "offset_only")
+        self.assertNotEqual(decay_fn, offset_fn)
+
     def setUp(self) -> None:
         torch.manual_seed(7)
         nodes = 3

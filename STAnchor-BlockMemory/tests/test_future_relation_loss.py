@@ -72,6 +72,36 @@ class FutureRelationLossTest(unittest.TestCase):
                 ),
             ).validate()
 
+    def test_config_enforces_joint_context_relation_contract(self) -> None:
+        base = dict(
+            retrieval_loss_mode="relation",
+            relation_teacher_mode="offset_only",
+            relation_distance_normalization="symmetric_geometric_mean",
+            context_relation_weight=0.2,
+            rank_loss_weight=0.0,
+        )
+        ExperimentConfig(
+            data=DataConfig(raw_path="data.h5", adjacency_path="adj.pkl"),
+            pretrain=PretrainConfig(**base),
+        ).validate()
+
+        invalid_cases = (
+            ({"context_relation_weight": -0.1}, "context_relation_weight"),
+            ({"context_relation_weight": 1.1}, "context_relation_weight"),
+            ({"retrieval_loss_mode": "hard_negative_offset_decay"}, "retrieval_loss_mode=relation"),
+            ({"relation_teacher_mode": "offset_decay"}, "relation_teacher_mode=offset_only"),
+            ({"relation_distance_normalization": "anchor_mean"}, "symmetric_geometric_mean"),
+            ({"rank_loss_weight": 0.1}, "rank_loss_weight=0"),
+        )
+        for overrides, message in invalid_cases:
+            case = {**base, **overrides}
+            with self.subTest(overrides=overrides):
+                with self.assertRaisesRegex(ValueError, message):
+                    ExperimentConfig(
+                        data=DataConfig(raw_path="data.h5", adjacency_path="adj.pkl"),
+                        pretrain=PretrainConfig(**case),
+                    ).validate()
+
         with self.assertRaisesRegex(ValueError, "rank_positive_count"):
             ExperimentConfig(
                 data=DataConfig(raw_path="data.h5", adjacency_path="adj.pkl"),
@@ -387,6 +417,135 @@ class FutureRelationLossTest(unittest.TestCase):
         self.assertEqual(tuple(targets.candidate_mask.shape), (4, 4, 1))
         self.assertEqual(tuple(targets.valid_anchors.shape), (4, 1))
         self.assertTrue(bool(targets.valid_anchors.all()))
+
+    def test_zero_context_weight_exactly_matches_offset_only_teacher(self) -> None:
+        forecast_context = torch.zeros(self.batch, 3, 1, 1)
+        forecast_observed = torch.ones_like(forecast_context, dtype=torch.bool)
+        expected = build_future_relation_targets(
+            self.future,
+            self.statistics,
+            self.future_observed,
+            self.context_start,
+            self.future_end,
+            relation_teacher_mode="offset_only",
+            forecast_context=forecast_context,
+            forecast_context_observed=forecast_observed,
+            relation_distance_normalization="symmetric_geometric_mean",
+        )
+        actual = build_future_relation_targets(
+            self.future,
+            self.statistics,
+            self.future_observed,
+            self.context_start,
+            self.future_end,
+            relation_teacher_mode="offset_only",
+            forecast_context=forecast_context,
+            forecast_context_observed=forecast_observed,
+            relation_distance_normalization="symmetric_geometric_mean",
+            context_relation_weight=0.0,
+            context_relation_normalized=self.statistics.normalized,
+            context_relation_observed=torch.ones_like(
+                self.statistics.normalized, dtype=torch.bool
+            ),
+        )
+
+        self.assertTrue(torch.equal(actual.candidate_mask, expected.candidate_mask))
+        self.assertTrue(torch.equal(actual.valid_anchors, expected.valid_anchors))
+        self.assertTrue(torch.equal(actual.future_distance, expected.future_distance))
+        self.assertTrue(
+            torch.equal(actual.teacher_distribution, expected.teacher_distribution)
+        )
+
+    def test_joint_teacher_breaks_future_tie_with_context_shape(self) -> None:
+        future = torch.ones(4, 2, 1, 1)
+        observed = torch.ones_like(future, dtype=torch.bool)
+        forecast_context = torch.zeros(4, 2, 1, 1)
+        forecast_observed = torch.ones_like(forecast_context, dtype=torch.bool)
+        context_shape = torch.tensor(
+            [
+                [0.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, -1.0, 0.0],
+                [1.0, -1.0, 1.0],
+            ]
+        ).view(4, 3, 1, 1)
+        context_observed = torch.ones_like(context_shape, dtype=torch.bool)
+
+        targets = build_future_relation_targets(
+            future,
+            self.statistics,
+            observed,
+            self.context_start,
+            self.future_end,
+            teacher_temperature=0.1,
+            relation_teacher_mode="offset_only",
+            forecast_context=forecast_context,
+            forecast_context_observed=forecast_observed,
+            relation_distance_normalization="symmetric_geometric_mean",
+            context_relation_weight=0.2,
+            context_relation_normalized=context_shape,
+            context_relation_observed=context_observed,
+        )
+
+        self.assertEqual(float(targets.future_distance[0, 1, 0]), 0.0)
+        self.assertGreater(float(targets.future_distance[0, 2, 0]), 0.0)
+        self.assertGreater(
+            float(targets.teacher_distribution[0, 1, 0]),
+            float(targets.teacher_distribution[0, 2, 0]),
+        )
+
+    def test_joint_teacher_excludes_context_invalid_candidate(self) -> None:
+        forecast_context = torch.zeros(self.batch, 3, 1, 1)
+        forecast_observed = torch.ones_like(forecast_context, dtype=torch.bool)
+        context_observed = torch.ones_like(
+            self.statistics.normalized, dtype=torch.bool
+        )
+        context_observed[1] = False
+        targets = build_future_relation_targets(
+            self.future,
+            self.statistics,
+            self.future_observed,
+            self.context_start,
+            self.future_end,
+            relation_teacher_mode="offset_only",
+            forecast_context=forecast_context,
+            forecast_context_observed=forecast_observed,
+            relation_distance_normalization="symmetric_geometric_mean",
+            context_relation_weight=0.2,
+            context_relation_normalized=self.statistics.normalized,
+            context_relation_observed=context_observed,
+        )
+
+        self.assertFalse(bool(targets.candidate_mask[:, 1, 0].any()))
+        self.assertFalse(bool(targets.candidate_mask[1, :, 0].any()))
+
+    def test_joint_relation_loss_has_finite_key_gradient(self) -> None:
+        keys = torch.randn(self.batch, 1, 3, requires_grad=True)
+        forecast_context = torch.zeros(self.batch, 3, 1, 1)
+        context_observed = torch.ones_like(forecast_context, dtype=torch.bool)
+        result = future_relation_retrieval_loss(
+            keys,
+            self.future,
+            self.statistics,
+            self.future_observed,
+            self.context_start,
+            self.future_end,
+            teacher_temperature=0.1,
+            student_temperature=0.1,
+            relation_teacher_mode="offset_only",
+            forecast_context=forecast_context,
+            forecast_context_observed=context_observed,
+            relation_distance_normalization="symmetric_geometric_mean",
+            context_relation_weight=0.2,
+            context_relation_normalized=self.statistics.normalized,
+            context_relation_observed=context_observed,
+        )
+
+        self.assertTrue(bool(torch.isfinite(result.loss)))
+        result.loss.backward()
+        self.assertIsNotNone(keys.grad)
+        self.assertTrue(bool(torch.isfinite(keys.grad).all()))
+        self.assertGreater(float(keys.grad.abs().sum()), 0.0)
 
     def test_relation_loss_has_finite_value_and_gradient(self) -> None:
         keys = torch.randn(self.batch, 1, 3, requires_grad=True)

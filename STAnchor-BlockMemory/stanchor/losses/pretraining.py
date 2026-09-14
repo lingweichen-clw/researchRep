@@ -445,6 +445,9 @@ def build_future_relation_targets(
     forecast_context_observed: torch.Tensor | None = None,
     relation_distance_normalization: str = "none",
     future_increment_weight: float = 0.0,
+    context_relation_weight: float = 0.0,
+    context_relation_normalized: torch.Tensor | None = None,
+    context_relation_observed: torch.Tensor | None = None,
 ) -> FutureRelationTargets:
     """Construct future-distance teacher distributions without model gradients."""
     if future_model.ndim != 4:
@@ -474,6 +477,31 @@ def build_future_relation_targets(
         )
     if not 0.0 <= future_increment_weight <= 1.0:
         raise ValueError("future_increment_weight must be in [0, 1]")
+    if not 0.0 <= context_relation_weight <= 1.0:
+        raise ValueError("context_relation_weight must be in [0, 1]")
+    if context_relation_weight > 0.0:
+        if relation_teacher_mode != "offset_only":
+            raise ValueError(
+                "positive context_relation_weight requires relation_teacher_mode=offset_only"
+            )
+        if relation_distance_normalization != "symmetric_geometric_mean":
+            raise ValueError(
+                "positive context_relation_weight requires symmetric_geometric_mean "
+                "distance normalization"
+            )
+        if context_relation_normalized is None or context_relation_observed is None:
+            raise ValueError(
+                "positive context_relation_weight requires clean normalized context and mask"
+            )
+        if (
+            context_relation_normalized.ndim != 4
+            or context_relation_observed.shape != context_relation_normalized.shape
+            or context_relation_normalized.shape[0] != batch
+            or context_relation_normalized.shape[2] != nodes
+        ):
+            raise ValueError(
+                "context relation tensors must be aligned [B, T, N, C]"
+            )
 
     with torch.no_grad():
         non_overlap = (future_end[:, None] < context_start[None, :]) | (
@@ -514,18 +542,47 @@ def build_future_relation_targets(
                 offset_observed,
             )
             if relation_teacher_mode in {"offset_only", "offset_decay"}:
-                candidate_mask = temporal_candidates & offset_pair_valid
-                future_distance = offset_distance
-                if relation_distance_normalization == "anchor_mean":
-                    future_distance = anchor_mean_normalize_distances(
-                        future_distance,
+                if context_relation_weight > 0.0:
+                    # Clean teacher history: [B,T,N,C] -> pair distance [B,B,N].
+                    context_valid = (
+                        context_relation_observed.bool()
+                        & torch.isfinite(context_relation_normalized)
+                    )
+                    context_distance, context_pair_valid = _pairwise_masked_mae(
+                        context_relation_normalized,
+                        context_valid,
+                    )
+                    candidate_mask = (
+                        temporal_candidates
+                        & offset_pair_valid
+                        & context_pair_valid
+                    )
+                    normalized_future = symmetric_geometric_mean_normalize(
+                        offset_distance,
                         candidate_mask,
                     )
-                elif relation_distance_normalization == "symmetric_geometric_mean":
-                    future_distance = symmetric_geometric_mean_normalize(
-                        future_distance,
+                    normalized_context = symmetric_geometric_mean_normalize(
+                        context_distance,
                         candidate_mask,
                     )
+                    future_distance = torch.sqrt(
+                        (1.0 - context_relation_weight)
+                        * normalized_future.square()
+                        + context_relation_weight * normalized_context.square()
+                    )
+                else:
+                    candidate_mask = temporal_candidates & offset_pair_valid
+                    future_distance = offset_distance
+                    if relation_distance_normalization == "anchor_mean":
+                        future_distance = anchor_mean_normalize_distances(
+                            future_distance,
+                            candidate_mask,
+                        )
+                    elif relation_distance_normalization == "symmetric_geometric_mean":
+                        future_distance = symmetric_geometric_mean_normalize(
+                            future_distance,
+                            candidate_mask,
+                        )
             else:
                 endpoint, endpoint_valid = _endpoint_level_from_context(
                     forecast_context,
@@ -655,6 +712,9 @@ def future_relation_retrieval_loss(
     forecast_context_observed: torch.Tensor | None = None,
     relation_distance_normalization: str = "none",
     future_increment_weight: float = 0.0,
+    context_relation_weight: float = 0.0,
+    context_relation_normalized: torch.Tensor | None = None,
+    context_relation_observed: torch.Tensor | None = None,
     rank_loss_weight: float = 0.0,
     rank_positive_count: int = 2,
     rank_negative_count: int = 2,
@@ -682,6 +742,9 @@ def future_relation_retrieval_loss(
         forecast_context_observed=forecast_context_observed,
         relation_distance_normalization=relation_distance_normalization,
         future_increment_weight=future_increment_weight,
+        context_relation_weight=context_relation_weight,
+        context_relation_normalized=context_relation_normalized,
+        context_relation_observed=context_relation_observed,
     )
     normalized_keys = functional.normalize(node_keys, dim=-1)
     student_logits = torch.einsum("ind,jnd->ijn", normalized_keys, normalized_keys)
@@ -752,6 +815,9 @@ def compute_relation_only_loss(
     relation_teacher_mode: str,
     relation_distance_normalization: str,
     future_increment_weight: float = 0.0,
+    context_relation_weight: float = 0.0,
+    context_relation_normalized: torch.Tensor | None = None,
+    context_relation_observed: torch.Tensor | None = None,
     rank_loss_weight: float = 0.0,
     rank_positive_count: int = 2,
     rank_negative_count: int = 2,
@@ -782,6 +848,9 @@ def compute_relation_only_loss(
         forecast_context_observed=forecast_context_observed,
         relation_distance_normalization=relation_distance_normalization,
         future_increment_weight=future_increment_weight,
+        context_relation_weight=context_relation_weight,
+        context_relation_normalized=context_relation_normalized,
+        context_relation_observed=context_relation_observed,
         rank_loss_weight=rank_loss_weight,
         rank_positive_count=rank_positive_count,
         rank_negative_count=rank_negative_count,
@@ -831,6 +900,9 @@ def compute_pretraining_loss(
     relation_teacher_mode: str = "context_normalized",
     relation_distance_normalization: str = "none",
     future_increment_weight: float = 0.0,
+    context_relation_weight: float = 0.0,
+    context_relation_normalized: torch.Tensor | None = None,
+    context_relation_observed: torch.Tensor | None = None,
     rank_loss_weight: float = 0.0,
     rank_positive_count: int = 2,
     rank_negative_count: int = 2,
@@ -902,6 +974,9 @@ def compute_pretraining_loss(
             forecast_context_observed=forecast_context_observed,
             relation_distance_normalization=relation_distance_normalization,
             future_increment_weight=future_increment_weight,
+            context_relation_weight=context_relation_weight,
+            context_relation_normalized=context_relation_normalized,
+            context_relation_observed=context_relation_observed,
             rank_loss_weight=rank_loss_weight,
             rank_positive_count=rank_positive_count,
             rank_negative_count=rank_negative_count,
