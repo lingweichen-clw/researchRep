@@ -119,11 +119,12 @@ target:
   validation_loss_variant: forecast_only
   forecast_loss_space: physical
   validation_correction_variant: base_as_candidate
-  calibrator_arch: context_retrieval_aware_mha_router
+  calibrator_arch: candidate_key_context_mha_router
   candidate_token_dim: 256
   calibrator_state_dim: 256
   candidate_attention_heads: 4
   candidate_trajectory_hidden_dim: 64
+  candidate_key_bottleneck_dim: 16
   routing_hidden_dim: 128
   mha_dropout: 0.05
   use_horizon_embedding: true

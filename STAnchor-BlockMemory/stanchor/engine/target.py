@@ -62,7 +62,6 @@ from stanchor.retrieval.strategies import (
     ContextWindowCache,
     offset_decay_aggregation,
     offset_only_aggregation,
-    candidate_context_pair_features,
     raw_l1_node_candidates,
     raw_l1_topk_aggregation,
     validate_candidate_protocol,
@@ -91,7 +90,6 @@ class FrozenPathEntry:
     candidates: NodeCandidates | None
     aggregation: AggregationOutput | None
     retrieval_node_keys: torch.Tensor | None = None
-    candidate_context_features: torch.Tensor | None = None
 
 
 def _node_candidates_device(value: NodeCandidates | None, device: torch.device) -> NodeCandidates | None:
@@ -114,7 +112,6 @@ def _freeze_path_entry(
     candidates: NodeCandidates | None,
     aggregation: AggregationOutput | None,
     retrieval_node_keys: torch.Tensor | None = None,
-    candidate_context_features: torch.Tensor | None = None,
 ) -> FrozenPathEntry:
     cpu = torch.device("cpu")
     return FrozenPathEntry(
@@ -122,11 +119,6 @@ def _freeze_path_entry(
         candidates=_node_candidates_device(candidates, cpu),
         aggregation=_aggregation_device(aggregation, cpu),
         retrieval_node_keys=(None if retrieval_node_keys is None else retrieval_node_keys.detach().to(cpu)),
-        candidate_context_features=(
-            None
-            if candidate_context_features is None
-            else candidate_context_features.detach().to(cpu)
-        ),
     )
 
 
@@ -158,11 +150,6 @@ def _split_frozen_path(
             candidates=candidates,
             aggregation=aggregation,
             retrieval_node_keys=(None if entry.retrieval_node_keys is None else entry.retrieval_node_keys[index:index + 1].detach().cpu()),
-            candidate_context_features=(
-                None
-                if entry.candidate_context_features is None
-                else entry.candidate_context_features[index:index + 1].detach().cpu()
-            ),
         )
     return result
 
@@ -200,13 +187,6 @@ def _merge_frozen_paths(
         candidates=candidates,
         aggregation=aggregation,
         retrieval_node_keys=(None if entries[0].retrieval_node_keys is None else torch.cat([entry.retrieval_node_keys for entry in entries], dim=0).to(device)),
-        candidate_context_features=(
-            None
-            if entries[0].candidate_context_features is None
-            else torch.cat(
-                [entry.candidate_context_features for entry in entries], dim=0
-            ).to(device)
-        ),
     )
 
 
@@ -366,12 +346,13 @@ def build_downstream_model(
         if (
             config.target.validation_correction_variant != "base_as_candidate"
             or config.target.calibrator_arch
-            not in {"retrieval_aware_mha_router", "context_retrieval_aware_mha_router"}
+            not in {"retrieval_aware_mha_router", "candidate_key_context_mha_router"}
         ):
             raise ValueError(
                 "learned_topk_error_aware now requires "
                 "validation_correction_variant='base_as_candidate' and a "
-                "supported residual Router calibrator_arch"
+                "supported residual Router calibrator_arch: "
+                "retrieval_aware_mha_router or candidate_key_context_mha_router"
             )
         error_corrector = RetrievalAwareMHAResidualRouter(
             config.data.context_length,
@@ -385,10 +366,11 @@ def build_downstream_model(
             attention_heads=config.target.candidate_attention_heads,
             base_logit_init_bias=config.target.base_logit_init_bias,
             mha_dropout=config.target.mha_dropout,
-            use_context_features=(
+            use_candidate_key_context=(
                 config.target.calibrator_arch
-                == "context_retrieval_aware_mha_router"
+                == "candidate_key_context_mha_router"
             ),
+            candidate_key_bottleneck_dim=config.target.candidate_key_bottleneck_dim,
         )
     return STAnchorDownstreamModel(
         backbone=backbone,
@@ -958,11 +940,10 @@ def run_target_epoch(
                 aggregation = entry.aggregation
                 base_prediction = entry.base_prediction
                 retrieval_node_keys = entry.retrieval_node_keys
-                candidate_context_features = entry.candidate_context_features
             else:
                 retrieval_router = config.target.calibrator_arch in {
                     "retrieval_aware_mha_router",
-                    "context_retrieval_aware_mha_router",
+                    "candidate_key_context_mha_router",
                 }
                 retrieved = retrieve_for_downstream_mode(
                     config.target.downstream_mode, pretrained, retriever, bank, data, graph,
@@ -977,18 +958,6 @@ def run_target_epoch(
                 else:
                     node_candidates, aggregation = retrieved
                     retrieval_node_keys = None
-                candidate_context_features = None
-                if config.target.calibrator_arch == "context_retrieval_aware_mha_router":
-                    candidate_context_features = candidate_context_pair_features(
-                        node_candidates,
-                        x,
-                        observed_x,
-                        bank,
-                        data.series,
-                        scaler,
-                        config.data.context_length,
-                        device,
-                    )
                 def _backbone_forward(inp):
                     if config.target.backbone_name == "staeformer":
                         if config.target.staeformer_time_feature_mode == "fallback":
@@ -1043,7 +1012,6 @@ def run_target_epoch(
                                 node_candidates,
                                 aggregation,
                                 retrieval_node_keys,
-                                candidate_context_features,
                             ),
                             sample_ids,
                         )
@@ -1051,7 +1019,6 @@ def run_target_epoch(
             output = downstream(
                 x, node_candidates, aggregation, base_override=base_prediction,
                 retrieval_node_keys=retrieval_node_keys,
-                candidate_context_features=candidate_context_features,
             )
             target_model = batch["y"].to(device)
             forecast_prediction = output.final_prediction
@@ -1638,4 +1605,3 @@ def evaluate_downstream(
             pretrained, downstream, retriever, bank, data, loader, graph, config,
             data.scaler, device, None, max_batches
         )
-

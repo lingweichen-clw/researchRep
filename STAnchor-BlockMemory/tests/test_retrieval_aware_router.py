@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 import torch
 
@@ -101,7 +103,108 @@ def test_retrieval_aware_router_base_fallback_is_exact():
     )
 
 
-def test_context_router_consumes_key_pair_and_twelve_step_context_features():
+def _candidate_key_router():
+    return RetrievalAwareMHAResidualRouter(
+        context_length=12,
+        horizon=12,
+        channels=1,
+        retrieval_dim=64,
+        hidden_dim=256,
+        retrieval_hidden_dim=128,
+        fusion_hidden_dim=256,
+        candidate_hidden_dim=128,
+        routing_dim=128,
+        attention_heads=4,
+        mha_dropout=0.0,
+        use_candidate_key_context=True,
+        candidate_key_bottleneck_dim=16,
+    )
+
+
+def test_candidate_key_router_consumes_selected_candidate_keys():
+    model = _candidate_key_router()
+    history, base, candidates, aggregation = _inputs()
+    final, history_mass, _, _ = model(
+        history,
+        base,
+        candidates=candidates,
+        aggregation=aggregation,
+        retrieval_node_keys=torch.randn(2, 3, 64),
+    )
+    assert final.shape == base.shape
+    assert history_mass.shape == (2, 12, 3, 1)
+    assert model.candidate_key_encoder is not None
+    assert model.last_routing_weights.shape == (2, 3, 12, 13)
+
+
+def test_candidate_key_router_starts_as_exact_retained_router():
+    retained = _router()
+    enhanced = _candidate_key_router()
+    incompatible = enhanced.load_state_dict(retained.state_dict(), strict=False)
+    assert not incompatible.unexpected_keys
+    assert set(incompatible.missing_keys) == {
+        "candidate_key_encoder.0.weight",
+        "candidate_key_encoder.0.bias",
+        "candidate_key_encoder.2.weight",
+        "candidate_key_encoder.2.bias",
+    }
+    history, base, candidates, aggregation = _inputs()
+    query_keys = torch.randn(2, 3, 64)
+    retained_output = retained(
+        history,
+        base,
+        candidates=candidates,
+        aggregation=aggregation,
+        retrieval_node_keys=query_keys,
+    )
+    enhanced_output = enhanced(
+        history,
+        base,
+        candidates=candidates,
+        aggregation=aggregation,
+        retrieval_node_keys=query_keys,
+    )
+    for expected, actual in zip(retained_output, enhanced_output):
+        assert torch.equal(actual, expected)
+
+
+def test_candidate_key_router_adds_only_small_bottleneck_branch():
+    retained = _router()
+    enhanced = _candidate_key_router()
+    retained_parameters = sum(parameter.numel() for parameter in retained.parameters())
+    enhanced_parameters = sum(parameter.numel() for parameter in enhanced.parameters())
+    assert enhanced_parameters - retained_parameters == 5_392
+
+
+def test_candidate_key_router_requires_selected_candidate_keys():
+    model = _candidate_key_router()
+    history, base, candidates, aggregation = _inputs()
+    candidates = replace(candidates, node_keys=None)
+    with pytest.raises(ValueError, match="candidate node_keys"):
+        model(
+            history,
+            base,
+            candidates=candidates,
+            aggregation=aggregation,
+            retrieval_node_keys=torch.randn(2, 3, 64),
+        )
+
+
+def test_candidate_key_router_rejects_wrong_candidate_key_shape():
+    model = _candidate_key_router()
+    history, base, candidates, aggregation = _inputs()
+    candidates = replace(candidates, node_keys=torch.randn(2, 3, 12, 32))
+    with pytest.raises(ValueError, match="candidate node_keys"):
+        model(
+            history,
+            base,
+            candidates=candidates,
+            aggregation=aggregation,
+            retrieval_node_keys=torch.randn(2, 3, 64),
+        )
+
+
+def test_retained_router_still_ignores_candidate_keys():
     model = RetrievalAwareMHAResidualRouter(
         context_length=12,
         horizon=12,
@@ -114,41 +217,15 @@ def test_context_router_consumes_key_pair_and_twelve_step_context_features():
         routing_dim=128,
         attention_heads=4,
         mha_dropout=0.0,
-        use_context_features=True,
     )
     history, base, candidates, aggregation = _inputs()
-    context_features = torch.randn(2, 3, 12, 24)
+    candidates_without_keys = replace(candidates, node_keys=None)
     final, history_mass, _, _ = model(
         history,
         base,
-        candidates=candidates,
+        candidates=candidates_without_keys,
         aggregation=aggregation,
         retrieval_node_keys=torch.randn(2, 3, 64),
-        candidate_context_features=context_features,
     )
     assert final.shape == base.shape
     assert history_mass.shape == (2, 12, 3, 1)
-    assert model.context_key_encoder is not None
-    assert model.context_trajectory_encoder is not None
-    assert model.last_routing_weights.shape == (2, 3, 12, 13)
-
-
-def test_context_router_requires_context_features():
-    model = RetrievalAwareMHAResidualRouter(
-        context_length=12,
-        horizon=12,
-        channels=1,
-        hidden_dim=256,
-        attention_heads=4,
-        mha_dropout=0.0,
-        use_context_features=True,
-    )
-    history, base, candidates, aggregation = _inputs()
-    with pytest.raises(ValueError, match="candidate_context_features"):
-        model(
-            history,
-            base,
-            candidates=candidates,
-            aggregation=aggregation,
-            retrieval_node_keys=torch.randn(2, 3, 64),
-        )

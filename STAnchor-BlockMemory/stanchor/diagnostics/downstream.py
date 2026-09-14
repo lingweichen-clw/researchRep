@@ -31,7 +31,6 @@ from stanchor.metrics import ForecastMetricAccumulator
 from stanchor.modes import LEARNED_TOPK_ERROR_AWARE
 from stanchor.losses.downstream import build_blend_target, build_huber_risk_target
 from stanchor.retrieval.retriever import TwoStageRetriever
-from stanchor.retrieval.strategies import candidate_context_pair_features
 from stanchor.utils import resolve_device
 
 
@@ -521,7 +520,7 @@ def diagnose_downstream_checkpoint(
             observed_x = batch["x_observed"].to(device)
             retrieval_router = config.target.calibrator_arch in {
                 "retrieval_aware_mha_router",
-                "context_retrieval_aware_mha_router",
+                "candidate_key_context_mha_router",
             }
             retrieved = retrieve_for_downstream_mode(
                 mode,
@@ -542,24 +541,11 @@ def diagnose_downstream_checkpoint(
             else:
                 candidates, aggregation = retrieved
                 retrieval_node_keys = None
-            candidate_context_features = None
-            if config.target.calibrator_arch == "context_retrieval_aware_mha_router":
-                candidate_context_features = candidate_context_pair_features(
-                    candidates,
-                    x,
-                    observed_x,
-                    bank,
-                    data.series,
-                    data.scaler,
-                    config.data.context_length,
-                    device,
-                )
             output = downstream(
                 x,
                 candidates,
                 aggregation,
                 retrieval_node_keys=retrieval_node_keys,
-                candidate_context_features=candidate_context_features,
             )
             target = batch["y"].to(device)
             predicted_risk = true_risk = blend_target = blend_valid = contributions = None
