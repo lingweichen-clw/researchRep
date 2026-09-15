@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import hashlib
+import shutil
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
@@ -92,6 +94,147 @@ class FrozenPathEntry:
     retrieval_node_keys: torch.Tensor | None = None
 
 
+class FrozenPathMmapCache:
+    """Disk-backed frozen paths that materialize only the current batch."""
+
+    def __init__(
+        self,
+        root: str | Path,
+        sample_ids,
+        *,
+        base_shape: tuple[int, ...],
+        candidate_shape: tuple[int, ...],
+        retrieval_shape: tuple[int, ...] | None,
+    ) -> None:
+        self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+        ids = np.unique(np.asarray(sample_ids, dtype=np.int64))
+        if ids.ndim != 1 or ids.size == 0 or bool((ids < 0).any()):
+            raise ValueError("sample_ids must be a non-empty one-dimensional non-negative array")
+        self._row_by_sample = {int(value): index for index, value in enumerate(ids.tolist())}
+        self._filled = np.zeros(ids.size, dtype=np.bool_)
+        self._arrays: dict[str, np.memmap] = {}
+
+        def open_array(name: str, dtype, shape: tuple[int, ...]) -> None:
+            if shape[0] != ids.size:
+                raise ValueError(f"{name} shape must start with the cache sample count")
+            self._arrays[name] = np.lib.format.open_memmap(
+                self.root / f"{name}.npy",
+                mode="w+",
+                dtype=dtype,
+                shape=shape,
+            )
+
+        open_array("base_prediction", np.float32, tuple(base_shape))
+        open_array("event_ids", np.int32, tuple(candidate_shape))
+        open_array("total_scores", np.float32, tuple(candidate_shape))
+        open_array("shape_scores", np.float32, tuple(candidate_shape))
+        open_array("level_distances", np.float32, tuple(candidate_shape))
+        open_array("weights", np.float32, tuple(candidate_shape))
+        open_array("valid", np.uint8, tuple(candidate_shape))
+        self._has_retrieval_keys = retrieval_shape is not None
+        if retrieval_shape is not None:
+            open_array("retrieval_node_keys", np.float32, tuple(retrieval_shape))
+
+    def __len__(self) -> int:
+        return int(self._filled.sum())
+
+    @property
+    def storage_bytes(self) -> int:
+        return int(sum(array.nbytes for array in self._arrays.values()))
+
+    def _rows(self, sample_ids) -> np.ndarray:
+        if isinstance(sample_ids, torch.Tensor):
+            values = sample_ids.detach().cpu().reshape(-1).tolist()
+        else:
+            values = np.asarray(sample_ids, dtype=np.int64).reshape(-1).tolist()
+        try:
+            return np.asarray([self._row_by_sample[int(value)] for value in values], dtype=np.int64)
+        except KeyError as exc:
+            raise KeyError(f"sample id {exc.args[0]} is not part of this frozen cache") from exc
+
+    def has_all(self, sample_ids) -> bool:
+        try:
+            rows = self._rows(sample_ids)
+        except KeyError:
+            return False
+        return bool(rows.size and self._filled[rows].all())
+
+    @staticmethod
+    def _numpy(value: torch.Tensor, dtype) -> np.ndarray:
+        return value.detach().cpu().numpy().astype(dtype, copy=False)
+
+    def put(self, entry: FrozenPathEntry, sample_ids) -> None:
+        if entry.candidates is None:
+            raise ValueError("mmap frozen path cache requires candidate metadata")
+        rows = self._rows(sample_ids)
+        batch_size = int(rows.size)
+        if entry.base_prediction.shape[0] != batch_size:
+            raise ValueError("frozen path base prediction batch does not match sample_ids")
+        fields = {
+            "base_prediction": entry.base_prediction,
+            "event_ids": entry.candidates.event_ids,
+            "total_scores": entry.candidates.total_scores,
+            "shape_scores": entry.candidates.shape_scores,
+            "level_distances": entry.candidates.level_distances,
+            "weights": entry.candidates.weights,
+            "valid": entry.candidates.valid,
+        }
+        if entry.retrieval_node_keys is not None:
+            if not self._has_retrieval_keys:
+                raise ValueError("cache was created without retrieval key storage")
+            fields["retrieval_node_keys"] = entry.retrieval_node_keys
+        elif self._has_retrieval_keys:
+            raise ValueError("frozen path entry is missing retrieval node keys")
+        for name, value in fields.items():
+            if value.shape[0] != batch_size:
+                raise ValueError(f"frozen path field {name} batch does not match sample_ids")
+            dtype = np.uint8 if name == "valid" else np.float32 if name != "event_ids" else np.int32
+            self._arrays[name][rows] = self._numpy(value, dtype)
+        self._filled[rows] = True
+
+    def _tensor(self, name: str, rows: np.ndarray, device: torch.device, dtype) -> torch.Tensor:
+        # Advanced indexing returns a batch-sized ndarray, so only this batch is
+        # copied into a torch tensor; the dataset-sized cache remains mmap-backed.
+        array = np.array(self._arrays[name][rows], copy=True)
+        return torch.from_numpy(array).to(device=device, dtype=dtype)
+
+    def get(self, sample_ids, device: torch.device) -> FrozenPathEntry:
+        rows = self._rows(sample_ids)
+        if not rows.size or not self._filled[rows].all():
+            raise KeyError("requested frozen path is not fully materialized")
+        candidates = NodeCandidates(
+            event_ids=self._tensor("event_ids", rows, device, torch.long),
+            total_scores=self._tensor("total_scores", rows, device, torch.float32),
+            shape_scores=self._tensor("shape_scores", rows, device, torch.float32),
+            level_distances=self._tensor("level_distances", rows, device, torch.float32),
+            weights=self._tensor("weights", rows, device, torch.float32),
+            valid=self._tensor("valid", rows, device, torch.bool),
+            node_keys=None,
+        )
+        retrieval_node_keys = (
+            self._tensor("retrieval_node_keys", rows, device, torch.float32)
+            if self._has_retrieval_keys
+            else None
+        )
+        return FrozenPathEntry(
+            base_prediction=self._tensor("base_prediction", rows, device, torch.float32),
+            candidates=candidates,
+            aggregation=None,
+            retrieval_node_keys=retrieval_node_keys,
+        )
+
+    def close(self, remove: bool = False) -> None:
+        for array in self._arrays.values():
+            array.flush()
+            mmap_handle = getattr(array, "_mmap", None)
+            if mmap_handle is not None:
+                mmap_handle.close()
+        self._arrays.clear()
+        if remove:
+            shutil.rmtree(self.root, ignore_errors=True)
+
+
 def _node_candidates_device(value: NodeCandidates | None, device: torch.device) -> NodeCandidates | None:
     if value is None:
         return None
@@ -114,11 +257,29 @@ def _freeze_path_entry(
     retrieval_node_keys: torch.Tensor | None = None,
 ) -> FrozenPathEntry:
     cpu = torch.device("cpu")
+    compact_candidates = None
+    if candidates is not None:
+        # Candidate futures and selected keys are reconstructed from the mmap
+        # Bank on cache hits. Keeping them per sample multiplies RAM by the
+        # full training set (especially for [N,K,Dr] candidate keys).
+        compact_candidates = NodeCandidates(
+            event_ids=candidates.event_ids.detach().to(device=cpu, dtype=torch.int32),
+            total_scores=candidates.total_scores.detach().to(device=cpu, dtype=torch.float32),
+            shape_scores=candidates.shape_scores.detach().to(device=cpu, dtype=torch.float32),
+            level_distances=candidates.level_distances.detach().to(device=cpu, dtype=torch.float32),
+            weights=candidates.weights.detach().to(device=cpu, dtype=torch.float32),
+            valid=candidates.valid.detach().to(device=cpu),
+            node_keys=None,
+        )
     return FrozenPathEntry(
         base_prediction=base_prediction.detach().to(cpu),
-        candidates=_node_candidates_device(candidates, cpu),
-        aggregation=_aggregation_device(aggregation, cpu),
-        retrieval_node_keys=(None if retrieval_node_keys is None else retrieval_node_keys.detach().to(cpu)),
+        candidates=compact_candidates,
+        aggregation=(
+            None
+            if candidates is not None
+            else _aggregation_device(aggregation, cpu)
+        ),
+        retrieval_node_keys=(None if retrieval_node_keys is None else retrieval_node_keys.detach().to(device=cpu, dtype=torch.float32)),
     )
 
 
@@ -168,7 +329,16 @@ def _merge_frozen_paths(
                 if getattr(entries[0].candidates, name) is None
                 else torch.cat(
                     [getattr(entry.candidates, name) for entry in entries], dim=0
-                ).to(device)
+                ).to(
+                    device=device,
+                    dtype=(
+                        torch.long
+                        if name == "event_ids"
+                        else torch.float32
+                        if name != "valid"
+                        else torch.bool
+                    ),
+                )
             )
             for name in entries[0].candidates.__dict__
         })
@@ -186,7 +356,13 @@ def _merge_frozen_paths(
         ).to(device),
         candidates=candidates,
         aggregation=aggregation,
-        retrieval_node_keys=(None if entries[0].retrieval_node_keys is None else torch.cat([entry.retrieval_node_keys for entry in entries], dim=0).to(device)),
+        retrieval_node_keys=(
+            None
+            if entries[0].retrieval_node_keys is None
+            else torch.cat(
+                [entry.retrieval_node_keys for entry in entries], dim=0
+            ).to(device=device, dtype=torch.float32)
+        ),
     )
 
 
@@ -585,6 +761,17 @@ def select_downstream_training_dataset(
     )
 
 
+def _dataset_sample_ids(dataset: Dataset) -> np.ndarray:
+    """Return the stable context-end IDs emitted by ``TrafficWindowDataset``."""
+    if hasattr(dataset, "context_end_indices"):
+        return np.asarray(dataset.context_end_indices, dtype=np.int64)
+    if isinstance(dataset, Subset):
+        parent_ids = _dataset_sample_ids(dataset.dataset)
+        indices = np.asarray(dataset.indices, dtype=np.int64)
+        return parent_ids[indices]
+    raise TypeError("frozen path caching requires a dataset with context_end_indices")
+
+
 def build_target_optimizer(
     config: ExperimentConfig,
     parameter_groups: list[dict],
@@ -909,7 +1096,7 @@ def run_target_epoch(
     device: torch.device,
     optimizer: torch.optim.Optimizer | None,
     max_batches: int | None = None,
-    frozen_cache: dict[int, FrozenPathEntry] | None = None,
+    frozen_cache: FrozenPathMmapCache | dict[int, FrozenPathEntry] | None = None,
 ) -> TargetEpochResult:
     training = optimizer is not None
     downstream.train(training)
@@ -928,16 +1115,57 @@ def run_target_epoch(
             x = batch["x"].to(device)
             observed_x = batch["x_observed"].to(device)
             sample_ids = batch["sample_id"]
-            cached_entries = (
-                [frozen_cache[int(value)] for value in sample_ids.detach().cpu().tolist()]
-                if frozen_cache is not None
-                and all(int(value) in frozen_cache for value in sample_ids.detach().cpu().tolist())
-                else None
-            )
-            if cached_entries is not None:
-                entry = _merge_frozen_paths(cached_entries, device)
+            if isinstance(frozen_cache, FrozenPathMmapCache):
+                entry = (
+                    frozen_cache.get(sample_ids, device)
+                    if frozen_cache.has_all(sample_ids)
+                    else None
+                )
+            else:
+                cached_entries = (
+                    [frozen_cache[int(value)] for value in sample_ids.detach().cpu().tolist()]
+                    if frozen_cache is not None
+                    and all(int(value) in frozen_cache for value in sample_ids.detach().cpu().tolist())
+                    else None
+                )
+                entry = (
+                    _merge_frozen_paths(cached_entries, device)
+                    if cached_entries is not None
+                    else None
+                )
+            if entry is not None:
                 node_candidates = entry.candidates
-                aggregation = entry.aggregation
+                if node_candidates is not None and retriever is not None and bank is not None:
+                    node_candidates = retriever.materialize_node_keys(node_candidates)
+                    aggregation = retriever.aggregate(node_candidates)
+                    cached_payload = resolve_candidate_payload(
+                        config.target.candidate_payload,
+                        config.target.candidate_ranking,
+                    )
+                    if cached_payload in {"offset_decay", "offset_only"} and (
+                        config.target.downstream_mode
+                        in {
+                            LEARNED_TOPK_ERROR_AWARE,
+                            LEARNED_TOPK_OFFSET_DECAY_HORIZON,
+                        }
+                    ):
+                        aggregation_fn = (
+                            offset_decay_aggregation
+                            if cached_payload == "offset_decay"
+                            else offset_only_aggregation
+                        )
+                        aggregation = aggregation_fn(
+                            node_candidates,
+                            x,
+                            observed_x,
+                            bank,
+                            data.series,
+                            data.scaler,
+                            data.train.context_length,
+                            device,
+                        )
+                else:
+                    aggregation = entry.aggregation
                 base_prediction = entry.base_prediction
                 retrieval_node_keys = entry.retrieval_node_keys
             else:
@@ -1005,17 +1233,16 @@ def run_target_epoch(
                 else:
                     base_prediction = _backbone_forward(x)
                 if frozen_cache is not None:
-                    frozen_cache.update(
-                        _split_frozen_path(
-                            _freeze_path_entry(
-                                base_prediction,
-                                node_candidates,
-                                aggregation,
-                                retrieval_node_keys,
-                            ),
-                            sample_ids,
-                        )
+                    frozen_entry = _freeze_path_entry(
+                        base_prediction,
+                        node_candidates,
+                        aggregation,
+                        retrieval_node_keys,
                     )
+                    if isinstance(frozen_cache, FrozenPathMmapCache):
+                        frozen_cache.put(frozen_entry, sample_ids)
+                    else:
+                        frozen_cache.update(_split_frozen_path(frozen_entry, sample_ids))
             output = downstream(
                 x, node_candidates, aggregation, base_override=base_prediction,
                 retrieval_node_keys=retrieval_node_keys,
@@ -1177,8 +1404,6 @@ def train_downstream(
             shuffle=False,
             num_workers=config.data.num_workers,
         )
-        train_cache = {} if config.target.frozen_path_cache else None
-        val_cache = {} if config.target.frozen_path_cache else None
         # Loading a frozen encoder consumes RNG state. Reset before constructing
         # the downstream model so encoder variants share identical initialization.
         set_seed(config.runtime.seed)
@@ -1195,6 +1420,67 @@ def train_downstream(
         downstream_init_hash = _state_dict_fingerprint(downstream)
         run_dir = resolve_project_path(config.runtime.output_dir) / config.runtime.run_name
         run_dir.mkdir(parents=True, exist_ok=True)
+        train_cache: FrozenPathMmapCache | None = None
+        val_cache: FrozenPathMmapCache | None = None
+        if config.target.frozen_path_cache and retriever is not None:
+            train_ids = _dataset_sample_ids(training_dataset)
+            val_ids = _dataset_sample_ids(data.val)
+            cache_base_shape = (
+                int(train_ids.size),
+                config.data.horizon,
+                data.series.num_nodes,
+                data.series.num_channels,
+            )
+            cache_candidate_shape = (
+                int(train_ids.size),
+                data.series.num_nodes,
+                config.bank.node_top_k,
+            )
+            cache_retrieval_shape = (
+                (
+                    int(train_ids.size),
+                    data.series.num_nodes,
+                    int(bank.node_keys.shape[-1]),
+                )
+                if config.target.calibrator_arch
+                in {"retrieval_aware_mha_router", "candidate_key_context_mha_router"}
+                else None
+            )
+            train_cache = FrozenPathMmapCache(
+                run_dir / "frozen_path_cache" / "train",
+                train_ids,
+                base_shape=cache_base_shape,
+                candidate_shape=cache_candidate_shape,
+                retrieval_shape=cache_retrieval_shape,
+            )
+            val_cache = FrozenPathMmapCache(
+                run_dir / "frozen_path_cache" / "val",
+                val_ids,
+                base_shape=(
+                    int(val_ids.size),
+                    config.data.horizon,
+                    data.series.num_nodes,
+                    data.series.num_channels,
+                ),
+                candidate_shape=(
+                    int(val_ids.size),
+                    data.series.num_nodes,
+                    config.bank.node_top_k,
+                ),
+                retrieval_shape=(
+                    (
+                        int(val_ids.size),
+                        data.series.num_nodes,
+                        int(bank.node_keys.shape[-1]),
+                    )
+                    if cache_retrieval_shape is not None
+                    else None
+                ),
+            )
+            # The normal completion path removes the cache explicitly. This
+            # also removes it when the training process exits on an exception.
+            atexit.register(train_cache.close, True)
+            atexit.register(val_cache.close, True)
         best_path = run_dir / "downstream_best.pt"
         metrics_path = run_dir / "target_metrics.jsonl"
         logger = create_run_logger(
@@ -1267,6 +1553,16 @@ def train_downstream(
             len(training_dataset),
             len(data.val),
             len(data.test),
+        )
+        logger.info(
+            "Frozen path cache | enabled=%s | storage=%s | train_samples=%d | val_samples=%d | allocated_mib=%.1f",
+            train_cache is not None,
+            "disk_mmap" if train_cache is not None else "disabled",
+            0 if train_cache is None else len(_dataset_sample_ids(training_dataset)),
+            0 if val_cache is None else len(_dataset_sample_ids(data.val)),
+            0.0
+            if train_cache is None or val_cache is None
+            else (train_cache.storage_bytes + val_cache.storage_bytes) / (1024.0 ** 2),
         )
         if bank is None:
             logger.info("Bank/retrieval | disabled (base_only)")
@@ -1524,6 +1820,10 @@ def train_downstream(
             best_mae,
             best_path,
         )
+        if train_cache is not None:
+            train_cache.close(remove=True)
+        if val_cache is not None:
+            val_cache.close(remove=True)
     return best_path
 
 

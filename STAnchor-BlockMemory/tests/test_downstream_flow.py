@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
+from pathlib import Path
 
 import torch
 
 from stanchor.config import DataConfig, ExperimentConfig, TargetConfig
 from stanchor.engine.target import (
+    FrozenPathEntry,
+    FrozenPathMmapCache,
+    _freeze_path_entry,
     build_downstream_model,
     checkpoint_bank_level_weight,
     checkpoint_candidate_protocol,
@@ -28,6 +33,83 @@ from scripts.train_downstream import build_parser
 
 
 class DownstreamFlowTest(unittest.TestCase):
+    def test_frozen_path_mmap_cache_round_trips_without_aggregation_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cache = FrozenPathMmapCache(
+                Path(directory),
+                sample_ids=[10, 11],
+                base_shape=(2, 1, 2, 1),
+                candidate_shape=(2, 2, 2),
+                retrieval_shape=(2, 2, 3),
+            )
+            candidates = NodeCandidates(
+                event_ids=torch.tensor([[[1, 2], [3, 4]]], dtype=torch.int32),
+                total_scores=torch.ones(1, 2, 2),
+                shape_scores=torch.ones(1, 2, 2),
+                level_distances=torch.ones(1, 2, 2),
+                weights=torch.full((1, 2, 2), 0.5),
+                valid=torch.ones(1, 2, 2, dtype=torch.bool),
+                node_keys=None,
+            )
+            entry = FrozenPathEntry(
+                base_prediction=torch.ones(1, 1, 2, 1),
+                candidates=candidates,
+                aggregation=None,
+                retrieval_node_keys=torch.ones(1, 2, 3),
+            )
+            cache.put(entry, torch.tensor([10]))
+            self.assertFalse(cache.has_all(torch.tensor([10, 11])))
+            cache.put(
+                FrozenPathEntry(
+                    base_prediction=torch.full((1, 1, 2, 1), 2.0),
+                    candidates=candidates,
+                    aggregation=None,
+                    retrieval_node_keys=torch.full((1, 2, 3), 2.0),
+                ),
+                torch.tensor([11]),
+            )
+
+            restored = cache.get(torch.tensor([11, 10]), torch.device("cpu"))
+
+            self.assertTrue(cache.has_all(torch.tensor([10, 11])))
+            self.assertIsNone(restored.aggregation)
+            self.assertTrue(torch.equal(restored.base_prediction[:, 0, 0, 0], torch.tensor([2.0, 1.0])))
+            self.assertTrue(torch.equal(restored.retrieval_node_keys[:, 0, 0], torch.tensor([2.0, 1.0])))
+            cache.close(remove=True)
+
+    def test_frozen_path_cache_keeps_compact_retrieval_path_only(self) -> None:
+        base = torch.zeros(1, 2, 3, 1)
+        candidates = NodeCandidates(
+            event_ids=torch.tensor([[[1, 2], [3, 4], [5, 6]]]),
+            total_scores=torch.ones(1, 3, 2),
+            shape_scores=torch.ones(1, 3, 2),
+            level_distances=torch.ones(1, 3, 2),
+            weights=torch.full((1, 3, 2), 0.5),
+            valid=torch.ones(1, 3, 2, dtype=torch.bool),
+            node_keys=torch.ones(1, 3, 2, 4),
+        )
+        aggregation = AggregationOutput(
+            prediction=torch.zeros(1, 2, 3, 1),
+            variance=torch.zeros(1, 2, 3, 1),
+            valid=torch.ones(1, 2, 3, 1, dtype=torch.bool),
+            candidate_futures=torch.zeros(1, 2, 3, 2, 1),
+            candidate_masks=torch.ones(1, 2, 3, 2, 1, dtype=torch.bool),
+        )
+
+        entry = _freeze_path_entry(
+            base,
+            candidates,
+            aggregation,
+            retrieval_node_keys=torch.ones(1, 3, 4),
+        )
+
+        self.assertIsNone(entry.aggregation)
+        self.assertIsNotNone(entry.candidates)
+        self.assertIsNone(entry.candidates.node_keys)
+        self.assertEqual(entry.candidates.event_ids.dtype, torch.int32)
+        self.assertEqual(entry.candidates.shape_scores.dtype, torch.float32)
+        self.assertEqual(entry.retrieval_node_keys.dtype, torch.float32)
+
     def test_forecast_loss_accepts_physical_space_inputs(self) -> None:
         zeros = torch.zeros(1, 1, 2, 1)
         output = DownstreamOutput(

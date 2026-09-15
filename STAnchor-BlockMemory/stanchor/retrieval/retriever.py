@@ -182,9 +182,12 @@ class TwoStageRetriever:
         if nodes != self.bank.manifest.num_nodes or retrieval_dim != self.bank.manifest.retrieval_dim:
             raise ValueError("query keys do not match bank schema")
         safe_ids = events.event_ids.clamp_min(0).cpu().numpy()
+        # Preserve the Bank storage dtype on CPU. Casting a float16 Bank slice
+        # to float32 here creates a second, peak-sized NumPy allocation before
+        # the tensor is copied to the device.
         candidate_keys = torch.from_numpy(
-            np.asarray(self.bank.node_keys[safe_ids], dtype=np.float32)
-        ).to(self.device)  # [B, R, N, Dr]
+            np.asarray(self.bank.node_keys[safe_ids])
+        ).to(self.device, dtype=query_node_keys.dtype)  # [B, R, N, Dr]
         candidate_levels = torch.from_numpy(
             np.asarray(self.bank.level_features[safe_ids], dtype=np.float32)
         ).to(self.device)  # [B, R, N, 4C]
@@ -216,6 +219,46 @@ class TwoStageRetriever:
             weights,
             valid_top,
             selected_keys,
+        )
+
+    @torch.no_grad()
+    def materialize_node_keys(self, candidates: NodeCandidates) -> NodeCandidates:
+        """Load only the selected candidate keys for one cached batch.
+
+        Frozen downstream paths keep candidate ids and ranking metadata on CPU.
+        The key tensor is reconstructed from the Bank at batch time so the
+        cache never retains ``[num_events, num_nodes, top_k, retrieval_dim]``.
+        """
+        event_ids = candidates.event_ids.detach().cpu().numpy().astype(np.int64, copy=False)
+        if event_ids.ndim != 3:
+            raise ValueError("candidate event_ids must be [B,N,K]")
+        batch, nodes, top_k = event_ids.shape
+        if nodes != self.bank.manifest.num_nodes:
+            raise ValueError("candidate node dimension does not match bank schema")
+        if candidates.valid.shape != (batch, nodes, top_k):
+            raise ValueError("candidate validity does not align with event_ids")
+        safe_ids = np.maximum(event_ids, 0)
+        node_ids = np.arange(nodes, dtype=np.int64)[None, :, None]
+        # Match the online reranker: Bank storage may be float16, but the
+        # selected keys consumed by the router are float32. This cast is only
+        # for the current batch, never for the whole Bank.
+        selected = np.asarray(
+            self.bank.node_keys[safe_ids, node_ids, :], dtype=np.float32
+        )
+        selected = np.where(
+            candidates.valid.detach().cpu().numpy()[..., None],
+            selected,
+            0.0,
+        )
+        node_keys = torch.from_numpy(selected).to(self.device)
+        return NodeCandidates(
+            event_ids=candidates.event_ids.to(self.device),
+            total_scores=candidates.total_scores.to(self.device),
+            shape_scores=candidates.shape_scores.to(self.device),
+            level_distances=candidates.level_distances.to(self.device),
+            weights=candidates.weights.to(self.device),
+            valid=candidates.valid.to(self.device),
+            node_keys=node_keys,
         )
 
     @torch.no_grad()

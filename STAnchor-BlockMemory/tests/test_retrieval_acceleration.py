@@ -8,6 +8,7 @@ import torch
 
 from stanchor.bank.storage import CalendarIndex
 from stanchor.retrieval.retriever import NodeCandidates
+from stanchor.retrieval.retriever import TwoStageRetriever
 from stanchor.retrieval.strategies import (
     candidate_contexts_for_nodes,
     event_candidate_futures_for_nodes,
@@ -15,6 +16,51 @@ from stanchor.retrieval.strategies import (
 
 
 class RetrievalAccelerationTest(unittest.TestCase):
+    def test_compact_candidates_materialize_keys_only_for_current_batch(self) -> None:
+        node_keys = np.arange(2 * 3 * 4, dtype=np.float16).reshape(2, 3, 4)
+        calendar = CalendarIndex.build(
+            weekday=np.asarray([0, 0]),
+            slot=np.asarray([2, 2]),
+            slots_per_day=4,
+        )
+        bank = SimpleNamespace(
+            event_keys_memory=np.ones((2, 4), dtype=np.float32),
+            node_keys=node_keys,
+            level_features=np.zeros((2, 3, 4), dtype=np.float32),
+            future_end=np.asarray([5, 15], dtype=np.int64),
+            calendar=calendar,
+            manifest=SimpleNamespace(
+                slots_per_day=4,
+                num_nodes=3,
+                retrieval_dim=4,
+            ),
+        )
+        retriever = TwoStageRetriever(
+            bank,
+            event_top_r=2,
+            node_top_k=2,
+            level_weight=0.0,
+            level_temperature=1.0,
+            search_temperature=0.1,
+            device=torch.device("cpu"),
+        )
+        candidates = NodeCandidates(
+            event_ids=torch.tensor([[[0, 1], [1, 0], [0, 1]]], dtype=torch.int32),
+            total_scores=torch.zeros(1, 3, 2),
+            shape_scores=torch.zeros(1, 3, 2),
+            level_distances=torch.zeros(1, 3, 2),
+            weights=torch.full((1, 3, 2), 0.5),
+            valid=torch.ones(1, 3, 2, dtype=torch.bool),
+            node_keys=None,
+        )
+
+        materialized = retriever.materialize_node_keys(candidates)
+
+        ids = candidates.event_ids.numpy()
+        nodes = np.arange(3, dtype=np.int64)[None, :, None]
+        expected = torch.from_numpy(node_keys[np.maximum(ids, 0), nodes, :]).float()
+        self.assertTrue(torch.equal(materialized.node_keys, expected))
+
     def test_vectorized_exact_search_preserves_reference_order_and_padding(self) -> None:
         event_keys = np.asarray(
             [[1.0, 0.0], [0.8, 0.6], [0.0, 1.0], [0.6, 0.8]],
