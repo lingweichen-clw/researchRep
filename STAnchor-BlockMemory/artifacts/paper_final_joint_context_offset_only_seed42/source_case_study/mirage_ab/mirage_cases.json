@@ -1,0 +1,170 @@
+{
+  "schema_version": 7,
+  "selection": {
+    "context_similar_future_different": "context-neighbor proposals: context <= P8, future trend >= P92, key >= P92",
+    "context_different_future_similar": "future-neighbor proposals: context >= P92, future trend <= P8, key <= P8",
+    "manual_selection": false,
+    "population_clustering_enabled": false,
+    "pairs_per_cluster": 3,
+    "future_overlap_threshold": 0.8,
+    "context_overlap_threshold": 0.8,
+    "max_pairs_per_node": 2000,
+    "cluster_pool_points": 80,
+    "cluster_display_probability": 0.75,
+    "core_min_future_cosine": 0.7,
+    "core_min_centroid_distance": 0.12,
+    "diversity_constraint": "no repeated event across selected pairs; at most 2 pairs per node when possible",
+    "case_display_sampling": "within each fixed quantile-defined class, rank rows by standardized distance to the class median of (context, future-trend, key) distances",
+    "b_case_display_sampling": "within the fixed B class, prioritize the smallest key distance, then future distance, with at most one displayed pair per node when possible"
+  },
+  "data_contract": {
+    "num_events_used": 5000,
+    "nodes": 207,
+    "retrieval_dim": 64,
+    "history_steps": 288,
+    "context_hours": 24.0,
+    "horizon_steps": 12,
+    "horizon_minutes": 60,
+    "future_unit": "traffic speed (mph)",
+    "missing_value_policy": "zero/unobserved values are masked, never treated as observations"
+  },
+  "trend_clustering": {
+    "enabled": false,
+    "disabled_reason": "disabled by --skip-population-clustering; A/B pair selection is unchanged",
+    "definition": "future trajectory minus its first valid level, divided by its temporal standard deviation",
+    "algorithm": "MiniBatchKMeans",
+    "requested_future_trend_clusters": 32,
+    "retained_clusters": 0,
+    "minimum_cluster_size": 60,
+    "eligible_event_node_points": 989457,
+    "cluster_summary": []
+  },
+  "key_umap_local_display": {
+    "enabled": false,
+    "disabled_reason": "disabled by --skip-population-clustering; only A/B case PCA panels are retained",
+    "definition": "same-node local regions formed from fixed-size cosine nearest neighbours in the original 64-D learned-key space. Query future is used only for offline region validation and ranking. Distinct regions satisfy a fixed centroid cosine-distance threshold in the original key space",
+    "coordinate_system": "2-D UMAP of all retained region members using cosine distance; visualization only, not used for region selection or quantitative claims",
+    "umap_parameters": {
+      "n_neighbors": 15,
+      "min_dist": 0.25,
+      "metric": "cosine",
+      "seed": 42
+    },
+    "requested_max_regions": 12,
+    "pool_points_per_region": 80,
+    "display_keep_probability": 0.75,
+    "minimum_within_future_cosine": 0.7,
+    "minimum_inter_region_centroid_cosine_distance": 0.12,
+    "display_sampling": "independent Bernoulli sampling with one shared probability and the fixed global seed; resulting display counts vary naturally by region",
+    "regions": [],
+    "overall_future_similarity": {}
+  },
+  "pair_proposal_counts": {
+    "context_neighbor_pairs": 337926,
+    "future_neighbor_pairs": 336777
+  },
+  "thresholds": {
+    "a_context_low": 0.32399207211346054,
+    "a_future_high": 3.0267213509085464,
+    "a_key_high": 0.10176936537027359,
+    "b_context_high": 4.411782274196075,
+    "b_future_low": 0.39780047210150205,
+    "b_key_low": 0.044063004702329635
+  },
+  "plot_summary": {
+    "context_similar_future_different": {
+      "pairs_plotted": 3,
+      "curves_plotted": 6,
+      "key_points_plotted": 6
+    },
+    "context_different_future_similar": {
+      "pairs_plotted": 3,
+      "curves_plotted": 6,
+      "key_points_plotted": 6
+    }
+  },
+  "cases": {
+    "context_similar_future_different": [
+      {
+        "node": 38,
+        "i": 3913,
+        "j": 4293,
+        "context_distance": 0.2663483224627947,
+        "future_distance": 3.5349383252721025,
+        "key_distance": 0.11156411468982697,
+        "future_overlap_fraction": 1.0,
+        "context_overlap_fraction": 0.9583333333333334,
+        "sample_i": 13608,
+        "sample_j": 14761,
+        "node_id": 38
+      },
+      {
+        "node": 91,
+        "i": 2822,
+        "j": 3006,
+        "context_distance": 0.27140990033138007,
+        "future_distance": 3.5731248331105854,
+        "key_distance": 0.10933142155408859,
+        "future_overlap_fraction": 1.0,
+        "context_overlap_fraction": 1.0,
+        "sample_i": 9843,
+        "sample_j": 10428,
+        "node_id": 91
+      },
+      {
+        "node": 38,
+        "i": 3516,
+        "j": 4266,
+        "context_distance": 0.27876468406326493,
+        "future_distance": 3.494912009219806,
+        "key_distance": 0.11277420818805695,
+        "future_overlap_fraction": 1.0,
+        "context_overlap_fraction": 0.9583333333333334,
+        "sample_i": 12363,
+        "sample_j": 14668,
+        "node_id": 38
+      }
+    ],
+    "context_different_future_similar": [
+      {
+        "node": 145,
+        "i": 1301,
+        "j": 2881,
+        "context_distance": 4.725750898056212,
+        "future_distance": 0.19676510055661797,
+        "key_distance": 0.016517624258995056,
+        "future_overlap_fraction": 1.0,
+        "context_overlap_fraction": 1.0,
+        "sample_i": 4557,
+        "sample_j": 10019,
+        "node_id": 145
+      },
+      {
+        "node": 36,
+        "i": 206,
+        "j": 1970,
+        "context_distance": 8.396851865981464,
+        "future_distance": 0.22688109197919235,
+        "key_distance": 0.016592781990766525,
+        "future_overlap_fraction": 1.0,
+        "context_overlap_fraction": 0.9826388888888888,
+        "sample_i": 977,
+        "sample_j": 6728,
+        "node_id": 36
+      },
+      {
+        "node": 2,
+        "i": 2334,
+        "j": 3952,
+        "context_distance": 4.635870735943755,
+        "future_distance": 0.29032871095211904,
+        "key_distance": 0.019550755620002747,
+        "future_overlap_fraction": 1.0,
+        "context_overlap_fraction": 0.9965277777777778,
+        "sample_i": 8261,
+        "sample_j": 13725,
+        "node_id": 2
+      }
+    ]
+  }
+}

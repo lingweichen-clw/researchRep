@@ -1,0 +1,13 @@
+model,model_label,quadrant,quadrant_label,count,mean,ci_low,ci_high
+current,Final joint-context,context_similar_future_similar,Both similar,711,0.9792402139721322,0.9774065143985413,0.9809105951227729
+current,Final joint-context,context_similar_future_different,Context only,924,0.9286740699838401,0.9240897573512484,0.9335054334615285
+current,Final joint-context,context_different_future_similar,Future only,1133,0.9210372243280469,0.9182282746213248,0.9236382812734274
+current,Final joint-context,context_different_future_different,Both different,682,0.8423392327862883,0.8337423420367034,0.8502380616117042
+reference,OffsetDecay,context_similar_future_similar,Both similar,711,0.9390122219766405,0.9337663594716992,0.9444877975406142
+reference,OffsetDecay,context_similar_future_different,Context only,924,0.8637885162174218,0.8546889135545979,0.8728126032832679
+reference,OffsetDecay,context_different_future_similar,Future only,1133,0.9022227840182339,0.8957206655507325,0.9086754142941421
+reference,OffsetDecay,context_different_future_different,Both different,682,0.7233144800713531,0.7076556850456105,0.7381966658034529
+random,Random encoder,context_similar_future_similar,Both similar,711,0.7183606949650296,0.6986174994059907,0.7385247320603555
+random,Random encoder,context_similar_future_different,Context only,924,0.7726426210145407,0.756042670094941,0.7887110468329211
+random,Random encoder,context_different_future_similar,Future only,1133,0.6485092598476336,0.6320080120127195,0.66478757515695
+random,Random encoder,context_different_future_different,Both different,682,0.6556499369290306,0.6383042587356552,0.6717394053416234

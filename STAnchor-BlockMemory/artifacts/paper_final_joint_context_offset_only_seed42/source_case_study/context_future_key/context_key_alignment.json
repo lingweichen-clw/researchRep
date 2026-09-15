@@ -1,0 +1,482 @@
+{
+  "protocol": {
+    "current_bank": "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\metrla_source",
+    "reference_bank": "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\metrla_reference_offset_decay",
+    "random_bank": "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\metrla_random",
+    "encoder_fingerprints": [
+      "fe9a2189a1dddc8c1c27e7b248da13216fe6de05ef56ca29c3159c3cfae5ed42",
+      "7f34ac9201d35bc36e99778540e8b27cfccbffd6c4096fb79bb0fdfa6c93da74",
+      "006ec4ab73aadf07f6a72d8f4e9c3b6be6422d3d4a521f2bebef6cc9e3d4b4d7"
+    ],
+    "selected_events": 2500,
+    "selected_nodes": 64,
+    "calendar_event_pairs": 4436,
+    "evaluated_node_pairs": 74664,
+    "seed": 42,
+    "tail_quantile": 0.2,
+    "level_control_quantile": 0.3,
+    "calendar_control": "same slot and cyclic weekday distance <= 1",
+    "context_shape": "masked RMS over 24 patch means after the encoder's per-window normalization",
+    "context_level": "mean absolute distance over Bank [mean,std,last,slope] features",
+    "future_signature": "exact Offset-only teacher Y - 12-step forecast-context endpoint in scaler/model units",
+    "key_distance": "1 - cosine similarity on the same event-node pair"
+  },
+  "thresholds": {
+    "context_distance_low": 0.44190859496243234,
+    "context_distance_high": 0.9905762252268201,
+    "level_distance_low": 0.1771594263613224,
+    "level_distance_high": 0.7828626975417138,
+    "future_distance_low": 0.2563094105097758,
+    "future_distance_high": 1.1417325355576984
+  },
+  "counts": {
+    "context_similar_future_similar": 2063,
+    "context_similar_future_different": 280,
+    "context_different_future_similar": 465,
+    "context_different_future_different": 1823
+  },
+  "summary": {
+    "quadrants": {
+      "context_similar_future_similar": {
+        "current": {
+          "count": 2063,
+          "mean": 0.027440844410535094,
+          "median": 0.01701016552109913,
+          "std": 0.030382370518487176
+        },
+        "reference": {
+          "count": 2063,
+          "mean": 0.07303938282303413,
+          "median": 0.03952822286875224,
+          "std": 0.08517738939755226
+        },
+        "random": {
+          "count": 2063,
+          "mean": 0.2729622488211896,
+          "median": 0.26587660124845214,
+          "std": 0.2818439971233342
+        }
+      },
+      "context_similar_future_different": {
+        "current": {
+          "count": 280,
+          "mean": 0.08566356419571974,
+          "median": 0.05920933566158498,
+          "std": 0.09043007049099394
+        },
+        "reference": {
+          "count": 280,
+          "mean": 0.19209335639933287,
+          "median": 0.1309098997803202,
+          "std": 0.18721240155470795
+        },
+        "random": {
+          "count": 280,
+          "mean": 0.2190465862425448,
+          "median": 0.17536154357160327,
+          "std": 0.24175263049804993
+        }
+      },
+      "context_different_future_similar": {
+        "current": {
+          "count": 465,
+          "mean": 0.1417901750493547,
+          "median": 0.13189392761690133,
+          "std": 0.08184591025264491
+        },
+        "reference": {
+          "count": 465,
+          "mean": 0.26592456696029765,
+          "median": 0.1783410274489613,
+          "std": 0.25073637821091654
+        },
+        "random": {
+          "count": 465,
+          "mean": 0.6053815980853459,
+          "median": 0.5996824568694166,
+          "std": 0.19525383372225788
+        }
+      },
+      "context_different_future_different": {
+        "current": {
+          "count": 1823,
+          "mean": 0.3766385896355024,
+          "median": 0.3807656153623562,
+          "std": 0.1298276853626803
+        },
+        "reference": {
+          "count": 1823,
+          "mean": 0.5267433835321271,
+          "median": 0.5338436848492744,
+          "std": 0.19340964290002685
+        },
+        "random": {
+          "count": 1823,
+          "mean": 0.5958441025259696,
+          "median": 0.5704722641731104,
+          "std": 0.24269800834339114
+        }
+      }
+    },
+    "current": {
+      "joint_similar_minus_context_similar_future_different": -0.058222719785184646,
+      "joint_similar_minus_context_different_future_similar": -0.11434933063881961
+    },
+    "reference": {
+      "joint_similar_minus_context_similar_future_different": -0.11905397357629874,
+      "joint_similar_minus_context_different_future_similar": -0.19288518413726352
+    },
+    "random": {
+      "joint_similar_minus_context_similar_future_different": 0.053915662578644774,
+      "joint_similar_minus_context_different_future_similar": -0.3324193492641563
+    },
+    "joint_similar_current_minus_reference": -0.04559853841249903,
+    "joint_similar_current_minus_random": -0.24552140441065448
+  },
+  "rank_correlations": {
+    "current": {
+      "context_shape": 0.30060347990216124,
+      "context_level": 0.6008316033107279,
+      "offset_only_future": 0.5180326680900286
+    },
+    "reference": {
+      "context_shape": 0.20112276989689148,
+      "context_level": 0.5213096100628779,
+      "offset_only_future": 0.4838611685154367
+    },
+    "random": {
+      "context_shape": 0.22753878496473745,
+      "context_level": 0.3208775752391672,
+      "offset_only_future": 0.09053430916568762
+    }
+  },
+  "level_controlled_relation": {
+    "definition": "calendar-compatible same-node pairs restricted to the lowest configured quantile of [mean,std,last,slope] distance; context and future tails are then selected independently",
+    "thresholds": {
+      "level_distance_max": 0.2373159280978143,
+      "context_distance_low": 0.35141019218044084,
+      "context_distance_high": 0.8309216376059659,
+      "future_distance_low": 0.1874007013310191,
+      "future_distance_high": 0.599129375656722
+    },
+    "counts": {
+      "context_similar_future_similar": 711,
+      "context_similar_future_different": 924,
+      "context_different_future_similar": 1133,
+      "context_different_future_different": 682
+    },
+    "summary": {
+      "quadrants": {
+        "context_similar_future_similar": {
+          "current": {
+            "count": 711,
+            "mean": 0.020759786027867697,
+            "median": 0.012347481728010479,
+            "std": 0.023702526089749616
+          },
+          "reference": {
+            "count": 711,
+            "mean": 0.06098777802335969,
+            "median": 0.03476167705714861,
+            "std": 0.07226543932859324
+          },
+          "random": {
+            "count": 711,
+            "mean": 0.28163930503497037,
+            "median": 0.28043726993062923,
+            "std": 0.2746461205125237
+          }
+        },
+        "context_similar_future_different": {
+          "current": {
+            "count": 924,
+            "mean": 0.07132593001615993,
+            "median": 0.04340298075210158,
+            "std": 0.07450706380828201
+          },
+          "reference": {
+            "count": 924,
+            "mean": 0.13621148378257816,
+            "median": 0.08966567100171269,
+            "std": 0.14071569629138164
+          },
+          "random": {
+            "count": 924,
+            "mean": 0.22735737898545938,
+            "median": 0.14515998955190718,
+            "std": 0.25677200587942495
+          }
+        },
+        "context_different_future_similar": {
+          "current": {
+            "count": 1133,
+            "mean": 0.07896277567195302,
+            "median": 0.06985280605394961,
+            "std": 0.04876148910952255
+          },
+          "reference": {
+            "count": 1133,
+            "mean": 0.09777721598176618,
+            "median": 0.054361971844432144,
+            "std": 0.10687176955210094
+          },
+          "random": {
+            "count": 1133,
+            "mean": 0.35149074015236637,
+            "median": 0.39345253738913,
+            "std": 0.28258023929875226
+          }
+        },
+        "context_different_future_different": {
+          "current": {
+            "count": 682,
+            "mean": 0.1576607672137117,
+            "median": 0.1277892555539057,
+            "std": 0.11405672202661109
+          },
+          "reference": {
+            "count": 682,
+            "mean": 0.27668551992864693,
+            "median": 0.2170977372174699,
+            "std": 0.213258596611255
+          },
+          "random": {
+            "count": 682,
+            "mean": 0.34435006307096944,
+            "median": 0.35396049354088055,
+            "std": 0.24182768274749553
+          }
+        }
+      },
+      "current": {
+        "joint_similar_minus_context_similar_future_different": -0.050566143988292234,
+        "joint_similar_minus_context_different_future_similar": -0.05820298964408532
+      },
+      "reference": {
+        "joint_similar_minus_context_similar_future_different": -0.07522370575921847,
+        "joint_similar_minus_context_different_future_similar": -0.036789437958406494
+      },
+      "random": {
+        "joint_similar_minus_context_similar_future_different": 0.05428192604951099,
+        "joint_similar_minus_context_different_future_similar": -0.069851435117396
+      },
+      "joint_similar_current_minus_reference": -0.04022799199549199,
+      "joint_similar_current_minus_random": -0.26087951900710266
+    },
+    "partial_rank_correlations": {
+      "current": {
+        "context_shape": 0.24460203266262862,
+        "offset_only_future": 0.3629406947250126,
+        "context_level": 0.3653109061610026
+      },
+      "reference": {
+        "context_shape": 0.13089823370982814,
+        "offset_only_future": 0.3213638547938112,
+        "context_level": 0.2997762770494855
+      },
+      "random": {
+        "context_shape": 0.12361801200520543,
+        "offset_only_future": -0.05472727822281924,
+        "context_level": 0.2559990640264545
+      }
+    },
+    "relation_surface": {
+      "mean": [
+        [
+          0.01751672313846548,
+          0.019593785807820747,
+          0.02620535008257462,
+          0.02826524447301502,
+          0.030504362406461018,
+          0.03973703155091334,
+          0.05531410627339712,
+          0.08426574812413161
+        ],
+        [
+          0.02795567346685274,
+          0.027613919159109702,
+          0.03253405094065411,
+          0.036722334843259034,
+          0.04175947001894505,
+          0.05025221948359526,
+          0.06983948040459656,
+          0.09590161961693838
+        ],
+        [
+          0.03638907095955628,
+          0.04075721148286752,
+          0.0414959510423071,
+          0.04645305897234182,
+          0.05140342138582746,
+          0.06528797578875191,
+          0.07123456280255147,
+          0.10875025403188167
+        ],
+        [
+          0.04105231991572318,
+          0.04650012304210627,
+          0.05174437151317146,
+          0.05930741771042753,
+          0.06556636948766466,
+          0.07557390103999623,
+          0.08573600722111403,
+          0.11458725483223203
+        ],
+        [
+          0.06083636064496557,
+          0.06052430293009293,
+          0.0715278334881484,
+          0.07864421763079063,
+          0.07058125206698744,
+          0.07998663791219672,
+          0.0972897545704332,
+          0.1283231019333394
+        ],
+        [
+          0.06657401416028315,
+          0.06697984876221129,
+          0.07187045371362362,
+          0.07515602328456515,
+          0.08268991481652997,
+          0.09223361810337764,
+          0.11310909247876429,
+          0.14053107990902994
+        ],
+        [
+          0.0668921413979268,
+          0.06370338367239543,
+          0.07215667558280342,
+          0.07770887198100826,
+          0.08171991678888044,
+          0.10132849339910541,
+          0.1272190234528817,
+          0.15475125912581716
+        ],
+        [
+          0.07057858795989572,
+          0.08198338706491207,
+          0.08114849332689388,
+          0.10085434370063975,
+          0.10488668661586246,
+          0.11733941670921658,
+          0.14579518394004393,
+          0.17280398413182294
+        ]
+      ],
+      "count": [
+        [
+          249,
+          292,
+          305,
+          324,
+          337,
+          392,
+          394,
+          507
+        ],
+        [
+          297,
+          284,
+          319,
+          355,
+          343,
+          384,
+          386,
+          432
+        ],
+        [
+          344,
+          319,
+          318,
+          318,
+          352,
+          356,
+          389,
+          404
+        ],
+        [
+          384,
+          328,
+          324,
+          330,
+          341,
+          349,
+          362,
+          381
+        ],
+        [
+          405,
+          391,
+          359,
+          340,
+          349,
+          329,
+          333,
+          294
+        ],
+        [
+          410,
+          397,
+          388,
+          346,
+          342,
+          332,
+          306,
+          279
+        ],
+        [
+          418,
+          412,
+          392,
+          413,
+          332,
+          286,
+          316,
+          231
+        ],
+        [
+          293,
+          377,
+          395,
+          373,
+          404,
+          372,
+          314,
+          272
+        ]
+      ],
+      "context_edges": [
+        0.05267574441842732,
+        0.29680335402970087,
+        0.3849656715461956,
+        0.46373145529099874,
+        0.5495643971468022,
+        0.6506163746059588,
+        0.7723527872807162,
+        0.94121432420032,
+        2.068084674749669
+      ],
+      "future_edges": [
+        0.028920615338304163,
+        0.15505894613237972,
+        0.20766645993650434,
+        0.25932322378806477,
+        0.3175129941348837,
+        0.3969865101053317,
+        0.5216743511715758,
+        0.780449091539773,
+        9.94215856477271
+      ]
+    }
+  },
+  "outputs": {
+    "figures": [
+      "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\source_case_study\\context_future_key\\context_future_key_relation.png",
+      "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\source_case_study\\context_future_key\\context_future_key_relation.pdf"
+    ],
+    "surface_csv": "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\source_case_study\\context_future_key\\context_future_key_surface.csv",
+    "quadrants_csv": "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\source_case_study\\context_future_key\\level_controlled_quadrants.csv",
+    "partial_correlations_csv": "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\source_case_study\\context_future_key\\partial_rank_correlations.csv",
+    "controlled_pair_records": "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\source_case_study\\context_future_key\\level_controlled_pair_records.csv.gz"
+  }
+}

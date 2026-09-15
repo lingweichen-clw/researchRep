@@ -1,0 +1,10 @@
+model,factor,partial_spearman
+current,context_shape,0.24460203266262862
+current,offset_only_future,0.3629406947250126
+current,context_level,0.3653109061610026
+reference,context_shape,0.13089823370982814
+reference,offset_only_future,0.3213638547938112
+reference,context_level,0.2997762770494855
+random,context_shape,0.12361801200520543
+random,offset_only_future,-0.05472727822281924
+random,context_level,0.2559990640264545
