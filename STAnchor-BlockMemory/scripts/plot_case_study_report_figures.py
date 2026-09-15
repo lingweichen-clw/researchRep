@@ -23,6 +23,13 @@ def main() -> None:
     parser.add_argument("--model-label", required=True)
     parser.add_argument("--objective", required=True)
     parser.add_argument("--frequency-minutes", type=int, default=5)
+    parser.add_argument(
+        "--secondary-protocol-label",
+        default="Weekday ±1, same slot (deployment-like)",
+    )
+    parser.add_argument("--context-surface")
+    parser.add_argument("--context-quadrants")
+    parser.add_argument("--context-partials")
     parser.add_argument("--output-dir", required=True)
     args = parser.parse_args()
     paths = render_case_study_report_figures(
@@ -33,6 +40,10 @@ def main() -> None:
         objective=args.objective,
         frequency_minutes=args.frequency_minutes,
         output_dir=args.output_dir,
+        secondary_protocol_label=args.secondary_protocol_label,
+        context_surface_path=args.context_surface,
+        context_quadrant_path=args.context_quadrants,
+        context_partial_path=args.context_partials,
     )
     for path in paths:
         print(path.resolve())

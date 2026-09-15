@@ -150,6 +150,22 @@ class PaperFinalQueueTest(unittest.TestCase):
         self.assertEqual(config.pretrain.relation_teacher_mode, "offset_only")
         config.validate()
 
+    def test_cross_domain_calendar_pool_keeps_event_top_r_96(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "pemsbay_gwn.yaml"
+            materialize_downstream_config(
+                repo_root=PROJECT_ROOT,
+                dataset="pemsbay",
+                backbone="gwn",
+                output_path=output,
+                bank_output="artifacts/temporary_banks/pemsbay_finetuned",
+            )
+            config = load_config(output)
+
+        self.assertEqual(config.bank.event_top_r, 96)
+        self.assertEqual(config.bank.node_top_k, 12)
+        config.validate()
+
     def test_safe_bank_cleanup_rejects_root_and_outside_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)

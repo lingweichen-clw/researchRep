@@ -232,7 +232,12 @@ def _compose_config(
     bank.update(
         {
             "output_dir": bank_output,
-            "event_top_r": 32,
+            # Cross-domain weekday_radius1_overlap pools can contain more
+            # than 32 legal events (PEMS-BAY reaches 37).  Keep the source
+            # METR-LA protocol at 32, but preserve the established 96-event
+            # cross-domain candidate pool so the fair calendar set is not
+            # truncated before retrieval ranking.
+            "event_top_r": 32 if dataset == "metrla" else 96,
             "node_top_k": 12,
             "level_weight": 0.0,
         }
