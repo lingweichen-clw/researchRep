@@ -1,0 +1,20 @@
+schema_version: 1
+statuses:
+  final:
+    description: Verified result from the current Joint Context--Future Offset-only model.
+  proxy_od:
+    description: Temporary HN-OffsetDecay result; must be visibly marked and replaced before submission.
+  pending:
+    description: Experiment is incomplete or has not received formal test evaluation.
+results:
+  source_retrieval_case_study: final
+  metrla_eight_backbone_test: final
+  retrieval_random_argcn: final
+  simple_fusion_test: pending
+  final_model_cross_dataset: pending
+  legacy_offset_decay_cross_dataset: proxy_od
+  external_retrieval_comparison: pending
+  hyperparameter_analysis: pending
+  framework_vector_figure: pending
+  multi_seed_main_results: pending
+  efficiency_fixed_protocol: pending
