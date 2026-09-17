@@ -305,8 +305,15 @@ class ExperimentConfig:
         validate_candidate_protocol(self.target.candidate_protocol)
         ranking = validate_candidate_ranking(self.target.candidate_ranking)
         payload = validate_candidate_payload(self.target.candidate_payload)
-        if ranking == "raw_l1" and self.target.downstream_mode != LEARNED_TOPK_ERROR_AWARE:
-            raise ValueError("raw_l1 candidate ranking requires learned_topk_error_aware")
+        if (
+            ranking == "raw_l1"
+            and self.target.downstream_mode
+            not in {LEARNED_TOPK_ERROR_AWARE, LEARNED_TOPK_OFFSET_ONLY_HORIZON}
+        ):
+            raise ValueError(
+                "raw_l1 candidate ranking requires learned_topk_error_aware or "
+                "learned_topk_offset_only_horizon"
+            )
         if (
             self.target.calibrator_arch == "candidate_key_context_mha_router"
             and ranking != "learned_key"
@@ -328,14 +335,10 @@ class ExperimentConfig:
             not in {LEARNED_TOPK_ERROR_AWARE, LEARNED_TOPK_OFFSET_ONLY_HORIZON}
         ):
             raise ValueError(
-                "explicit candidate payload requires learned_topk_error_aware"
+                "explicit candidate payload requires learned_topk_error_aware or "
+                "learned_topk_offset_only_horizon"
             )
         if self.target.downstream_mode == LEARNED_TOPK_OFFSET_ONLY_HORIZON:
-            if ranking != "learned_key":
-                raise ValueError(
-                    "learned_topk_offset_only_horizon requires "
-                    "candidate_ranking='learned_key'"
-                )
             if payload != "offset_only":
                 raise ValueError(
                     "learned_topk_offset_only_horizon requires "

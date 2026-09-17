@@ -31,10 +31,12 @@ from stanchor.losses.downstream import DownstreamLoss, compute_downstream_loss
 from stanchor.metrics import ForecastMetricAccumulator, select_common_horizon_metrics
 from stanchor.modes import (
     BASE_ONLY,
+    HORIZON_ONLY_MODES,
     LEARNED_TOPK_CONFIDENCE,
     LEARNED_TOPK_ERROR_AWARE,
     LEARNED_TOPK_HORIZON,
     LEARNED_TOPK_OFFSET_DECAY_HORIZON,
+    LEARNED_TOPK_OFFSET_ONLY_HORIZON,
     RAW_L1_TOPK_HORIZON,
     WEEKLY_MEAN_HORIZON,
     validate_downstream_mode,
@@ -823,13 +825,18 @@ def configure_error_aware_stage(
     downstream: STAnchorDownstreamModel,
     stage: str,
 ) -> list[dict]:
-    """Configure base/calibrator/joint trainability and optimizer groups."""
+    """Configure staged trainability for Routers and simple horizon fusion."""
     if stage not in {"base", "calibrator", "posthoc_calibrator", "joint"}:
         raise ValueError(
             "error-aware stage must be base, calibrator, posthoc_calibrator, or joint"
         )
     for parameter in downstream.parameters():
         parameter.requires_grad_(False)
+    if stage == "posthoc_calibrator" and downstream.mode in HORIZON_ONLY_MODES:
+        fusion_parameters = list(downstream.fusion.parameters())
+        for parameter in fusion_parameters:
+            parameter.requires_grad_(True)
+        return [{"params": fusion_parameters, "role": "fusion"}]
     if stage in {"base", "joint"}:
         for parameter in downstream.backbone.parameters():
             parameter.requires_grad_(True)
@@ -908,13 +915,23 @@ def retrieve_for_downstream_mode(
     candidate_protocol = validate_candidate_protocol(candidate_protocol)
     candidate_ranking = validate_candidate_ranking(candidate_ranking)
     candidate_payload = resolve_candidate_payload(candidate_payload, candidate_ranking)
-    if candidate_ranking == "raw_l1" and mode != LEARNED_TOPK_ERROR_AWARE:
-        raise ValueError("raw_l1 candidate ranking requires learned_topk_error_aware")
+    if (
+        candidate_ranking == "raw_l1"
+        and mode not in {LEARNED_TOPK_ERROR_AWARE, LEARNED_TOPK_OFFSET_ONLY_HORIZON}
+    ):
+        raise ValueError(
+            "raw_l1 candidate ranking requires learned_topk_error_aware or "
+            "learned_topk_offset_only_horizon"
+        )
     if mode == BASE_ONLY:
         return (None, None, None) if include_query_keys else (None, None)
     if pretrained is None or retriever is None or bank is None:
         raise ValueError(f"downstream mode {mode!r} requires retrieval assets")
-    if mode in {LEARNED_TOPK_CONFIDENCE, LEARNED_TOPK_ERROR_AWARE}:
+    if mode in {
+        LEARNED_TOPK_CONFIDENCE,
+        LEARNED_TOPK_ERROR_AWARE,
+        LEARNED_TOPK_OFFSET_ONLY_HORIZON,
+    }:
         encoding = None
         if candidate_ranking != "raw_l1":
             encoding = pretrained.encode_clean(
@@ -962,10 +979,10 @@ def retrieve_for_downstream_mode(
                 events,
             )
         aggregation = retriever.aggregate(candidates)
-        if mode == LEARNED_TOPK_ERROR_AWARE and candidate_payload in {
-            "offset_decay",
-            "offset_only",
-        }:
+        if (
+            mode in {LEARNED_TOPK_ERROR_AWARE, LEARNED_TOPK_OFFSET_ONLY_HORIZON}
+            and candidate_payload in {"offset_decay", "offset_only"}
+        ):
             aggregation_fn = (
                 offset_decay_aggregation
                 if candidate_payload == "offset_decay"
@@ -1147,6 +1164,7 @@ def run_target_epoch(
                         in {
                             LEARNED_TOPK_ERROR_AWARE,
                             LEARNED_TOPK_OFFSET_DECAY_HORIZON,
+                            LEARNED_TOPK_OFFSET_ONLY_HORIZON,
                         }
                     ):
                         aggregation_fn = (
@@ -1644,6 +1662,9 @@ def train_downstream(
                         config,
                         target=replace(config.target, downstream_mode=BASE_ONLY),
                     )
+                elif any(group["role"] == "fusion" for group in groups):
+                    downstream.mode = config.target.downstream_mode
+                    stage_config = config
                 else:
                     downstream.mode = LEARNED_TOPK_ERROR_AWARE
                     stage_config = config

@@ -19,7 +19,11 @@ from stanchor.engine.target import (
     checkpoint_candidate_payload,
     retrieve_for_downstream_mode,
 )
-from stanchor.modes import LEARNED_TOPK_CONFIDENCE, LEARNED_TOPK_ERROR_AWARE
+from stanchor.modes import (
+    LEARNED_TOPK_CONFIDENCE,
+    LEARNED_TOPK_ERROR_AWARE,
+    LEARNED_TOPK_OFFSET_ONLY_HORIZON,
+)
 
 
 class CandidateRankingTest(unittest.TestCase):
@@ -293,6 +297,112 @@ class CandidateRankingTest(unittest.TestCase):
         config = load_config('configs/formal_baseonly_st_norm.yaml')
         with self.assertRaises(ValueError):
             replace(config, target=replace(config.target, candidate_ranking='raw_l1')).validate()
+
+    def test_offset_only_horizon_accepts_raw_l1_selector(self) -> None:
+        config = load_config('configs/ablation_calibrator_simple_horizon_argcn.yaml')
+        replace(
+            config,
+            target=replace(config.target, candidate_ranking='raw_l1'),
+        ).validate()
+
+    def test_learned_selector_builds_offset_only_horizon_payload(self) -> None:
+        query_keys = torch.randn(1, 2, 4)
+        pretrained = MagicMock()
+        pretrained.encode_clean.return_value = SimpleNamespace(
+            retrieval=SimpleNamespace(node_keys=query_keys),
+            statistics=SimpleNamespace(level_features=torch.zeros(1, 2, 1)),
+        )
+        retriever = MagicMock(event_top_r=3, node_top_k=2)
+        candidates = MagicMock(name='learned_candidates')
+        retriever.rerank_nodes.return_value = candidates
+        offset_only = MagicMock(name='offset_only_aggregation')
+        batch = {
+            'retrieval_x': torch.zeros(1, 288, 2, 1),
+            'retrieval_observed': torch.ones(1, 288, 2, 1, dtype=torch.bool),
+            'retrieval_weekday': torch.zeros(1, 288, dtype=torch.long),
+            'retrieval_slot': torch.zeros(1, 288, dtype=torch.long),
+            'query_weekday': torch.zeros(1, dtype=torch.long),
+            'query_slot': torch.zeros(1, dtype=torch.long),
+            'context_start': torch.ones(1, dtype=torch.long),
+        }
+        with (
+            patch('stanchor.engine.target.calendar_event_candidates', return_value=MagicMock()),
+            patch(
+                'stanchor.engine.target.offset_only_aggregation',
+                return_value=offset_only,
+            ),
+        ):
+            result_candidates, aggregation = retrieve_for_downstream_mode(
+                LEARNED_TOPK_OFFSET_ONLY_HORIZON,
+                pretrained=pretrained,
+                retriever=retriever,
+                bank=SimpleNamespace(manifest=SimpleNamespace(retrieval_dim=4)),
+                data=SimpleNamespace(
+                    train=SimpleNamespace(context_length=12),
+                    series=object(),
+                    scaler=object(),
+                ),
+                graph=object(),
+                batch=batch,
+                x=torch.zeros(1, 12, 2, 1),
+                observed_x=torch.ones(1, 12, 2, 1, dtype=torch.bool),
+                device=torch.device('cpu'),
+                candidate_protocol='weekday_radius1_overlap',
+                candidate_ranking='learned_key',
+                candidate_payload='offset_only',
+            )
+        self.assertIs(result_candidates, candidates)
+        self.assertIs(aggregation, offset_only)
+
+    def test_raw_l1_selector_builds_offset_only_horizon_payload(self) -> None:
+        pretrained = MagicMock()
+        retriever = MagicMock(event_top_r=3, node_top_k=2)
+        retriever.context_window_cache = None
+        candidates = MagicMock(name='raw_l1_candidates')
+        offset_only = MagicMock(name='offset_only_aggregation')
+        batch = {
+            'retrieval_x': torch.zeros(1, 288, 2, 1),
+            'retrieval_observed': torch.ones(1, 288, 2, 1, dtype=torch.bool),
+            'query_weekday': torch.zeros(1, dtype=torch.long),
+            'query_slot': torch.zeros(1, dtype=torch.long),
+            'context_start': torch.ones(1, dtype=torch.long),
+        }
+        with (
+            patch('stanchor.engine.target.calendar_event_candidates', return_value=MagicMock()),
+            patch(
+                'stanchor.engine.target.raw_l1_node_candidates',
+                return_value=(candidates, None, None),
+            ),
+            patch(
+                'stanchor.engine.target.offset_only_aggregation',
+                return_value=offset_only,
+            ),
+        ):
+            result_candidates, aggregation = retrieve_for_downstream_mode(
+                LEARNED_TOPK_OFFSET_ONLY_HORIZON,
+                pretrained=pretrained,
+                retriever=retriever,
+                bank=SimpleNamespace(manifest=SimpleNamespace(retrieval_dim=4)),
+                data=SimpleNamespace(
+                    train=SimpleNamespace(
+                        context_length=12,
+                        retrieval_context_length=288,
+                    ),
+                    series=object(),
+                    scaler=object(),
+                ),
+                graph=object(),
+                batch=batch,
+                x=torch.zeros(1, 12, 2, 1),
+                observed_x=torch.ones(1, 12, 2, 1, dtype=torch.bool),
+                device=torch.device('cpu'),
+                candidate_protocol='weekday_radius1_overlap',
+                candidate_ranking='raw_l1',
+                candidate_payload='offset_only',
+            )
+        self.assertIs(result_candidates, candidates)
+        self.assertIs(aggregation, offset_only)
+        pretrained.encode_clean.assert_not_called()
 
     def test_rawl1_router_configs_keep_same_router_and_calendar_pool(self) -> None:
         pairs = (
