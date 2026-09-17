@@ -11,6 +11,7 @@ import yaml
 from stanchor.modes import (
     LEARNED_TOPK_CONFIDENCE,
     LEARNED_TOPK_ERROR_AWARE,
+    LEARNED_TOPK_OFFSET_ONLY_HORIZON,
     validate_downstream_mode,
 )
 from stanchor.retrieval.strategies import validate_candidate_protocol
@@ -321,10 +322,25 @@ class ExperimentConfig:
                 "candidate_key_context_mha_router requires "
                 "downstream_mode='learned_topk_error_aware'"
             )
-        if payload != "auto" and self.target.downstream_mode != LEARNED_TOPK_ERROR_AWARE:
+        if (
+            payload != "auto"
+            and self.target.downstream_mode
+            not in {LEARNED_TOPK_ERROR_AWARE, LEARNED_TOPK_OFFSET_ONLY_HORIZON}
+        ):
             raise ValueError(
                 "explicit candidate payload requires learned_topk_error_aware"
             )
+        if self.target.downstream_mode == LEARNED_TOPK_OFFSET_ONLY_HORIZON:
+            if ranking != "learned_key":
+                raise ValueError(
+                    "learned_topk_offset_only_horizon requires "
+                    "candidate_ranking='learned_key'"
+                )
+            if payload != "offset_only":
+                raise ValueError(
+                    "learned_topk_offset_only_horizon requires "
+                    "candidate_payload='offset_only'"
+                )
         if self.target.training_protocol not in TARGET_TRAINING_PROTOCOLS:
             choices = ", ".join(TARGET_TRAINING_PROTOCOLS)
             raise ValueError(f"training_protocol must be one of: {choices}")
@@ -343,10 +359,12 @@ class ExperimentConfig:
             raise ValueError("scheduler_gamma must be in (0,1]")
         if (
             self.target.training_protocol == POSTHOC_FROZEN_BASE
-            and self.target.downstream_mode != LEARNED_TOPK_ERROR_AWARE
+            and self.target.downstream_mode
+            not in {LEARNED_TOPK_ERROR_AWARE, LEARNED_TOPK_OFFSET_ONLY_HORIZON}
         ):
             raise ValueError(
-                "posthoc_frozen_base requires learned_topk_error_aware mode"
+                "posthoc_frozen_base requires learned_topk_error_aware or "
+                "learned_topk_offset_only_horizon mode"
             )
         if self.target.backbone_name not in {
             "lightweight", "stgcn", "graph_wavenet", "argcn", "staeformer",
