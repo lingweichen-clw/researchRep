@@ -1,0 +1,9 @@
+{
+  "completed_at": "2026-09-17T15:23:40.493401+00:00",
+  "dataset": "PEMS-BAY",
+  "split": "test",
+  "base_only_evaluations": 8,
+  "finetuned_evaluations": 8,
+  "temporary_bank_removed": true,
+  "summary": "D:\\projects\\researchProjects\\TrafficRobustST\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\main_table\\pemsbay\\test_evaluation_summary.json"
+}

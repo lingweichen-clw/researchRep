@@ -1,0 +1,17 @@
+{
+  "completed_at": "2026-09-17T13:08:37.716295+00:00",
+  "dataset": "METR-LA",
+  "backbones": [
+    "gwn",
+    "stgcn",
+    "argcn"
+  ],
+  "selectors": [
+    "learned_key",
+    "random_encoder",
+    "raw_l1"
+  ],
+  "candidate_payload": "offset_only",
+  "fusion": "simple_horizon_12_parameters",
+  "temporary_banks_removed": true
+}

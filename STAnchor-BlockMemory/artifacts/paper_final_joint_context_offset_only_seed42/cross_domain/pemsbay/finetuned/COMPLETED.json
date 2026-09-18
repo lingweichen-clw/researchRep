@@ -1,0 +1,12 @@
+{
+  "completed_at": "2026-09-17T09:47:28.660870+00:00",
+  "checkpoint": "D:\\projects\\researchProjects\\TrafficRobustST\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\retrieval_adaptation\\pemsbay\\retrieval_t1_best.pt",
+  "checkpoint_epoch": 8,
+  "retrieval_fingerprint": "ff1ca0f4f48f513534d77062d7d98ba7195642e09a79d82cdc2982ec11f04bf3",
+  "protocols": [
+    "pretrain_broad_causal",
+    "weekday_radius1_overlap"
+  ],
+  "complete_validation": true,
+  "temporary_banks_removed": true
+}
