@@ -1,0 +1,7 @@
+protocol,selector,mae,rmse,mape
+Broad causal (pretraining-aligned),learned,3.223004037086951,6.233465637277894,8.864096292981943
+Broad causal (pretraining-aligned),raw_l1,4.104568086244757,7.446084878898967,10.40342847859692
+Broad causal (pretraining-aligned),matched_random,4.060747707493242,7.43037263734517,11.270214561730905
+"Weekday ±1, same slot (deployment-like)",learned,3.2635535946352663,6.167806562717401,8.61348741710075
+"Weekday ±1, same slot (deployment-like)",raw_l1,3.946181413939884,7.071518800382513,9.823520945007347
+"Weekday ±1, same slot (deployment-like)",matched_random,3.7662925772337608,6.7613085267469915,9.650060128071875

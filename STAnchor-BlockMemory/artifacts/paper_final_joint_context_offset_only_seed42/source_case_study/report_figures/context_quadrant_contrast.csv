@@ -1,0 +1,10 @@
+model,model_label,quadrant,excess_key_distance,ci_low,ci_high
+current,Final joint-context,context_similar_future_different,0.05056614398829218,0.04554285974549768,0.055589428231086674
+current,Final joint-context,context_different_future_similar,0.05820298964408532,0.054980151077785214,0.06142582821038543
+current,Final joint-context,context_different_future_different,0.13690098118584393,0.1284690871812475,0.14533287519044036
+reference,OffsetDecay,context_similar_future_different,0.07522370575921866,0.06469496695005114,0.08575244456838618
+reference,OffsetDecay,context_different_future_similar,0.03678943795840661,0.028381484145640193,0.04519739177117303
+reference,OffsetDecay,context_different_future_different,0.21569774190528734,0.19951363905776687,0.23188184475280782
+random,Random encoder,context_similar_future_different,-0.0542819260495111,-0.08006859923947593,-0.028495252859546266
+random,Random encoder,context_different_future_similar,0.069851435117396,0.04402951139908934,0.09567335883570266
+random,Random encoder,context_different_future_different,0.06271075803599901,0.036679544816614756,0.08874197125538327

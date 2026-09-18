@@ -1,0 +1,20 @@
+{
+  "temporary_bank": "D:\\projects\\researchProjects\\TrafficRobustST\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pemsbay_random_diagnostic",
+  "archived_at": "2026-09-17T09:47:28.378451+00:00",
+  "files": {
+    "calendar_event_ids.npy": 202744,
+    "calendar_offsets.npy": 16264,
+    "context_end.npy": 202744,
+    "context_start.npy": 202744,
+    "event_keys.npy": 3241984,
+    "future_end.npy": 202744,
+    "future_masks.npy": 98775428,
+    "future_values.npy": 395101328,
+    "level_features.npy": 131700528,
+    "manifest.json": 30780,
+    "node_keys.npy": 1053603328,
+    "sample_id.npy": 202744,
+    "slot.npy": 50782,
+    "weekday.npy": 50782
+  }
+}

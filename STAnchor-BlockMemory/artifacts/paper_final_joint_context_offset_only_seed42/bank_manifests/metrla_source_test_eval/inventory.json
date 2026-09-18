@@ -1,0 +1,20 @@
+{
+  "bank": "D:\\projects\\researchProjects\\TrafficRobustST\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\metrla_source_test_eval",
+  "archived_at": "2026-09-16T11:50:57.526934+00:00",
+  "files": {
+    "calendar_event_ids.npy": 127136,
+    "calendar_offsets.npy": 16264,
+    "context_end.npy": 127136,
+    "context_start.npy": 127136,
+    "event_keys.npy": 2032256,
+    "future_end.npy": 127136,
+    "future_masks.npy": 39436112,
+    "future_values.npy": 157744064,
+    "level_features.npy": 52581440,
+    "manifest.json": 19912,
+    "node_keys.npy": 420650624,
+    "sample_id.npy": 127136,
+    "slot.npy": 31880,
+    "weekday.npy": 31880
+  }
+}
