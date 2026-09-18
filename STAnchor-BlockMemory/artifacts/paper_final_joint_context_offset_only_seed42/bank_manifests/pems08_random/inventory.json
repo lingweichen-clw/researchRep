@@ -1,0 +1,20 @@
+{
+  "bank": "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pems08_random",
+  "archived_at": "2026-09-17T18:14:37.432713+00:00",
+  "files": {
+    "calendar_event_ids.npy": 68448,
+    "calendar_offsets.npy": 16264,
+    "context_end.npy": 68448,
+    "context_start.npy": 68448,
+    "event_keys.npy": 1093248,
+    "future_end.npy": 68448,
+    "future_masks.npy": 17421728,
+    "future_values.npy": 69686528,
+    "level_features.npy": 23228928,
+    "manifest.json": 16421,
+    "node_keys.npy": 185830528,
+    "sample_id.npy": 68448,
+    "slot.npy": 17208,
+    "weekday.npy": 17208
+  }
+}

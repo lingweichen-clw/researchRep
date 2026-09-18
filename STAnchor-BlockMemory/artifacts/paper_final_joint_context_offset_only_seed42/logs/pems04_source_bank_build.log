@@ -1,0 +1,16 @@
+
+===== 2026-09-17T19:58:59.932451 pems04_source_bank_build =====
+C:\Users\clw\anaconda\envs\experiment\python.exe -u scripts/build_bank.py --config C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\paper_final_joint_context_offset_only_seed42\resolved_configs\adaptation\pems04_joint_context_offset_only.yaml --checkpoint C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\metrla_e5_tgge_joint_context_offset_only_v1_transfer_hidden128_ffn2_b16_seed42\pretrain_best.pt --output-dir C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\paper_final_joint_context_offset_only_seed42\temporary_banks\pems04_source_zero_shot --dataset-name pems04_source_zero_shot
+Traceback (most recent call last):
+  File "C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\scripts\build_bank.py", line 14, in <module>
+    from stanchor.bank.builder import build_memory_bank
+  File "C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\stanchor\__init__.py", line 3, in <module>
+    from .config import ExperimentConfig, load_config
+  File "C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\stanchor\config.py", line 11, in <module>
+    from stanchor.modes import (
+ImportError: cannot import name 'LEARNED_TOPK_OFFSET_ONLY_HORIZON' from 'stanchor.modes' (C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\stanchor\modes.py)
+
+===== 2026-09-17T20:27:13.211525 pems04_source_bank_build =====
+C:\Users\clw\anaconda\envs\experiment\python.exe -u scripts/build_bank.py --config C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\paper_final_joint_context_offset_only_seed42\resolved_configs\adaptation\pems04_joint_context_offset_only.yaml --checkpoint C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\metrla_e5_tgge_joint_context_offset_only_v1_transfer_hidden128_ffn2_b16_seed42\pretrain_best.pt --output-dir C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\paper_final_joint_context_offset_only_seed42\temporary_banks\pems04_source_zero_shot --dataset-name pems04_source_zero_shot
+bank: C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\paper_final_joint_context_offset_only_seed42\temporary_banks\pems04_source_zero_shot
+events=8116 nodes=307 key_dim=64

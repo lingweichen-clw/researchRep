@@ -1,0 +1,20 @@
+{
+  "bank": "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pemsbay_source_zero_shot",
+  "archived_at": "2026-09-15T17:22:03.395982+00:00",
+  "files": {
+    "calendar_event_ids.npy": 202744,
+    "calendar_offsets.npy": 16264,
+    "context_end.npy": 202744,
+    "context_start.npy": 202744,
+    "event_keys.npy": 3241984,
+    "future_end.npy": 202744,
+    "future_masks.npy": 98775428,
+    "future_values.npy": 395101328,
+    "level_features.npy": 131700528,
+    "manifest.json": 30763,
+    "node_keys.npy": 1053603328,
+    "sample_id.npy": 202744,
+    "slot.npy": 50782,
+    "weekday.npy": 50782
+  }
+}

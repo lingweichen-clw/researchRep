@@ -1,0 +1,31 @@
+{
+  "label": "pems08_finetuned_bank_build",
+  "completed_at": "2026-09-17T18:25:42.255803+00:00",
+  "command": [
+    "C:\\Users\\clw\\anaconda\\envs\\experiment\\python.exe",
+    "-u",
+    "scripts/build_bank.py",
+    "--config",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\resolved_configs\\adaptation\\pems08_joint_context_offset_only.yaml",
+    "--checkpoint",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\retrieval_adaptation\\pems08\\retrieval_t1_best.pt",
+    "--output-dir",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pems08_finetuned",
+    "--dataset-name",
+    "pems08_joint_context_offset_only_t1"
+  ],
+  "outputs": [
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pems08_finetuned\\manifest.json",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pems08_finetuned\\event_keys.npy",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pems08_finetuned\\node_keys.npy",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pems08_finetuned\\future_values.npy",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pems08_finetuned\\future_masks.npy",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pems08_finetuned\\level_features.npy",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pems08_finetuned\\sample_id.npy",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pems08_finetuned\\weekday.npy",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pems08_finetuned\\slot.npy",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pems08_finetuned\\context_start.npy",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pems08_finetuned\\context_end.npy",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pems08_finetuned\\future_end.npy"
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "label": "metrla_source_router_staeformer",
+  "completed_at": "2026-09-15T07:00:53.203544+00:00",
+  "command": [
+    "C:\\Users\\clw\\anaconda\\envs\\experiment\\python.exe",
+    "-u",
+    "scripts/train_downstream.py",
+    "--config",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\resolved_configs\\downstream\\metrla_staeformer.yaml",
+    "--pretrained-checkpoint",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\metrla_e5_tgge_joint_context_offset_only_v1_transfer_hidden128_ffn2_b16_seed42\\pretrain_best.pt",
+    "--bank",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\metrla_source",
+    "--base-checkpoint",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\convergence\\formal_20260828_staeformer_base_only_v2\\downstream_best.pt",
+    "--mode",
+    "learned_topk_error_aware",
+    "--candidate-protocol",
+    "weekday_radius1_overlap",
+    "--level-weight",
+    "0",
+    "--candidate-quality-weight",
+    "0",
+    "--epochs",
+    "50",
+    "--disable-early-stopping",
+    "--frozen-path-cache",
+    "--seed",
+    "42",
+    "--run-name",
+    "paper_final_joint_context_offset_only_seed42/main_table/metrla/ours/staeformer"
+  ],
+  "outputs": [
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\main_table\\metrla\\ours\\staeformer\\downstream_best.pt"
+  ]
+}

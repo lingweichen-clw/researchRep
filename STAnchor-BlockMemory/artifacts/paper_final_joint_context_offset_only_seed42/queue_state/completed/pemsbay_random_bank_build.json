@@ -1,0 +1,31 @@
+{
+  "label": "pemsbay_random_bank_build",
+  "completed_at": "2026-09-15T16:16:02.867241+00:00",
+  "command": [
+    "C:\\Users\\clw\\anaconda\\envs\\experiment\\python.exe",
+    "-u",
+    "scripts/build_bank.py",
+    "--config",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\resolved_configs\\adaptation\\pemsbay_joint_context_offset_only.yaml",
+    "--checkpoint",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\controls\\random_encoder_seed42.pt",
+    "--output-dir",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pemsbay_random",
+    "--dataset-name",
+    "pemsbay_random_encoder_control"
+  ],
+  "outputs": [
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pemsbay_random\\manifest.json",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pemsbay_random\\event_keys.npy",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pemsbay_random\\node_keys.npy",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pemsbay_random\\future_values.npy",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pemsbay_random\\future_masks.npy",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pemsbay_random\\level_features.npy",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pemsbay_random\\sample_id.npy",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pemsbay_random\\weekday.npy",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pemsbay_random\\slot.npy",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pemsbay_random\\context_start.npy",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pemsbay_random\\context_end.npy",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pemsbay_random\\future_end.npy"
+  ]
+}

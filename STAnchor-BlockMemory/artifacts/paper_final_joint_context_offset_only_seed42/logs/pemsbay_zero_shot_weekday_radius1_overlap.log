@@ -1,0 +1,688 @@
+
+===== 2026-09-16T00:51:43.713883 pemsbay_zero_shot_weekday_radius1_overlap =====
+C:\Users\clw\anaconda\envs\experiment\python.exe -u scripts/visualize_retrieval.py --version hn_offset_only_v1 --config C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\paper_final_joint_context_offset_only_seed42\resolved_configs\adaptation\pemsbay_joint_context_offset_only.yaml --checkpoint C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\metrla_e5_tgge_joint_context_offset_only_v1_transfer_hidden128_ffn2_b16_seed42\pretrain_best.pt --bank C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\paper_final_joint_context_offset_only_seed42\temporary_banks\pemsbay_source_zero_shot --random-checkpoint C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\paper_final_joint_context_offset_only_seed42\controls\random_encoder_seed42.pt --random-bank C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\paper_final_joint_context_offset_only_seed42\temporary_banks\pemsbay_random --split val --output-dir C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\paper_final_joint_context_offset_only_seed42\cross_domain\pemsbay\weekday_radius1_overlap --candidate-protocol weekday_radius1_overlap --event-top-r 96 --node-top-k 12 --level-weight 0
+[hn_offset_only_v1/weekday_radius1_overlap] processed 32/4912 validation queries (1 batches)
+[hn_offset_only_v1/weekday_radius1_overlap] processed 320/4912 validation queries (10 batches)
+[hn_offset_only_v1/weekday_radius1_overlap] processed 640/4912 validation queries (20 batches)
+[hn_offset_only_v1/weekday_radius1_overlap] processed 960/4912 validation queries (30 batches)
+[hn_offset_only_v1/weekday_radius1_overlap] processed 1280/4912 validation queries (40 batches)
+[hn_offset_only_v1/weekday_radius1_overlap] processed 1600/4912 validation queries (50 batches)
+[hn_offset_only_v1/weekday_radius1_overlap] processed 1920/4912 validation queries (60 batches)
+[hn_offset_only_v1/weekday_radius1_overlap] processed 2240/4912 validation queries (70 batches)
+[hn_offset_only_v1/weekday_radius1_overlap] processed 2560/4912 validation queries (80 batches)
+[hn_offset_only_v1/weekday_radius1_overlap] processed 2880/4912 validation queries (90 batches)
+[hn_offset_only_v1/weekday_radius1_overlap] processed 3200/4912 validation queries (100 batches)
+[hn_offset_only_v1/weekday_radius1_overlap] processed 3520/4912 validation queries (110 batches)
+[hn_offset_only_v1/weekday_radius1_overlap] processed 3840/4912 validation queries (120 batches)
+[hn_offset_only_v1/weekday_radius1_overlap] processed 4160/4912 validation queries (130 batches)
+[hn_offset_only_v1/weekday_radius1_overlap] processed 4480/4912 validation queries (140 batches)
+[hn_offset_only_v1/weekday_radius1_overlap] processed 4800/4912 validation queries (150 batches)
+{
+  "schema_version": 2,
+  "version": "hn_offset_only_v1",
+  "dataset": "pemsbay_source_zero_shot",
+  "split": "val",
+  "complete_validation": true,
+  "queries": 4912,
+  "batches": 154,
+  "nodes": 325,
+  "checkpoint": "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\metrla_e5_tgge_joint_context_offset_only_v1_transfer_hidden128_ffn2_b16_seed42\\pretrain_best.pt",
+  "checkpoint_epoch": 34,
+  "random_checkpoint": "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\controls\\random_encoder_seed42.pt",
+  "random_checkpoint_epoch": 0,
+  "bank": "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pemsbay_source_zero_shot",
+  "random_bank": "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pemsbay_random",
+  "bank_alignment": {
+    "same_event_axis": true,
+    "same_future_payload": true,
+    "checked_fields": [
+      "sample_id",
+      "weekday",
+      "slot",
+      "context_start",
+      "context_end",
+      "future_end",
+      "future_masks",
+      "future_values"
+    ],
+    "canonical_payload": "pretrained_bank"
+  },
+  "candidate_protocol": {
+    "name": "weekday_radius1_overlap",
+    "same_weekday": true,
+    "slot_radius": 0,
+    "weekday_radius": 1,
+    "allow_context_overlap": true,
+    "causal_boundary": "query_context_end",
+    "deduplicate_overlapping_windows": false,
+    "min_event_gap_steps": null,
+    "strict_causal": true,
+    "shared_pretrained_random_event_axis": true,
+    "broad_sampling": "all_legal_events"
+  },
+  "candidate_pool": {
+    "count": 4912,
+    "mean": 37.86095276872964,
+    "std": 1.0416832427495573,
+    "min": 35.0,
+    "median": 38.0,
+    "max": 39.0,
+    "top_k_saturation_mean": 0.3171925739301018,
+    "fully_saturated_fraction": 0.0
+  },
+  "teacher_signature": {
+    "name": "EndpointAlignedOffsetOnlySignature",
+    "context_steps": 12,
+    "distance_normalization": "symmetric_geometric_mean"
+  },
+  "selector_distances": {
+    "pretrained": "cosine distance between learned node keys",
+    "raw_l1": "masked mean L1 distance between 288-step node contexts",
+    "random": "cosine distance between matched-random node keys"
+  },
+  "candidate_payload": {
+    "name": "offset_only",
+    "shared_across_selectors": true,
+    "selectors": [
+      "pretrained",
+      "raw_l1",
+      "random"
+    ]
+  },
+  "future_information_boundary": {
+    "evaluation_split": "validation_only",
+    "ranking_inputs": [
+      "query_history",
+      "query_calendar",
+      "causal_bank_metadata",
+      "historical_bank_keys",
+      "historical_bank_levels"
+    ],
+    "query_future_used_for_ranking": false,
+    "query_future_use": "post-ranking metrics, deterministic case selection, and plots only",
+    "deployment_available_inputs_only_before_ranking": true
+  },
+  "alignment": {
+    "pretrained": {
+      "valid_pairs": 60441225,
+      "spearman": 0.2636086587791468,
+      "distance_bins": [
+        {
+          "bin": 1,
+          "count": 6044123,
+          "key_distance_min": 0.00013500452041625977,
+          "key_distance_max": 0.017623543739318848,
+          "key_distance_mean": 0.010390208542711055,
+          "future_distance_mean": 0.7729539585743516,
+          "future_distance_median": 0.7503323554992676
+        },
+        {
+          "bin": 2,
+          "count": 6044123,
+          "key_distance_min": 0.017623543739318848,
+          "key_distance_max": 0.03243201971054077,
+          "key_distance_mean": 0.024869393910068316,
+          "future_distance_mean": 0.842832416882903,
+          "future_distance_median": 0.8021541237831116
+        },
+        {
+          "bin": 3,
+          "count": 6044123,
+          "key_distance_min": 0.03243201971054077,
+          "key_distance_max": 0.0495491623878479,
+          "key_distance_mean": 0.04076953114426864,
+          "future_distance_mean": 0.876547957084213,
+          "future_distance_median": 0.8296604156494141
+        },
+        {
+          "bin": 4,
+          "count": 6044123,
+          "key_distance_min": 0.0495491623878479,
+          "key_distance_max": 0.06950443983078003,
+          "key_distance_mean": 0.05927942749464012,
+          "future_distance_mean": 0.9039456798042705,
+          "future_distance_median": 0.8523324131965637
+        },
+        {
+          "bin": 5,
+          "count": 6044123,
+          "key_distance_min": 0.06950443983078003,
+          "key_distance_max": 0.09259569644927979,
+          "key_distance_mean": 0.08076684238168956,
+          "future_distance_mean": 0.9294023672302366,
+          "future_distance_median": 0.8736799955368042
+        },
+        {
+          "bin": 6,
+          "count": 6044122,
+          "key_distance_min": 0.09259569644927979,
+          "key_distance_max": 0.11943918466567993,
+          "key_distance_mean": 0.10565912828911347,
+          "future_distance_mean": 0.9561589944471595,
+          "future_distance_median": 0.895900160074234
+        },
+        {
+          "bin": 7,
+          "count": 6044122,
+          "key_distance_min": 0.11943918466567993,
+          "key_distance_max": 0.15157759189605713,
+          "key_distance_mean": 0.13496473556593702,
+          "future_distance_mean": 0.9879152980291185,
+          "future_distance_median": 0.92317995429039
+        },
+        {
+          "bin": 8,
+          "count": 6044122,
+          "key_distance_min": 0.15157759189605713,
+          "key_distance_max": 0.19313567876815796,
+          "key_distance_mean": 0.17124078921182345,
+          "future_distance_mean": 1.0292791465510562,
+          "future_distance_median": 0.960454672574997
+        },
+        {
+          "bin": 9,
+          "count": 6044122,
+          "key_distance_min": 0.19313567876815796,
+          "key_distance_max": 0.2589505910873413,
+          "key_distance_mean": 0.2226310958197826,
+          "future_distance_mean": 1.1036013981106279,
+          "future_distance_median": 1.0354118943214417
+        },
+        {
+          "bin": 10,
+          "count": 6044122,
+          "key_distance_min": 0.2589506506919861,
+          "key_distance_max": 0.8170445561408997,
+          "key_distance_mean": 0.34019378815760737,
+          "future_distance_mean": 1.3631425829412873,
+          "future_distance_median": 1.2972221970558167
+        }
+      ],
+      "future_neighbor_recall_at_5": 0.21969707310199738,
+      "recall_at_5_eligible_anchors": 1596400
+    },
+    "raw_l1": {
+      "valid_pairs": 60441225,
+      "spearman": 0.12379911091022713,
+      "distance_bins": [
+        {
+          "bin": 1,
+          "count": 6044123,
+          "key_distance_min": 0.0,
+          "key_distance_max": 0.20118260383605957,
+          "key_distance_mean": 0.13738739371603903,
+          "future_distance_mean": 0.839658269751735,
+          "future_distance_median": 0.8016079664230347
+        },
+        {
+          "bin": 2,
+          "count": 6044123,
+          "key_distance_min": 0.20118260383605957,
+          "key_distance_max": 0.27101755142211914,
+          "key_distance_mean": 0.2374244180100534,
+          "future_distance_mean": 0.921947497906547,
+          "future_distance_median": 0.8566594123840332
+        },
+        {
+          "bin": 3,
+          "count": 6044123,
+          "key_distance_min": 0.27101755142211914,
+          "key_distance_max": 0.33394795656204224,
+          "key_distance_mean": 0.3027031460879331,
+          "future_distance_mean": 0.9368436333598008,
+          "future_distance_median": 0.8691286444664001
+        },
+        {
+          "bin": 4,
+          "count": 6044123,
+          "key_distance_min": 0.33394795656204224,
+          "key_distance_max": 0.39576876163482666,
+          "key_distance_mean": 0.3648104545368505,
+          "future_distance_mean": 0.9520104702845746,
+          "future_distance_median": 0.8813961148262024
+        },
+        {
+          "bin": 5,
+          "count": 6044123,
+          "key_distance_min": 0.39576876163482666,
+          "key_distance_max": 0.4615424573421478,
+          "key_distance_mean": 0.4280358468498818,
+          "future_distance_mean": 0.960522249591958,
+          "future_distance_median": 0.8867189288139343
+        },
+        {
+          "bin": 6,
+          "count": 6044122,
+          "key_distance_min": 0.4615424573421478,
+          "key_distance_max": 0.5346758365631104,
+          "key_distance_mean": 0.4975307389124769,
+          "future_distance_mean": 0.9750097142753821,
+          "future_distance_median": 0.8977598249912262
+        },
+        {
+          "bin": 7,
+          "count": 6044122,
+          "key_distance_min": 0.5346758365631104,
+          "key_distance_max": 0.616865873336792,
+          "key_distance_mean": 0.5746057445209455,
+          "future_distance_mean": 0.9831513898836998,
+          "future_distance_median": 0.9048446118831635
+        },
+        {
+          "bin": 8,
+          "count": 6044122,
+          "key_distance_min": 0.616865873336792,
+          "key_distance_max": 0.7175841927528381,
+          "key_distance_mean": 0.6646437149065061,
+          "future_distance_mean": 0.9986366885658199,
+          "future_distance_median": 0.9195305705070496
+        },
+        {
+          "bin": 9,
+          "count": 6044122,
+          "key_distance_min": 0.7175841927528381,
+          "key_distance_max": 0.8916161060333252,
+          "key_distance_mean": 0.7932600301533509,
+          "future_distance_mean": 1.0275906971609947,
+          "future_distance_median": 0.939659833908081
+        },
+        {
+          "bin": 10,
+          "count": 6044122,
+          "key_distance_min": 0.8916161060333252,
+          "key_distance_max": 6.269832134246826,
+          "key_distance_mean": 1.2240657425088595,
+          "future_distance_mean": 1.170409141671869,
+          "future_distance_median": 1.0213833451271057
+        }
+      ],
+      "future_neighbor_recall_at_5": 0.177262082695961,
+      "recall_at_5_eligible_anchors": 1596400
+    },
+    "random": {
+      "valid_pairs": 60441225,
+      "spearman": 0.09006555505845457,
+      "distance_bins": [
+        {
+          "bin": 1,
+          "count": 6044123,
+          "key_distance_min": 1.424551010131836e-05,
+          "key_distance_max": 0.009496510028839111,
+          "key_distance_mean": 0.00483161247054936,
+          "future_distance_mean": 0.7926122190865363,
+          "future_distance_median": 0.7751727104187012
+        },
+        {
+          "bin": 2,
+          "count": 6044123,
+          "key_distance_min": 0.009496510028839111,
+          "key_distance_max": 0.031340956687927246,
+          "key_distance_mean": 0.01823404461029907,
+          "future_distance_mean": 0.8952844765052372,
+          "future_distance_median": 0.8429281115531921
+        },
+        {
+          "bin": 3,
+          "count": 6044123,
+          "key_distance_min": 0.03134101629257202,
+          "key_distance_max": 0.13137507438659668,
+          "key_distance_mean": 0.06733016165835691,
+          "future_distance_mean": 0.9920345746146326,
+          "future_distance_median": 0.9191595315933228
+        },
+        {
+          "bin": 4,
+          "count": 6044123,
+          "key_distance_min": 0.13137507438659668,
+          "key_distance_max": 0.29308223724365234,
+          "key_distance_mean": 0.226114856934535,
+          "future_distance_mean": 1.0293619902714195,
+          "future_distance_median": 0.93662428855896
+        },
+        {
+          "bin": 5,
+          "count": 6044123,
+          "key_distance_min": 0.29308223724365234,
+          "key_distance_max": 0.3773271441459656,
+          "key_distance_mean": 0.33631414747079574,
+          "future_distance_mean": 1.0157909434685446,
+          "future_distance_median": 0.9235867261886597
+        },
+        {
+          "bin": 6,
+          "count": 6044122,
+          "key_distance_min": 0.3773271441459656,
+          "key_distance_max": 0.45419949293136597,
+          "key_distance_mean": 0.41610518352302545,
+          "future_distance_mean": 1.0111996158664434,
+          "future_distance_median": 0.9183866083621979
+        },
+        {
+          "bin": 7,
+          "count": 6044122,
+          "key_distance_min": 0.45419955253601074,
+          "key_distance_max": 0.533753514289856,
+          "key_distance_mean": 0.4931043634073092,
+          "future_distance_mean": 1.011025090305565,
+          "future_distance_median": 0.9190672338008881
+        },
+        {
+          "bin": 8,
+          "count": 6044122,
+          "key_distance_min": 0.533753514289856,
+          "key_distance_max": 0.6295400857925415,
+          "key_distance_mean": 0.579800358389999,
+          "future_distance_mean": 1.0085584683440048,
+          "future_distance_median": 0.9196130633354187
+        },
+        {
+          "bin": 9,
+          "count": 6044122,
+          "key_distance_min": 0.629540205001831,
+          "key_distance_max": 0.761134147644043,
+          "key_distance_mean": 0.6905895338289166,
+          "future_distance_mean": 1.0025375113347244,
+          "future_distance_median": 0.9162193536758423
+        },
+        {
+          "bin": 10,
+          "count": 6044122,
+          "key_distance_min": 0.761134147644043,
+          "key_distance_max": 1.4429103136062622,
+          "key_distance_mean": 0.9263368468728389,
+          "future_distance_mean": 1.007374843777083,
+          "future_distance_median": 0.9206544160842896
+        }
+      ],
+      "future_neighbor_recall_at_5": 0.17989376187324524,
+      "recall_at_5_eligible_anchors": 1596400
+    },
+    "delta_pretrained_minus_random": {
+      "spearman": 0.17354310372069223,
+      "future_neighbor_recall_at_5": 0.039803311228752136
+    }
+  },
+  "ranking": {
+    "pretrained": {
+      "spearman_mean": 0.2735167353908757,
+      "spearman_std": 0.2982308115118062,
+      "spearman_eligible_anchors": 1596400,
+      "kendall_mean": 0.20017415310771583,
+      "kendall_std": 0.22985514393001066,
+      "kendall_eligible_anchors": 1596400,
+      "recall_at_1_mean": 0.05954522676021047,
+      "recall_at_1_std": 0.2366423308080902,
+      "recall_at_1_eligible_anchors": 1596400,
+      "ndcg_at_5_mean": 0.2799511481110129,
+      "ndcg_at_5_std": 0.24700256128186301,
+      "ndcg_at_5_eligible_anchors": 1596400,
+      "recall_at_5_mean": 0.21969706840390885,
+      "recall_at_5_std": 0.1964954757772483,
+      "recall_at_5_eligible_anchors": 1596400,
+      "candidate_count_mean": 37.86095276872964,
+      "candidate_count_min": 35,
+      "candidate_count_max": 39,
+      "random_recall_at_1_expected": 0.026432714494175107,
+      "random_recall_at_5_expected": 0.13216357247087587
+    },
+    "raw_l1": {
+      "spearman_mean": 0.07511638123337032,
+      "spearman_std": 0.25820555857969657,
+      "spearman_eligible_anchors": 1596400,
+      "kendall_mean": 0.05564691056267036,
+      "kendall_std": 0.20080917638821125,
+      "kendall_eligible_anchors": 1596400,
+      "recall_at_1_mean": 0.06199511400651466,
+      "recall_at_1_std": 0.2411466770366822,
+      "recall_at_1_eligible_anchors": 1596400,
+      "ndcg_at_5_mean": 0.21164792248520178,
+      "ndcg_at_5_std": 0.22505518889139314,
+      "ndcg_at_5_eligible_anchors": 1596400,
+      "recall_at_5_mean": 0.17726208970182925,
+      "recall_at_5_std": 0.20855206095440945,
+      "recall_at_5_eligible_anchors": 1596400,
+      "candidate_count_mean": 37.86095276872964,
+      "candidate_count_min": 35,
+      "candidate_count_max": 39,
+      "random_recall_at_1_expected": 0.026432714494175107,
+      "random_recall_at_5_expected": 0.13216357247087587
+    },
+    "random": {
+      "spearman_mean": 0.07409815574766389,
+      "spearman_std": 0.24474633448242206,
+      "spearman_eligible_anchors": 1596400,
+      "kendall_mean": 0.05544586513576346,
+      "kendall_std": 0.19026034098319058,
+      "kendall_eligible_anchors": 1596400,
+      "recall_at_1_mean": 0.04707404159358557,
+      "recall_at_1_std": 0.21179725258282026,
+      "recall_at_1_eligible_anchors": 1596400,
+      "ndcg_at_5_mean": 0.23811896030240084,
+      "ndcg_at_5_std": 0.23333856084899585,
+      "ndcg_at_5_eligible_anchors": 1596400,
+      "recall_at_5_mean": 0.17989376096216478,
+      "recall_at_5_std": 0.17212046948197382,
+      "recall_at_5_eligible_anchors": 1596400,
+      "candidate_count_mean": 37.86095276872964,
+      "candidate_count_min": 35,
+      "candidate_count_max": 39,
+      "random_recall_at_1_expected": 0.026432714494175107,
+      "random_recall_at_5_expected": 0.13216357247087587
+    },
+    "delta_pretrained_minus_random": {
+      "spearman": 0.1994185796432118,
+      "kendall": 0.14472828797195236,
+      "recall_at_1": 0.012471185166624904,
+      "ndcg_at_5": 0.04183218780861206,
+      "recall_at_5": 0.03980330744174407
+    }
+  },
+  "memory_metrics": {
+    "pretrained_memory": {
+      "mae": 1.8113713497638189,
+      "rmse": 3.869916640860486,
+      "mape": 4.046410169189932,
+      "horizon_mae": [
+        0.9652884649710097,
+        1.2820313867936806,
+        1.494136859197222,
+        1.6520111272335691,
+        1.7753697966938549,
+        1.877857145248323,
+        1.9634101133790074,
+        2.0346997047615516,
+        2.096651392742713,
+        2.1514743007449644,
+        2.2000091342206085,
+        2.243516858663653
+      ],
+      "horizon_rmse": [
+        1.7010102443415,
+        2.4543256605146695,
+        2.9969974034174687,
+        3.4023943950130984,
+        3.71304271690687,
+        3.9600528474833823,
+        4.1581823015915464,
+        4.3195877392141595,
+        4.45227889809726,
+        4.5639020464166045,
+        4.6586197505627425,
+        4.739923605617478
+      ],
+      "horizon_mape": [
+        1.899514357951133,
+        2.6374703414392355,
+        3.1672465097066387,
+        3.5809795349613727,
+        3.9174538425421974,
+        4.201198662258502,
+        4.441069440622749,
+        4.640939023972451,
+        4.813005166031703,
+        4.961831379082304,
+        5.090971389049106,
+        5.205242477774233
+      ]
+    },
+    "random_memory": {
+      "mae": 1.9430202025325634,
+      "rmse": 4.039594138675106,
+      "mape": 4.323312753885442,
+      "horizon_mae": [
+        1.0154416765851466,
+        1.3596801606397313,
+        1.591644769114389,
+        1.7644521208267112,
+        1.9006738527674394,
+        2.0140235809743023,
+        2.1093898172761403,
+        2.1894583043170854,
+        2.258270058343704,
+        2.3194022053510124,
+        2.3734051600406776,
+        2.4204008523220253
+      ],
+      "horizon_rmse": [
+        1.7676711466491142,
+        2.5560929753717776,
+        3.1246305320509022,
+        3.5488997835213434,
+        3.875038624583512,
+        4.132952256757351,
+        4.341467734867162,
+        4.5115432244104525,
+        4.650349386363071,
+        4.766090143306483,
+        4.865036808888736,
+        4.949145397177123
+      ],
+      "horizon_mape": [
+        1.9971613524110172,
+        2.794889733455751,
+        3.3676711530306673,
+        3.8149576710706286,
+        4.1796797040296445,
+        4.4877989181433176,
+        4.751008857906551,
+        4.971561219148339,
+        5.158362465931521,
+        5.319418939176361,
+        5.458170187814824,
+        5.579072721195064
+      ]
+    },
+    "raw_l1_offset_decay_memory": {
+      "mae": 2.0733489975067365,
+      "rmse": 4.311751119184013,
+      "mape": 4.547588784526227,
+      "horizon_mae": [
+        1.0278113662887238,
+        1.3904281608678415,
+        1.6445200575116852,
+        1.841142454276553,
+        2.0018276455516086,
+        2.137955959521678,
+        2.2553740449696575,
+        2.3565182365014836,
+        2.445422547946601,
+        2.524569845174612,
+        2.596146898137954,
+        2.6584708704880304
+      ],
+      "horizon_rmse": [
+        1.784060796672155,
+        2.601023608200192,
+        3.2125706913870413,
+        3.686833969101578,
+        4.063778470787762,
+        4.370762138194684,
+        4.6242478340462645,
+        4.8351039933238305,
+        5.01039733226372,
+        5.160159022440645,
+        5.2892274355096776,
+        5.398686394243735
+      ],
+      "horizon_mape": [
+        2.010999591235124,
+        2.834030908844605,
+        3.4415835238428008,
+        3.930061564835636,
+        4.341282547125888,
+        4.693577823794203,
+        5.000205212124382,
+        5.2630459999395125,
+        5.490200307118086,
+        5.687931881730898,
+        5.863199493369431,
+        6.014946192331137
+      ]
+    }
+  },
+  "case_selection": {
+    "strong_win": {
+      "sample_id": 37078,
+      "node_id": 189,
+      "mae_gain": 0.7081711292266846,
+      "pretrained_mae": 1.1694806814193726,
+      "random_mae": 1.8776518106460571,
+      "raw_l1_mae": 2.02569317817688,
+      "target_quantile": 0.9,
+      "target_gain": 0.7081695795059204
+    },
+    "representative": {
+      "sample_id": 36975,
+      "node_id": 228,
+      "mae_gain": 0.045239806175231934,
+      "pretrained_mae": 0.8918851017951965,
+      "random_mae": 0.9371249079704285,
+      "raw_l1_mae": 0.8430531620979309,
+      "target_quantile": 0.5,
+      "target_gain": 0.04524010419845581
+    },
+    "failure": {
+      "sample_id": 37860,
+      "node_id": 0,
+      "mae_gain": -0.3602170944213867,
+      "pretrained_mae": 3.6801977157592773,
+      "random_mae": 3.3199806213378906,
+      "raw_l1_mae": 3.6583330631256104,
+      "target_quantile": 0.1,
+      "target_gain": -0.36021456122398376
+    },
+    "selection_rule": {
+      "score": "random_memory_mae_minus_pretrained_memory_mae",
+      "quantiles": {
+        "strong_win": 0.9,
+        "representative": 0.5,
+        "failure": 0.1
+      },
+      "tie_break": "smallest_absolute_gap_then_sample_id_then_node_id",
+      "manual_selection": false
+    }
+  },
+  "config": {
+    "event_top_r": 96,
+    "node_top_k": 12,
+    "level_weight": 0.0,
+    "search_temperature": 0.1,
+    "profile_weight_manifest": 0.0,
+    "profile_weight_override": null,
+    "profile_weight_effective": 0.0
+  },
+  "elapsed_seconds": 1810.8489023996517,
+  "outputs": {
+    "metrics": "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\cross_domain\\pemsbay\\weekday_radius1_overlap\\metrics.json",
+    "cases": "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\cross_domain\\pemsbay\\weekday_radius1_overlap\\cases.json",
+    "alignment_bins": "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\cross_domain\\pemsbay\\weekday_radius1_overlap\\alignment_bins.csv",
+    "ranking_metrics": "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\cross_domain\\pemsbay\\weekday_radius1_overlap\\ranking_metrics.csv",
+    "figures": [
+      "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\cross_domain\\pemsbay\\weekday_radius1_overlap\\key_future_alignment.png",
+      "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\cross_domain\\pemsbay\\weekday_radius1_overlap\\deterministic_top5_cases.png",
+      "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\cross_domain\\pemsbay\\weekday_radius1_overlap\\top5_error_profiles.png",
+      "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\cross_domain\\pemsbay\\weekday_radius1_overlap\\ranking_metrics.png"
+    ]
+  }
+}
+visualization output: C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\paper_final_joint_context_offset_only_seed42\cross_domain\pemsbay\weekday_radius1_overlap

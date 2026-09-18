@@ -1,0 +1,22 @@
+{
+  "label": "pems08_retrieval_finetune",
+  "completed_at": "2026-09-17T18:24:59.108696+00:00",
+  "command": [
+    "C:\\Users\\clw\\anaconda\\envs\\experiment\\python.exe",
+    "-u",
+    "scripts/finetune_retrieval.py",
+    "--config",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\resolved_configs\\adaptation\\pems08_joint_context_offset_only.yaml",
+    "--source-checkpoint",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\metrla_e5_tgge_joint_context_offset_only_v1_transfer_hidden128_ffn2_b16_seed42\\pretrain_best.pt",
+    "--epochs",
+    "8",
+    "--run-name",
+    "paper_final_joint_context_offset_only_seed42/retrieval_adaptation/pems08",
+    "--seed",
+    "42"
+  ],
+  "outputs": [
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\retrieval_adaptation\\pems08\\retrieval_t1_best.pt"
+  ]
+}

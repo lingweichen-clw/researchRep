@@ -1,0 +1,5 @@
+
+===== 2026-09-14T23:33:22.079252 random_checkpoint =====
+C:\Users\clw\anaconda\envs\experiment\python.exe -u scripts/build_random_checkpoint.py --config C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\paper_final_joint_context_offset_only_seed42\resolved_configs\downstream\metrla_gwn.yaml --output C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\paper_final_joint_context_offset_only_seed42\controls\random_encoder_seed42.pt --seed 42
+random checkpoint: C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\paper_final_joint_context_offset_only_seed42\controls\random_encoder_seed42.pt
+retrieval_fingerprint: 006ec4ab73aadf07f6a72d8f4e9c3b6be6422d3d4a521f2bebef6cc9e3d4b4d7

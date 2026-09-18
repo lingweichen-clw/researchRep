@@ -1,0 +1,12 @@
+{
+  "label": "pems04_finetuned_bank_cleanup",
+  "completed_at": "2026-09-17T18:03:33.919493+00:00",
+  "command": null,
+  "outputs": [
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\bank_manifests\\pems04_finetuned\\inventory.json",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\main_table\\pems04\\ours\\gwn\\downstream_best.pt",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\main_table\\pems04\\ours\\stgcn\\downstream_best.pt",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\main_table\\pems04\\ours\\staeformer\\downstream_best.pt",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\main_table\\pems04\\ours\\argcn\\downstream_best.pt"
+  ]
+}

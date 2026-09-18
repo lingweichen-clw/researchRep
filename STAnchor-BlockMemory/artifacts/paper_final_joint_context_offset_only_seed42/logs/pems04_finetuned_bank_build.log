@@ -1,0 +1,5 @@
+
+===== 2026-09-17T21:02:22.340725 pems04_finetuned_bank_build =====
+C:\Users\clw\anaconda\envs\experiment\python.exe -u scripts/build_bank.py --config C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\paper_final_joint_context_offset_only_seed42\resolved_configs\adaptation\pems04_joint_context_offset_only.yaml --checkpoint C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\paper_final_joint_context_offset_only_seed42\retrieval_adaptation\pems04\retrieval_t1_best.pt --output-dir C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\paper_final_joint_context_offset_only_seed42\temporary_banks\pems04_finetuned --dataset-name pems04_joint_context_offset_only_t1
+bank: C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\paper_final_joint_context_offset_only_seed42\temporary_banks\pems04_finetuned
+events=8116 nodes=307 key_dim=64

@@ -1,0 +1,25 @@
+{
+  "label": "metrla_mirage_ab",
+  "completed_at": "2026-09-14T16:22:10.781609+00:00",
+  "command": [
+    "C:\\Users\\clw\\anaconda\\envs\\experiment\\python.exe",
+    "-u",
+    "scripts/extract_spatiotemporal_mirages.py",
+    "--data",
+    "C:\\Users\\clw\\projects\\researchRep\\data\\METRLA_data\\METR-LA.h5",
+    "--bank",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\metrla_source",
+    "--output-dir",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\source_case_study\\mirage_ab",
+    "--num-events",
+    "5000",
+    "--seed",
+    "42",
+    "--skip-population-clustering"
+  ],
+  "outputs": [
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\source_case_study\\mirage_ab\\mirage_cases.json",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\source_case_study\\mirage_ab\\context_similar_future_different_cluster.png",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\source_case_study\\mirage_ab\\context_different_future_similar_cluster.png"
+  ]
+}

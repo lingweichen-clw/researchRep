@@ -1,0 +1,40 @@
+{
+  "label": "metrla_context_future_key",
+  "completed_at": "2026-09-14T23:03:36.338202+00:00",
+  "command": [
+    "C:\\Users\\clw\\anaconda\\envs\\experiment\\python.exe",
+    "-u",
+    "scripts/analyze_context_key_alignment.py",
+    "--data",
+    "C:\\Users\\clw\\projects\\researchRep\\data\\METRLA_data\\METR-LA.h5",
+    "--bank",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\metrla_source",
+    "--reference-bank",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\metrla_reference_offset_decay",
+    "--random-bank",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\metrla_random",
+    "--output",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\source_case_study\\context_future_key\\context_key_alignment.json",
+    "--num-events",
+    "2500",
+    "--num-nodes",
+    "64",
+    "--max-pairs-per-node",
+    "1500",
+    "--quantile",
+    "0.20",
+    "--level-control-quantile",
+    "0.30",
+    "--surface-bins",
+    "8",
+    "--bootstrap-samples",
+    "1000",
+    "--seed",
+    "42"
+  ],
+  "outputs": [
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\source_case_study\\context_future_key\\context_key_alignment.json",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\source_case_study\\context_future_key\\context_future_key_relation.png",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\source_case_study\\context_future_key\\context_future_key_relation.pdf"
+  ]
+}

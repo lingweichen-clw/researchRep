@@ -1,0 +1,36 @@
+{
+  "label": "pemsbay_finetuned_router_dcrnn",
+  "completed_at": "2026-09-16T22:04:11.733274+00:00",
+  "command": [
+    "C:\\Users\\clw\\anaconda\\envs\\experiment\\python.exe",
+    "-u",
+    "scripts/train_downstream.py",
+    "--config",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\resolved_configs\\downstream\\pemsbay_dcrnn.yaml",
+    "--pretrained-checkpoint",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\retrieval_adaptation\\pemsbay\\retrieval_t1_best.pt",
+    "--bank",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pemsbay_finetuned",
+    "--base-checkpoint",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\cross_dataset_pemsbay\\pemsbay_baseonly_dcrnn_seed42\\downstream_best.pt",
+    "--mode",
+    "learned_topk_error_aware",
+    "--candidate-protocol",
+    "weekday_radius1_overlap",
+    "--level-weight",
+    "0",
+    "--candidate-quality-weight",
+    "0",
+    "--epochs",
+    "50",
+    "--disable-early-stopping",
+    "--frozen-path-cache",
+    "--seed",
+    "42",
+    "--run-name",
+    "paper_final_joint_context_offset_only_seed42/main_table/pemsbay/ours/dcrnn"
+  ],
+  "outputs": [
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\main_table\\pemsbay\\ours\\dcrnn\\downstream_best.pt"
+  ]
+}

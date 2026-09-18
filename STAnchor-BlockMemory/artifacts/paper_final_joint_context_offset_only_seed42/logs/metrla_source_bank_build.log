@@ -1,0 +1,5 @@
+
+===== 2026-09-14T23:33:25.227614 metrla_source_bank_build =====
+C:\Users\clw\anaconda\envs\experiment\python.exe -u scripts/build_bank.py --config C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\paper_final_joint_context_offset_only_seed42\resolved_configs\downstream\metrla_gwn.yaml --checkpoint C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\metrla_e5_tgge_joint_context_offset_only_v1_transfer_hidden128_ffn2_b16_seed42\pretrain_best.pt --output-dir C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\paper_final_joint_context_offset_only_seed42\temporary_banks\metrla_source --dataset-name metrla_final_joint_context_offset_only
+bank: C:\Users\clw\projects\researchRep\STAnchor-BlockMemory\artifacts\paper_final_joint_context_offset_only_seed42\temporary_banks\metrla_source
+events=15876 nodes=207 key_dim=64

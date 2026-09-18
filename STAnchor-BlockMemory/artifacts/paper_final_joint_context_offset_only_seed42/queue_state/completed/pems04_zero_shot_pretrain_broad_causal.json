@@ -1,0 +1,37 @@
+{
+  "label": "pems04_zero_shot_pretrain_broad_causal",
+  "completed_at": "2026-09-17T12:38:54.714042+00:00",
+  "command": [
+    "C:\\Users\\clw\\anaconda\\envs\\experiment\\python.exe",
+    "-u",
+    "scripts/visualize_retrieval.py",
+    "--version",
+    "hn_offset_only_v1",
+    "--config",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\resolved_configs\\adaptation\\pems04_joint_context_offset_only.yaml",
+    "--checkpoint",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\metrla_e5_tgge_joint_context_offset_only_v1_transfer_hidden128_ffn2_b16_seed42\\pretrain_best.pt",
+    "--bank",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pems04_source_zero_shot",
+    "--random-checkpoint",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\controls\\random_encoder_seed42.pt",
+    "--random-bank",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\temporary_banks\\pems04_random",
+    "--split",
+    "val",
+    "--output-dir",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\cross_domain\\pems04\\pretrain_broad_causal",
+    "--candidate-protocol",
+    "pretrain_broad_causal",
+    "--event-top-r",
+    "96",
+    "--node-top-k",
+    "12",
+    "--level-weight",
+    "0"
+  ],
+  "outputs": [
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\cross_domain\\pems04\\pretrain_broad_causal\\metrics.json",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\cross_domain\\pems04\\pretrain_broad_causal\\cases.json"
+  ]
+}

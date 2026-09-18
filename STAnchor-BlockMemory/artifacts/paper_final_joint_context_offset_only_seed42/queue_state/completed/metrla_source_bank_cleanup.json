@@ -1,0 +1,22 @@
+{
+  "label": "metrla_source_bank_cleanup",
+  "completed_at": "2026-09-15T16:06:07.111202+00:00",
+  "command": null,
+  "outputs": [
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\bank_manifests\\metrla_source\\inventory.json",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\bank_manifests\\metrla_random\\inventory.json",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\bank_manifests\\metrla_reference_offset_decay\\inventory.json",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\source_case_study\\pretrain_broad_causal\\metrics.json",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\source_case_study\\weekday_radius1_overlap\\metrics.json",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\source_case_study\\mirage_ab\\mirage_cases.json",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\source_case_study\\context_future_key\\context_key_alignment.json",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\main_table\\metrla\\ours\\gwn\\downstream_best.pt",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\main_table\\metrla\\ours\\stgcn\\downstream_best.pt",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\main_table\\metrla\\ours\\staeformer\\downstream_best.pt",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\main_table\\metrla\\ours\\argcn\\downstream_best.pt",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\main_table\\metrla\\ours\\dcrnn\\downstream_best.pt",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\main_table\\metrla\\ours\\dlinear\\downstream_best.pt",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\main_table\\metrla\\ours\\st_norm\\downstream_best.pt",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\main_table\\metrla\\ours\\st_ssdl\\downstream_best.pt"
+  ]
+}

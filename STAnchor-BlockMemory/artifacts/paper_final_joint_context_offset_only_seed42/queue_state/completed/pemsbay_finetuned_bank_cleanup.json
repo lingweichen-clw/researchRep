@@ -1,0 +1,16 @@
+{
+  "label": "pemsbay_finetuned_bank_cleanup",
+  "completed_at": "2026-09-17T11:58:59.926466+00:00",
+  "command": null,
+  "outputs": [
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\bank_manifests\\pemsbay_finetuned\\inventory.json",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\main_table\\pemsbay\\ours\\gwn\\downstream_best.pt",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\main_table\\pemsbay\\ours\\stgcn\\downstream_best.pt",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\main_table\\pemsbay\\ours\\staeformer\\downstream_best.pt",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\main_table\\pemsbay\\ours\\argcn\\downstream_best.pt",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\main_table\\pemsbay\\ours\\dcrnn\\downstream_best.pt",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\main_table\\pemsbay\\ours\\dlinear\\downstream_best.pt",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\main_table\\pemsbay\\ours\\st_norm\\downstream_best.pt",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\main_table\\pemsbay\\ours\\st_ssdl\\downstream_best.pt"
+  ]
+}

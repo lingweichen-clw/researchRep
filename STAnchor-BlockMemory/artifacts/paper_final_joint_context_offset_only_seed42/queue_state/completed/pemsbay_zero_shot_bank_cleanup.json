@@ -1,0 +1,11 @@
+{
+  "label": "pemsbay_zero_shot_bank_cleanup",
+  "completed_at": "2026-09-15T17:22:03.703068+00:00",
+  "command": null,
+  "outputs": [
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\bank_manifests\\pemsbay_source_zero_shot\\inventory.json",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\bank_manifests\\pemsbay_random\\inventory.json",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\cross_domain\\pemsbay\\pretrain_broad_causal\\metrics.json",
+    "C:\\Users\\clw\\projects\\researchRep\\STAnchor-BlockMemory\\artifacts\\paper_final_joint_context_offset_only_seed42\\cross_domain\\pemsbay\\weekday_radius1_overlap\\metrics.json"
+  ]
+}

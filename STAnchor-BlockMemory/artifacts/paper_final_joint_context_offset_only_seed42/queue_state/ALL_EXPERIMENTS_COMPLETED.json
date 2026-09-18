@@ -1,0 +1,57 @@
+{
+  "completed_at": "2026-09-17T21:29:10.917375+00:00",
+  "datasets": [
+    "metrla",
+    "pemsbay",
+    "pems04",
+    "pems08"
+  ],
+  "backbones": [
+    "gwn",
+    "stgcn",
+    "staeformer",
+    "argcn",
+    "dcrnn",
+    "dlinear",
+    "st_norm",
+    "st_ssdl"
+  ],
+  "main_table_backbones": {
+    "metrla": [
+      "gwn",
+      "stgcn",
+      "staeformer",
+      "argcn",
+      "dcrnn",
+      "dlinear",
+      "st_norm",
+      "st_ssdl"
+    ],
+    "pemsbay": [
+      "gwn",
+      "stgcn",
+      "staeformer",
+      "argcn",
+      "dcrnn",
+      "dlinear",
+      "st_norm",
+      "st_ssdl"
+    ],
+    "pems04": [
+      "gwn",
+      "stgcn",
+      "staeformer",
+      "argcn"
+    ],
+    "pems08": [
+      "gwn",
+      "stgcn",
+      "staeformer",
+      "argcn"
+    ]
+  },
+  "base_only_runs": 0,
+  "reused_base_only_checkpoints": 24,
+  "final_method_runs": 24,
+  "pems07_included": false
+}
